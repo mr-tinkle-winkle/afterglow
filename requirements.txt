@@ -1,0 +1,4 @@
+obsws-python
+tomli_w
+PySide6
+evdev
