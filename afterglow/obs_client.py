@@ -18,7 +18,7 @@ from pathlib import Path
 
 import obsws_python as obs
 
-from config import OBSSettings
+from .config import OBSSettings
 
 # obsws-python logs raw connection tracebacks itself (logger.exception(...))
 # on failure, which looks like an uncaught crash even when we've correctly

@@ -9,7 +9,7 @@ from __future__ import annotations
 from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtWidgets import QDialog, QLabel, QVBoxLayout, QPushButton, QMessageBox
 
-from hotkeys import EvdevHotkeyListener, RecorderAdapter
+from ..hotkeys import EvdevHotkeyListener, RecorderAdapter
 
 
 class _RecordThread(QThread):

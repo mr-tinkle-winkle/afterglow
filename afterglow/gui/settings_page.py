@@ -20,10 +20,10 @@ from PySide6.QtWidgets import (
     QSpinBox, QPushButton, QFileDialog, QLabel, QScrollArea, QMessageBox,
 )
 
-import config as config_module
-import clips
-from clips import ClipError
-from gui.clip_config_row import ClipConfigRow
+from .. import config as config_module
+from .. import clips
+from ..clips import ClipError
+from .clip_config_row import ClipConfigRow
 
 
 class SettingsPage(QWidget):
@@ -84,8 +84,8 @@ class SettingsPage(QWidget):
         return group
 
     def _test_obs_connection(self) -> None:
-        from config import OBSSettings
-        from obs_client import OBSClient, OBSError
+        from ..config import OBSSettings
+        from ..obs_client import OBSClient, OBSError
 
         test_settings = OBSSettings(
             host=self.obs_host_edit.text().strip(),

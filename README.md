@@ -1,108 +1,113 @@
-# clipping-app — backend + Settings GUI + hotkey daemon
+# afterglow
 
-Status: **Settings page (page 1 of 3) is implemented and working**, along
-with the OBS-triggered clip capture pipeline behind it. Build order per
-plan:
+OBS-triggered clip capture, local clip library, Medal-style editor, and
+YouTube upload. This is the `mr-tinkle-winkle/afterglow` repo, structured
+to match the `puppetry`/`conduit` flake pattern for inclusion in a NixOS
+system flake.
 
-1. **Settings page + OBS-backed clip capture — done, this delivery.**
+## Status
+
+Build order, in progress:
+
+1. **Settings page + OBS-backed clip capture — done.**
 2. Local Library page (video player, tags, Medal-style trim editor +
    audio graph editor) — next.
 3. Uploaded Library page + YouTube OAuth/upload — after that.
 
-## What's implemented and tested
+This delivery is the packaging pass: the existing Python code (previously
+delivered as loose scripts) is now a proper installable package
+(`afterglow/`) with a `flake.nix` exposing `packages.default`,
+`devShells.default`, and `nixosModules.default`, matching how puppetry and
+conduit are wired into the system flake.
 
-Everything from the previous backend delivery, plus:
-
-- **`hotkeys.py`** — hotkey combo handling, split into a pure-logic layer
-  and a thin evdev I/O layer on top:
-  - `ComboStateMachine` — tracks held keys, fires a callback when a
-    registered combo is completed, ignores key-repeat (no refiring while
-    held), collapses left/right modifier variants (`ctrl` matches either
-    physical ctrl key). **Fully unit tested** (no hardware needed) —
-    covers combo firing, repeat-suppression, partial-combo non-firing,
-    and left/right modifier collapsing.
-  - `ComboRecorder` — used by the Settings GUI's "Record" button: captures
-    a chord as it's pressed, finalizes on first key-up. **Tested.**
-  - `EvdevHotkeyListener` — reads real keyboard devices via `python-evdev`
-    and feeds either of the above (`RecorderAdapter` lets the same
-    listener feed a recorder instead of the daemon's state machine, so
-    there's one I/O implementation, not two). **Not testable in this
-    sandbox — no `/dev/input` available.** This is the one piece that
-    genuinely needs a real run on your machine to confirm.
-  - Passive listening only (no `grab()`) — a clip hotkey doesn't eat the
-    keypress from whatever's focused, it just observes.
-- **`daemon.py`** — background process: loads clip configs, registers
-  their hotkeys, and runs `clips.trigger_clip()` when one fires. Polls
-  the DB every 2s and live-reloads hotkey registrations if clip configs
-  changed in the GUI, without needing a restart. Clip triggers are
-  serialized through a single worker queue (not one thread per press) so
-  two hotkeys fired close together can't race each other's OBS
-  replay-buffer save/read cycle. **Tested end-to-end** with OBS and evdev
-  I/O stubbed out — confirmed hotkey-fire → capture → library registration,
-  and live pickup of a newly-added clip config without restarting.
-- **`gui/`** — PySide6 Settings page:
-  - OBS host/port/password + a "Test Connection" button that also warns
-    if any clip option's length exceeds OBS's configured replay buffer
-    length.
-  - Clips folder + default sound pickers.
-  - Clip Options list: collapsible rows, each with name / length (seconds)
-    / sound (optional, falls back to default) / hotkey (record via the
-    same evdev listener the daemon uses) / delete.
-  - Explicit "Save Settings" button. Saving diffs rows against the DB
-    (insert new / update changed / delete removed) rather than wiping and
-    reinserting everything, so a clip config's id — and therefore the
-    daemon's registration and any future video↔clip-config links — stays
-    stable across edits.
-  - **Tested headless** (`QT_QPA_PLATFORM=offscreen`): window construction,
-    nav, loading existing clip configs into rows, adding rows, saving
-    (insert), editing + re-saving (update, not duplicate), duplicate-name
-    rejection, delete, and settings persistence all verified. **Not
-    tested on a real display** — layout/visual polish may need a pass
-    once you can actually look at it.
-
-## Running it
+## Layout
 
 ```
-nix-shell
-python gui/main.py       # Settings GUI
-python daemon.py         # background hotkey listener + capture daemon
-python cli.py ...        # still available, see previous README section
+afterglow/            the installable Python package
+  config.py, db.py, editor.py, library.py, clips.py, obs_client.py,
+  hotkeys.py, daemon.py, cli.py
+  gui/                 PySide6 Settings page (Clips/Editor pages pending)
+pyproject.toml         package metadata + entry points
+flake.nix              packages.default, devShells.default, nixosModules.default
+shell.nix              legacy pip-venv dev shell (nix develop is preferred now)
 ```
 
-The GUI and daemon share the same DB/config, so clip options created in
-the GUI show up in the daemon (within ~2s) and vice versa.
+Entry points (from `pyproject.toml`):
+- `afterglow` — GUI
+- `afterglow-daemon` — background hotkey/capture daemon
+- `afterglow-cli` — CLI (see `afterglow/cli.py`'s docstring for commands)
 
-**Permissions:** the daemon and the GUI's hotkey-record dialog both read
-`/dev/input/event*` via evdev. This needs the running user to be in the
-`input` group on NixOS — the same requirement your macro daemon already
-has, so if that works today this should too, but it hasn't been confirmed
-against your actual system yet.
+## Using this as a flake input
 
-## Known gaps / next steps
+This is already set up to match your existing pattern:
 
-1. **Real evdev test.** Run the daemon and try recording + firing a hotkey
-   for real. This is the biggest unknown since it can't be tested in this
-   sandbox at all.
-2. **Real display test of the GUI.** Only headless-tested so far — worth
-   checking the collapsible rows, spacing, and OBS test-connection flow
-   actually look right on your monitor.
-3. **Daemon lifecycle.** Right now `daemon.py` is a plain foreground
-   script (`Ctrl+C` to stop). Given you chose "separate background
-   daemon" over a system-tray app, next step here is probably a systemd
-   user service (or NixOS module, matching how the macro daemon is
-   likely packaged) so it starts automatically and survives logout/login
-   — let me know if you want that as part of the Settings page work or
-   as a separate packaging task.
-4. Local Library page (next build phase per your ordering).
+```nix
+afterglow = {
+    url = "github:mr-tinkle-winkle/afterglow";
+    inputs.nixpkgs.follows = "nixpkgs";
+};
+```
 
-## Files changed or added since the last delivery
+```nix
+inputs.afterglow.nixosModules.default
+{
+    services.afterglow = {
+        enable = true;
+        user = "mrtw";
+    };
+}
+```
 
-New: `hotkeys.py`, `daemon.py`, `gui/__init__.py`, `gui/main.py`,
-`gui/main_window.py`, `gui/settings_page.py`, `gui/clip_config_row.py`,
-`gui/hotkey_record_dialog.py`.
-Changed: `requirements.txt` (added PySide6, evdev), `shell.nix` (added
-pyside6/evdev via nixpkgs, venv now uses `--system-site-packages` so those
-compiled packages don't need to be pip-built inside the venv).
-Unchanged from before: `config.py`, `db.py`, `editor.py`, `library.py`,
-`clips.py`, `obs_client.py`, `cli.py`.
+The module:
+- installs the `afterglow` package system-wide (so `afterglow` /
+  `afterglow-cli` are on PATH, and the GUI is launchable)
+- adds `cfg.user` to the `input` group (needed for evdev hotkey capture —
+  same requirement puppetry already has for that user)
+- runs `afterglow-daemon` as a **systemd user service** (`systemd.user`,
+  not a system-wide service) under `default.target`, with
+  `Restart = "on-failure"`. It's a user service rather than system-wide
+  because it needs to reach that user's own OBS instance and PipeWire
+  session.
 
+## obsws-python packaging note
+
+`obsws-python` isn't in nixpkgs, so `flake.nix` packages it inline from
+PyPI (pinned to 1.8.0, hash computed directly from the downloaded sdist).
+If you ever need to bump it: download the new sdist from PyPI, and either
+run `nix hash convert --hash-algo sha256 --to sri <hex-digest>` or ask me
+to recompute it the way I did this one (downloaded the file directly and
+hashed it, since I don't have a live `nix` binary to prefetch with).
+
+## ⚠️ Not verified against a real Nix evaluation
+
+I don't have `nix` available in my working environment, so **nothing in
+`flake.nix` has actually been built or `nix flake check`-ed.** Everything
+I could test without Nix, I did test directly and confirmed working:
+
+- The Python package refactor (flat scripts → `afterglow/` package with
+  relative imports) — installed via `pip install -e .` into a clean venv
+  and re-ran the full backend + GUI regression suite against the
+  installed package, not just the source tree. All passed.
+- The `obsws-python` version/hash — downloaded the real sdist from PyPI
+  and hashed it directly, not guessed.
+- `pyproject.toml`'s entry points — confirmed `afterglow-cli`,
+  and the `afterglow`/`afterglow-daemon` modules, all import and run
+  correctly as installed console scripts.
+
+What I could **not** test here (no `nix` binary in this environment):
+- Whether `flake.nix` evaluates at all (syntax is correct by manual
+  review, but Nix has no equivalent of "looks right" — it either
+  evaluates or it doesn't)
+- Whether `python3Packages.pyside6` / `python3Packages.evdev` exist under
+  those exact names in whatever nixpkgs revision your flake pins to
+- Whether the `buildPythonApplication` + `pyproject` format build
+  actually succeeds (setuptools picking up the entry points correctly
+  under Nix's build sandbox, rather than a normal pip environment)
+- The systemd user service definition, or the `extraGroups` merge with
+  whatever puppetry's module already sets for the same user
+
+**Next step on your end:** push this to the repo, run
+`flake-update afterglow` (should now succeed since `flake.nix` exists),
+then try an actual rebuild. If it fails, paste me the error — Nix build
+errors are usually precise about exactly what's wrong, and I can fix it
+from that rather than guessing blind.

@@ -1,7 +1,7 @@
 """
 Settings storage for the clipping app.
 
-Config lives at ~/.config/clipping-app/config.toml
+Config lives at ~/.config/afterglow/config.toml
 Clips/library lives at ~/Videos/Clips (configurable)
 
 We use TOML because it's human-editable (useful for debugging / manual
@@ -15,7 +15,7 @@ import tomli_w
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 
-CONFIG_DIR = Path.home() / ".config" / "clipping-app"
+CONFIG_DIR = Path.home() / ".config" / "afterglow"
 CONFIG_FILE = CONFIG_DIR / "config.toml"
 
 DEFAULT_CLIPS_DIR = Path.home() / "Videos" / "Clips"

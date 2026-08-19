@@ -2,8 +2,8 @@ import sys
 
 from PySide6.QtWidgets import QApplication
 
-import db
-from gui.main_window import MainWindow
+from .. import db
+from .main_window import MainWindow
 
 
 def main() -> None:

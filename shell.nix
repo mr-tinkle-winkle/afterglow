@@ -1,7 +1,12 @@
 { pkgs ? import <nixpkgs> {} }:
 
+# Legacy pip-venv dev shell, kept for convenience. Prefer `nix develop`
+# (via flake.nix's devShells.default) going forward -- it uses properly
+# packaged Nix derivations for every dependency including obsws-python,
+# rather than pip-installing into a venv.
+
 pkgs.mkShell {
-  name = "clipping-app-dev";
+  name = "afterglow-dev";
 
   buildInputs = with pkgs; [
     python3
@@ -16,17 +21,17 @@ pkgs.mkShell {
 
   shellHook = ''
     if [ ! -d .venv ]; then
-      echo "Creating venv and installing deps (obsws-python, tomli_w)..."
+      echo "Creating venv and installing afterglow (editable) + obsws-python..."
       python3 -m venv .venv --system-site-packages
-      .venv/bin/pip install --quiet obsws-python tomli_w
+      .venv/bin/pip install --quiet -e .
     fi
     source .venv/bin/activate
-    echo "clipping-app dev shell ready."
-    echo "  GUI:    python gui/main.py"
-    echo "  Daemon: python daemon.py"
-    echo "  CLI:    python cli.py settings show"
+    echo "afterglow dev shell ready."
+    echo "  GUI:    afterglow"
+    echo "  Daemon: afterglow-daemon"
+    echo "  CLI:    afterglow-cli settings show"
     echo ""
     echo "Note: reading /dev/input for hotkeys requires this user to be in"
-    echo "the 'input' group (same requirement as the macro daemon)."
+    echo "the 'input' group (same requirement as puppetry)."
   '';
 }

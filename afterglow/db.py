@@ -1,7 +1,7 @@
 """
 SQLite database for clip configs, the local/uploaded video library, and tags.
 
-One DB file, lives next to the config: ~/.config/clipping-app/library.db
+One DB file, lives next to the config: ~/.config/afterglow/library.db
 (Not inside ~/Videos/Clips, so the clips folder can be a plain folder of
 media files with nothing weird in it — easier to browse, sync, back up.)
 """
@@ -11,7 +11,7 @@ import sqlite3
 from pathlib import Path
 from contextlib import contextmanager
 
-from config import CONFIG_DIR
+from .config import CONFIG_DIR
 
 DB_PATH = CONFIG_DIR / "library.db"
 

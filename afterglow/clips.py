@@ -20,11 +20,11 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-import db
-import config as config_module
-from editor import TrimRequest, commit_trim, probe_duration, EditorError
-from obs_client import OBSClient, OBSError
-from library import add_video, Video
+from . import db
+from . import config as config_module
+from .editor import TrimRequest, commit_trim, probe_duration, EditorError
+from .obs_client import OBSClient, OBSError
+from .library import add_video, Video
 
 
 class ClipError(RuntimeError):

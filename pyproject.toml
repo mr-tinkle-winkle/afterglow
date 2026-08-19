@@ -1,0 +1,23 @@
+[project]
+name = "afterglow"
+version = "0.1.0"
+description = "OBS-triggered clip capture, local clip library, editor, and YouTube upload"
+requires-python = ">=3.11"
+dependencies = [
+    "obsws-python",
+    "tomli_w",
+    "PySide6",
+    "evdev",
+]
+
+[project.scripts]
+afterglow = "afterglow.gui.main:main"
+afterglow-daemon = "afterglow.daemon:main"
+afterglow-cli = "afterglow.cli:main"
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["afterglow*"]

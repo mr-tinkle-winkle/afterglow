@@ -15,8 +15,8 @@ from PySide6.QtWidgets import (
     QSpinBox, QToolButton, QPushButton, QFileDialog, QFrame,
 )
 
-from hotkeys import ComboError, parse_combo
-from gui.hotkey_record_dialog import HotkeyRecordDialog
+from ..hotkeys import ComboError, parse_combo
+from .hotkey_record_dialog import HotkeyRecordDialog
 
 
 class ClipConfigRow(QFrame):

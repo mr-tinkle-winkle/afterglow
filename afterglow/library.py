@@ -12,8 +12,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-import db
-from editor import TrimRequest, commit_trim, undo_trim, probe_duration, EditorError
+from . import db
+from .editor import TrimRequest, commit_trim, undo_trim, probe_duration, EditorError
 
 
 class LibraryError(RuntimeError):

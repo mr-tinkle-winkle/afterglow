@@ -24,10 +24,10 @@ import queue
 import threading
 import time
 
-import db
-import clips
-from clips import ClipConfig
-from hotkeys import ComboStateMachine, EvdevHotkeyListener
+from . import db
+from . import clips
+from .clips import ClipConfig
+from .hotkeys import ComboStateMachine, EvdevHotkeyListener
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("clipping-daemon")
@@ -130,5 +130,9 @@ class ClipDaemon:
             self.stop()
 
 
-if __name__ == "__main__":
+def main() -> None:
     ClipDaemon().run_forever()
+
+
+if __name__ == "__main__":
+    main()

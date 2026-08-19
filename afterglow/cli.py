@@ -30,14 +30,14 @@ from __future__ import annotations
 import argparse
 import sys
 
-import config as config_module
-import db
-import clips
-import library
-from clips import ClipError
-from library import LibraryError
-from editor import EditorError
-from obs_client import OBSError
+from . import config as config_module
+from . import db
+from . import clips
+from . import library
+from .clips import ClipError
+from .library import LibraryError
+from .editor import EditorError
+from .obs_client import OBSError
 
 
 def cmd_settings_show(args):

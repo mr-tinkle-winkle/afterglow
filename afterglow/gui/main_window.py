@@ -12,7 +12,7 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Qt
 
-from gui.settings_page import SettingsPage
+from .settings_page import SettingsPage
 
 
 class _ComingSoonPage(QWidget):
@@ -27,7 +27,7 @@ class _ComingSoonPage(QWidget):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("clipping-app")
+        self.setWindowTitle("afterglow")
         self.resize(900, 650)
 
         central = QWidget()
