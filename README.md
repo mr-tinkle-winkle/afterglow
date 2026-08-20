@@ -18,7 +18,109 @@ Build order, in progress:
 3. YouTube OAuth/upload — after that (the Library's "Upload" action
    currently shows a "not implemented yet" message).
 
-## This delivery
+## This delivery: hotkeys not working at all
+
+Two real bugs found and fixed, plus better diagnostics for whatever's
+still wrong on your specific system (I can't see your logs from here, so
+some of this is "here's how to find out" rather than "here's the fix"):
+
+### Bug #1 (likely root cause): a sound-playback failure silently killed the whole capture
+
+`play_sound()` shelled out to `paplay` unconditionally. Two problems:
+- `paplay` traditionally ships in the **`pulseaudio`** package, not
+  `pipewire` itself, even on a PipeWire-based audio stack -- and
+  `flake.nix`'s `postFixup` only ever put `ffmpeg` and `pipewire` on the
+  wrapped daemon's PATH. `pulseaudio` was never on PATH at all, so
+  `paplay` would never have been found.
+- Worse: that call was unguarded. `subprocess.Popen(["paplay", ...])`
+  raising `FileNotFoundError` propagated straight up through
+  `trigger_clip()` -- **before** the clip got registered in the library.
+  So a hotkey press would: successfully talk to OBS, successfully trim,
+  successfully move the file into your clips folder... and then die on
+  the sound step, meaning the clip never made it into the library DB at
+  all, despite the file existing on disk. If you've been finding files in
+  the clips folder that never showed up in the app, this is almost
+  certainly why.
+
+Fixed: `play_sound()` now tries `pw-play` (PipeWire's own player,
+included with the `pipewire` package -- no Pulse compat layer required)
+first, falls back to `paplay`, and never raises -- a missing/broken
+player now logs a warning and the capture still completes normally. Also
+wrapped the call site in `trigger_clip()` with its own try/except as
+defense in depth. `flake.nix` now also puts `pulseaudio` on the wrapped
+PATH alongside `pipewire`/`ffmpeg`, so both players are actually available.
+
+I verified this fix directly: simulated a PATH with `ffmpeg` but no audio
+player at all, confirmed `trigger_clip()` still completes and the clip
+still lands in the library (previously it wouldn't have).
+
+### Bug #2 (possible root cause): silent crash-loop if evdev can't read /dev/input
+
+If the daemon can't get read access to `/dev/input/event*` (e.g. this
+user isn't actually in the `input` group yet), `EvdevHotkeyListener.start()`
+raises -- and previously, that exception wasn't caught anywhere in
+`daemon.py`'s startup path, so the whole process would crash with a bare
+Python traceback. Under the systemd service's `Restart = "on-failure"`,
+that means a silent crash-loop: `systemctl --user status` would show
+"activating (auto-restart)" but nothing would obviously explain why
+unless you went digging in `journalctl`.
+
+Fixed: this failure now logs a specific, actionable error (checks for
+`input` group membership, notes that group membership only takes effect
+after a fresh login) before re-raising, so it's immediately visible in
+`journalctl --user -u afterglow-daemon` rather than a bare traceback.
+Also added logging of exactly which keyboard devices were found (or
+permission-denied) on startup.
+
+### How to actually diagnose what's happening on your machine
+
+1. **Check whether the daemon is even running:**
+   ```
+   systemctl --user status afterglow-daemon
+   ```
+   If it says "activating (auto-restart)" repeatedly, it's crash-looping
+   -- go to step 2. If it's not even listed, the service either wasn't
+   enabled by the NixOS module (check `services.afterglow.enable = true;`
+   made it into your active config) or the rebuild didn't apply it yet.
+
+2. **Read the actual logs:**
+   ```
+   journalctl --user -u afterglow-daemon -e
+   ```
+   With this delivery's fixes, a permission problem now shows a clear
+   `FAILED TO START HOTKEY LISTENER` message instead of a bare traceback.
+   If you see that, confirm with `groups` that `input` is actually listed
+   -- and if you only just rebuilt with the module enabled, **log out and
+   back in** (group membership doesn't apply to already-running sessions),
+   then `systemctl --user restart afterglow-daemon`.
+
+3. **Bypass hotkeys entirely to isolate the problem** -- this tells you
+   whether the *capture pipeline* works at all, independent of hotkey
+   detection:
+   ```
+   afterglow-cli trigger --name <your clip config name>
+   ```
+   If this works (produces a clip, shows up in the Library), the problem
+   is specifically in hotkey detection (permissions, device discovery, or
+   the combo not matching). If this *also* fails, the problem is
+   somewhere in the OBS/trim/sound pipeline itself, and the error message
+   from this command will say where.
+
+4. **Run the daemon in the foreground** to watch it live while you press
+   the hotkey:
+   ```
+   systemctl --user stop afterglow-daemon
+   afterglow-daemon
+   ```
+   You should see `Discovered N usable keyboard device(s): [...]` on
+   startup. If N is 0, or if you see permission-denied warnings, that
+   confirms the `/dev/input` access problem. Press your configured hotkey
+   -- you should see `Hotkey fired: '<name>' -- capturing clip...` in the
+   log. If nothing prints at all when you press it, the combo isn't
+   matching what was actually registered -- double check the exact combo
+   shown in `Active hotkeys: [...]` against what you're pressing.
+
+
 
 Three things, in response to real feedback from running the app:
 

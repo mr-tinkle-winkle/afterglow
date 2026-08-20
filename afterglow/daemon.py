@@ -106,7 +106,25 @@ class ClipDaemon:
         self._reload_registrations()
 
         self.listener = EvdevHotkeyListener(self.state_machine)
-        self.listener.start()
+        try:
+            self.listener.start()
+        except Exception as e:
+            # This is the single most likely reason hotkeys silently do
+            # nothing: evdev couldn't read any keyboard device, almost
+            # always a /dev/input permissions issue. Make this loud and
+            # specific rather than letting a bare traceback be the only
+            # trace of it in the logs.
+            logger.error(
+                f"FAILED TO START HOTKEY LISTENER: {e}\n"
+                f"This almost always means this user can't read /dev/input/event* "
+                f"devices. On NixOS: confirm this user is in the 'input' group "
+                f"(`groups` should list it), and note that group membership only "
+                f"takes effect on a fresh login -- if 'input' was just added via "
+                f"a NixOS rebuild, you need to log out and back in (or restart "
+                f"this systemd user service after doing so) before it takes effect."
+            )
+            raise
+
         logger.info("Hotkey listener started.")
 
         threading.Thread(target=self._reload_loop, daemon=True).start()
@@ -121,7 +139,11 @@ class ClipDaemon:
             self.listener.stop()
 
     def run_forever(self) -> None:
-        self.start()
+        try:
+            self.start()
+        except Exception:
+            logger.error("Daemon failed to start (see error above). Exiting.")
+            raise
         try:
             while True:
                 time.sleep(1)

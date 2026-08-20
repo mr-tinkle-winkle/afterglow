@@ -26,11 +26,14 @@ Left/right variants of a modifier are treated as the same modifier
 """
 from __future__ import annotations
 
+import logging
 import threading
 import time
 from collections import defaultdict
 from dataclasses import dataclass
 from typing import Callable
+
+logger = logging.getLogger("clipping-daemon.hotkeys")
 
 # --------------------------------------------------------------- combo format
 
@@ -230,13 +233,26 @@ def discover_keyboard_devices() -> list[str]:
     import evdev
     paths = evdev.list_devices()
     keyboards = []
+    permission_denied_paths = []
     for path in paths:
         try:
             dev = evdev.InputDevice(path)
             if _is_keyboard_device(dev):
                 keyboards.append(path)
-        except (PermissionError, OSError):
+        except PermissionError:
+            permission_denied_paths.append(path)
             continue
+        except OSError:
+            continue
+
+    if permission_denied_paths:
+        logger.warning(
+            f"Permission denied reading {len(permission_denied_paths)} input "
+            f"device(s) (e.g. {permission_denied_paths[0]}) -- these were "
+            f"skipped, which may mean a real keyboard was missed. This user "
+            f"likely needs to be in the 'input' group."
+        )
+    logger.info(f"Discovered {len(keyboards)} usable keyboard device(s): {keyboards}")
     return keyboards
 
 
@@ -279,7 +295,8 @@ class EvdevHotkeyListener:
 
         try:
             device = evdev.InputDevice(path)
-        except (PermissionError, OSError):
+        except (PermissionError, OSError) as e:
+            logger.error(f"Could not open input device {path} for reading: {e}")
             return
 
         try:

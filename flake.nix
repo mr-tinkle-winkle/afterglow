@@ -81,7 +81,7 @@
           postFixup = ''
             for prog in afterglow afterglow-daemon afterglow-cli; do
               wrapProgram $out/bin/$prog \
-                --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.ffmpeg pkgs.pipewire ]}
+                --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.ffmpeg pkgs.pipewire pkgs.pulseaudio ]}
             done
           '';
 

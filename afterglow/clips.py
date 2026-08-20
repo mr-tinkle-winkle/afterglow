@@ -134,18 +134,36 @@ def delete_clip_config(clip_config_id: int) -> None:
 
 def play_sound(sound_path: str | None) -> None:
     """
-    Fire-and-forget playback. Uses paplay (PipeWire/PulseAudio compat layer,
-    present on basically every NixOS desktop setup) so we don't need an
-    extra Python audio dependency. Falls back silently if no sound is set.
+    Fire-and-forget playback. Tries pw-play first (PipeWire's own player,
+    ships directly with the `pipewire` package -- no Pulse compatibility
+    layer needed), falling back to paplay (traditionally shipped by the
+    `pulseaudio` package, not `pipewire` itself, despite both being
+    "the PipeWire audio stack" from a user's perspective -- worth being
+    explicit about since getting this wrong is exactly the kind of thing
+    that silently breaks sound feedback on a real system).
+
+    Never raises: a missing/broken audio player should degrade to "no
+    sound played" rather than aborting the whole clip capture pipeline
+    that called this. The caller also wraps this call in a try/except as
+    defense in depth, but this function shouldn't rely on that.
     """
     if not sound_path:
         return
     p = Path(sound_path)
     if not p.exists():
+        print(f"Warning: configured sound file does not exist, skipping: {p}")
         return
-    subprocess.Popen(
-        ["paplay", str(p)],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+
+    for player_cmd in (["pw-play", str(p)], ["paplay", str(p)]):
+        try:
+            subprocess.Popen(player_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return
+        except FileNotFoundError:
+            continue
+    print(
+        "Warning: neither pw-play nor paplay found on PATH -- no sound "
+        "played. (On NixOS this usually means the `pipewire` and/or "
+        "`pulseaudio` packages aren't available to this process.)"
     )
 
 
@@ -184,7 +202,15 @@ def trigger_clip(clip_config_id: int) -> Video:
     shutil.move(str(raw_path), str(final_path))
 
     sound_to_play = clip_cfg.sound_path or settings.default_sound_path
-    play_sound(sound_to_play)
+    try:
+        play_sound(sound_to_play)
+    except Exception as e:
+        # Sound is a nice-to-have feedback cue, not a reason to lose an
+        # otherwise-successful capture. Log and keep going -- this used to
+        # be unguarded, and a missing audio player would silently prevent
+        # the clip from ever reaching add_video() below even though the
+        # file had already been moved into the clips folder.
+        print(f"Warning: failed to play clip sound (clip capture still succeeded): {e}")
 
     video = add_video(
         final_path,
