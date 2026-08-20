@@ -18,7 +18,57 @@ Build order, in progress:
 3. YouTube OAuth/upload — after that (the Library's "Upload" action
    currently shows a "not implemented yet" message).
 
-## This delivery: hotkeys not working at all
+## This delivery: "Could not load the Qt platform plugin"
+
+Root cause, from the error text itself: *"From 6.5.0, xcb-cursor0 or
+libxcb-cursor0 is needed to load the Qt xcb platform plugin"* is Qt's own
+built-in message for that exact version threshold -- so updating Plasma
+to unstable also bumped the Qt version afterglow gets built against
+(since afterglow's flake follows your system's `nixpkgs` input, a system
+update rebuilds it against the new revision too). Both the wayland *and*
+xcb plugins were failing to load for the same underlying reason: on
+NixOS, a binary only gets the exact runtime library closure its
+derivation explicitly declares -- unlike a traditional distro, it doesn't
+matter that Plasma itself already has `libxcb-cursor` on the system
+somewhere; afterglow's own build never declared it as a dependency, so
+its isolated closure didn't have it.
+
+This is a known gotcha specifically with `buildPythonApplication` for
+PySide6/PyQt apps on Nix: it doesn't automatically get the Qt runtime
+wrapping (`QT_PLUGIN_PATH`, `LD_LIBRARY_PATH` for Qt's shared libs) that
+native Qt packages get via `wrapQtAppsHook` -- that has to be wired up
+explicitly.
+
+**Fixed in `flake.nix`:** added `qt6.wrapQtAppsHook` and explicit
+`qt6.qtbase` / `qt6.qtwayland` / `xcb-util-cursor` build inputs, and the
+package's `postFixup` now calls `wrapQtApp` on each entry-point script
+before layering the existing PATH wrapping on top. (`wrapQtAppsHook`'s
+automatic detection only reliably wraps ELF binaries, not the
+text/shebang scripts `buildPythonApplication` generates for
+`console_scripts` -- so `wrapQtApp` is called explicitly rather than
+relying on auto-wrap picking them up.) Also applied the same fix to
+`devShells.default` for `nix develop`.
+
+**Important: this is not a platform-selection fix, and doesn't hardcode
+anything DE- or version-specific.** Qt still auto-detects xcb vs. wayland
+at runtime from the session's `XDG_SESSION_TYPE`/`WAYLAND_DISPLAY`, the
+same as any other Qt application -- this fix only makes sure that
+whichever one it picks can actually load its own dependencies. That's
+exactly why it should work unmodified for your friends on older Plasma
+versions too: it's fixing library resolution, not choosing a backend.
+
+**Still unverified against a real build** (no `nix` in my environment, as
+before) -- I'm confident in this being the standard, correct nixpkgs
+pattern for this exact class of error, but "the standard pattern" and "a
+successful build on your exact nixpkgs revision" aren't the same
+guarantee. If it still fails after rebuilding, the error message will be
+different from this one (a missing-attribute error at evaluation time
+would mean something in `qt6.*` doesn't exist under that name in your
+pinned nixpkgs revision, vs. the same runtime plugin error would mean the
+wrapping still isn't reaching the binary correctly) -- paste me whichever
+you get.
+
+## Previous delivery: hotkeys not working at all
 
 Two real bugs found and fixed, plus better diagnostics for whatever's
 still wrong on your specific system (I can't see your logs from here, so

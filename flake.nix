@@ -52,6 +52,18 @@
           nativeBuildInputs = [
             python.pkgs.setuptools
             pkgs.makeWrapper
+            pkgs.qt6.wrapQtAppsHook
+          ];
+
+          # qtbase + qtwayland so both the xcb and wayland platform plugins'
+          # own runtime library dependencies (including libxcb-cursor,
+          # explicitly called out in the error you hit -- Qt >=6.5 requires
+          # it for the xcb plugin) are actually present in the closure, not
+          # just the plugin .so files themselves being "found" by path.
+          buildInputs = [
+            pkgs.qt6.qtbase
+            pkgs.qt6.qtwayland
+            pkgs.xcb-util-cursor
           ];
 
           propagatedBuildInputs = with python.pkgs; [
@@ -78,9 +90,33 @@
             done
           '';
 
+          # wrapQtAppsHook (from nativeBuildInputs above) provides the
+          # `wrapQtApp` shell function used below -- it sets QT_PLUGIN_PATH,
+          # QML2_IMPORT_PATH, and LD_LIBRARY_PATH correctly so Qt can
+          # actually *load* whichever platform plugin it picks (xcb or
+          # wayland), rather than finding the .so but failing to resolve
+          # its own dependencies -- which is exactly what "Could not load
+          # the Qt platform plugin ... even though it was found" means.
+          #
+          # This does NOT force a specific platform/backend -- Qt still
+          # auto-detects xcb vs wayland at runtime from the session's
+          # XDG_SESSION_TYPE / WAYLAND_DISPLAY, same as any other Qt app.
+          # That auto-detection is what makes this version/DE-agnostic:
+          # it works whether the user is on Wayland or X11, and on
+          # whatever Plasma/Qt version they're running, because it's fixing
+          # *library loading*, not *platform selection*.
+          #
+          # Important: wrapQtAppsHook's automatic detection only reliably
+          # wraps ELF binaries, not the text/shebang entry-point scripts
+          # buildPythonApplication generates for console_scripts -- so
+          # `wrapQtApp` is called explicitly here rather than relying on
+          # auto-wrap. wrapProgram is layered on top afterward for the
+          # ffmpeg/audio PATH additions; wrapProgram is safe to call on an
+          # already-wrapped script, it just extends the existing wrapper.
           postFixup = ''
             for prog in afterglow afterglow-daemon afterglow-cli; do
-              wrapProgram $out/bin/$prog \
+              wrapQtApp "$out/bin/$prog"
+              wrapProgram "$out/bin/$prog" \
                 --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.ffmpeg pkgs.pipewire pkgs.pulseaudio ]}
             done
           '';
@@ -123,8 +159,15 @@
               ]))
               pkgs.ffmpeg
               pkgs.pipewire
+              pkgs.qt6.qtbase
+              pkgs.qt6.qtwayland
             ];
+            # Same runtime-linking issue as the packaged app -- a plain
+            # `nix develop` shell doesn't get automatic Qt wrapping the
+            # way wrapQtAppsHook gives the built package, so the plugin
+            # paths need setting by hand here too.
             shellHook = ''
+              export QT_PLUGIN_PATH="${pkgs.qt6.qtbase}/lib/qt-6/plugins:${pkgs.qt6.qtwayland}/lib/qt-6/plugins''${QT_PLUGIN_PATH:+:$QT_PLUGIN_PATH}"
               echo "afterglow dev shell (via flake). Try: python -m afterglow.cli settings show"
             '';
           };
