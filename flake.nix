@@ -64,6 +64,20 @@
           # ffmpeg and paplay (pipewire) are invoked as subprocesses, not
           # Python imports -- they need to be on PATH at runtime, not just
           # build time, hence wrapProgram rather than a build input.
+          # Also installs the .desktop entry + icon set from data/ so the
+          # app actually shows up in a DE's application launcher/search --
+          # buildPythonApplication only installs the Python package by
+          # default, not arbitrary XDG data.
+          postInstall = ''
+            install -Dm644 data/applications/afterglow.desktop \
+              $out/share/applications/afterglow.desktop
+
+            for size in 16 22 24 32 48 64 128 256 512; do
+              install -Dm644 data/icons/hicolor/''${size}x''${size}/apps/afterglow.png \
+                $out/share/icons/hicolor/''${size}x''${size}/apps/afterglow.png
+            done
+          '';
+
           postFixup = ''
             for prog in afterglow afterglow-daemon afterglow-cli; do
               wrapProgram $out/bin/$prog \

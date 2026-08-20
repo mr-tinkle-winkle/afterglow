@@ -63,10 +63,12 @@ class HotkeyRecordDialog(QDialog):
     def _on_recorded(self, combo: str) -> None:
         self.result_combo = combo
         self._thread.stop()
+        self._thread.wait(2000)  # must fully finish before the dialog (and thread object) get torn down
         self.accept()
 
     def _on_failed(self, error: str) -> None:
         self._thread.stop()
+        self._thread.wait(2000)
         QMessageBox.critical(
             self, "Hotkey Recording Failed",
             f"{error}\n\nThis usually means the app doesn't have permission "
@@ -77,9 +79,10 @@ class HotkeyRecordDialog(QDialog):
 
     def closeEvent(self, event) -> None:
         self._thread.stop()
-        self._thread.wait(500)
+        self._thread.wait(2000)
         super().closeEvent(event)
 
     def reject(self) -> None:
         self._thread.stop()
+        self._thread.wait(2000)
         super().reject()

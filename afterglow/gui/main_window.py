@@ -1,34 +1,29 @@
 """
-Main window: left sidebar nav across the eventual 3 pages (Settings, Clips,
-Editor). Only Settings is implemented per the current build order --
-Clips and Editor are present as disabled nav entries so the layout is
-already right for when they land, rather than restructuring the nav later.
+Main window: left sidebar nav across the 3 pages -- Settings, Library,
+Editor. All three are live now (no more "coming soon" placeholders).
+
+Each page is constructed once here and lives inside the QStackedWidget for
+the app's whole lifetime; switching nav only changes which one is visible.
+This is also what makes the Editor page's "remember what I was last
+editing" requirement work for free -- see editor_page.py's docstring.
 """
 from __future__ import annotations
 
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QListWidget, QListWidgetItem,
-    QStackedWidget, QLabel,
+    QStackedWidget,
 )
-from PySide6.QtCore import Qt
 
 from .settings_page import SettingsPage
-
-
-class _ComingSoonPage(QWidget):
-    def __init__(self, name: str, parent=None):
-        super().__init__(parent)
-        layout = QHBoxLayout(self)
-        label = QLabel(f"{name} — coming soon")
-        label.setAlignment(Qt.AlignCenter)
-        layout.addWidget(label)
+from .library_page import LibraryPage
+from .editor_page import EditorPage
 
 
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("afterglow")
-        self.resize(900, 650)
+        self.resize(1000, 700)
 
         central = QWidget()
         self.setCentralWidget(central)
@@ -42,19 +37,35 @@ class MainWindow(QMainWindow):
         self.stack = QStackedWidget()
         layout.addWidget(self.stack, stretch=1)
 
-        self._add_page("Settings", SettingsPage(), enabled=True)
-        self._add_page("Clips", _ComingSoonPage("Clips"), enabled=False)
-        self._add_page("Editor", _ComingSoonPage("Editor"), enabled=False)
+        self.settings_page = SettingsPage()
+        self.library_page = LibraryPage()
+        self.editor_page = EditorPage()
+
+        self._add_page("Settings", self.settings_page)
+        self._add_page("Library", self.library_page)
+        self._add_page("Editor", self.editor_page)
+
+        # Double-click / context-menu "Edit" in the Library routes here to
+        # the Editor page (and loads that video into it).
+        self.library_page.edit_requested.connect(self._open_in_editor)
 
         self.nav_list.setCurrentRow(0)
 
-    def _add_page(self, name: str, widget: QWidget, enabled: bool) -> None:
+    def _add_page(self, name: str, widget: QWidget) -> None:
         item = QListWidgetItem(name)
-        if not enabled:
-            item.setFlags(item.flags() & ~Qt.ItemIsEnabled)
         self.nav_list.addItem(item)
         self.stack.addWidget(widget)
 
     def _on_nav_changed(self, index: int) -> None:
-        if index >= 0:
-            self.stack.setCurrentIndex(index)
+        if index < 0:
+            return
+        self.stack.setCurrentIndex(index)
+        # Library reflects any edits/deletes made from the Editor page
+        # (e.g. an Undo changing has_edit, or a delete elsewhere) whenever
+        # it's navigated back to, rather than needing a manual refresh.
+        if self.stack.widget(index) is self.library_page:
+            self.library_page.refresh()
+
+    def _open_in_editor(self, video_id: int) -> None:
+        self.editor_page.load_video(video_id)
+        self.nav_list.setCurrentRow(2)  # Editor tab index

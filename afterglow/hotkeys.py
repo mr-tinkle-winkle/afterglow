@@ -273,6 +273,7 @@ class EvdevHotkeyListener:
         self._stop_flag.set()
 
     def _read_loop(self, path: str) -> None:
+        import select
         import evdev
         from evdev import categorize, ecodes
 
@@ -281,22 +282,35 @@ class EvdevHotkeyListener:
         except (PermissionError, OSError):
             return
 
-        for event in device.read_loop():
-            if self._stop_flag.is_set():
-                break
-            if event.type != ecodes.EV_KEY:
-                continue
-            key_event = categorize(event)
-            key_name = key_event.keycode
-            if isinstance(key_name, list):  # evdev sometimes gives aliases as a list
-                key_name = key_name[0]
+        try:
+            while not self._stop_flag.is_set():
+                # select() with a timeout, rather than device.read_loop()'s
+                # unconditional blocking read, so this thread actually wakes
+                # up and exits promptly on stop() even if no key is pressed
+                # on this specific device in the meantime. Without this, a
+                # thread blocked in read_loop() would only ever notice
+                # stop() on its *next* event -- which, for the hotkey-record
+                # dialog opened and closed repeatedly, meant reader threads
+                # piling up for the lifetime of the process.
+                ready, _, _ = select.select([device.fd], [], [], 0.2)
+                if not ready:
+                    continue
+                for event in device.read():
+                    if event.type != ecodes.EV_KEY:
+                        continue
+                    key_event = categorize(event)
+                    key_name = key_event.keycode
+                    if isinstance(key_name, list):  # evdev sometimes gives aliases as a list
+                        key_name = key_name[0]
 
-            if key_event.keystate == key_event.key_down:
-                self.state_machine.key_down(key_name, is_repeat=False)
-            elif key_event.keystate == key_event.key_hold:
-                self.state_machine.key_down(key_name, is_repeat=True)
-            elif key_event.keystate == key_event.key_up:
-                self.state_machine.key_up(key_name)
+                    if key_event.keystate == key_event.key_down:
+                        self.state_machine.key_down(key_name, is_repeat=False)
+                    elif key_event.keystate == key_event.key_hold:
+                        self.state_machine.key_down(key_name, is_repeat=True)
+                    elif key_event.keystate == key_event.key_up:
+                        self.state_machine.key_up(key_name)
+        finally:
+            device.close()
 
 
 if __name__ == "__main__":

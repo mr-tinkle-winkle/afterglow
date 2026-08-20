@@ -97,11 +97,12 @@ def get_video(video_id: int) -> Video:
 
 
 def list_videos(tag_filter: list[str] | None = None, uploaded_only: bool = False,
-                 local_only: bool = False) -> list[Video]:
+                 local_only: bool = False, search: str | None = None) -> list[Video]:
     """
     tag_filter: list of tag names, ANDed together (a video must have ALL of
     them) -- this matches "multiple filters can be applied at once" as an
     intersection, which is the more useful reading for finding a specific clip.
+    search: case-insensitive substring match against title OR description.
     """
     with db.get_conn() as conn:
         query = "SELECT DISTINCT v.* FROM videos v"
@@ -121,6 +122,10 @@ def list_videos(tag_filter: list[str] | None = None, uploaded_only: bool = False
             conditions.append("v.youtube_video_id IS NOT NULL")
         if local_only:
             conditions.append("v.youtube_video_id IS NULL")
+        if search:
+            conditions.append("(v.title LIKE ? COLLATE NOCASE OR v.description LIKE ? COLLATE NOCASE)")
+            like_term = f"%{search}%"
+            params.extend([like_term, like_term])
 
         if conditions:
             query += " WHERE " + " AND ".join(conditions)
