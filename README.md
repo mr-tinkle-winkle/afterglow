@@ -18,7 +18,51 @@ Build order, in progress:
 3. YouTube OAuth/upload — after that (the Library's "Upload" action
    currently shows a "not implemented yet" message).
 
-## This delivery: the actual root cause of "hotkeys don't work," plus the OBS timing bug
+## This delivery: a real diagnostic tool, since guessing further isn't working
+
+Two rounds of fixes (the mute-key tuple crash, the OBS file-timing race)
+and hotkeys still do nothing. Both of those were real, confirmed bugs --
+but "still broken after two confirmed fixes" means I'm out of things I
+can find by re-reading the code without seeing what's actually happening
+on your hardware. Rather than guess at a third bug, I've added a tool
+that answers the actual question directly:
+
+```
+afterglow-cli debug-listen
+```
+
+This bypasses hotkey combo matching, the daemon, clip configs, OBS --
+everything -- and just prints every raw keyboard event it sees, live,
+until you Ctrl+C. Run it, then press your configured hotkey (and a few
+other random keys too, for comparison). One of a few things will happen:
+
+- **Nothing prints at all, for any key.** This means the app genuinely
+  can't see your keyboard's input events -- almost certainly a
+  `/dev/input` permissions problem. It'll also print
+  `No keyboard devices found` up front with specific guidance (check
+  `groups` includes `input`; remember group membership only applies after
+  a fresh login, not just a rebuild).
+- **Other keys print, but nothing happens for your specific hotkey's
+  keys.** This would be unusual, but would point at something specific to
+  those particular keys/that device.
+- **Everything prints, including your hotkey's keys, with sensible-looking
+  names** (e.g. `raw='KEY_LEFTCTRL'`, `display='ctrl'`). This means event
+  delivery is fine, and the bug is specifically in combo registration or
+  matching -- at which point the next step is checking that the *exact*
+  hotkey string saved in your clip config matches what's printing here
+  (case matters is handled, but e.g. a leftover typo or unexpected key
+  name wouldn't).
+- **Something prints, but the raw key names look unusual** (not the usual
+  `KEY_*` format) -- worth flagging specifically, since you're on a
+  Wooting 80HE, and some analog/gaming keyboards can behave unusually at
+  the evdev level compared to a standard keyboard depending on what mode
+  they're in.
+
+Please run this and send me what it prints when you press your hotkey --
+that tells us which of the above we're actually dealing with, rather than
+me guessing at a third fix blind.
+
+## Previous delivery: mute-key crash and OBS timing bug
 
 Your `journalctl` output pinned down the real bug directly, and the
 `afterglow-cli trigger` error confirmed your own diagnosis of a second,

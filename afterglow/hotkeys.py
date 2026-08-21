@@ -198,6 +198,62 @@ class ComboRecorder:
         return self._done
 
 
+class _DebugPrintAdapter:
+    """
+    Sink for EvdevHotkeyListener used by debug_listen() below: prints every
+    raw key event as it arrives, bypassing combo matching entirely. This is
+    the fastest way to answer "does anything reach the app at all, and
+    what does it look like" when hotkeys silently do nothing -- it
+    isolates device access and event delivery from combo-matching logic
+    entirely, and from the whole daemon/OBS/trim pipeline.
+    """
+
+    def key_down(self, evdev_key_name: str, is_repeat: bool = False) -> None:
+        tag = "repeat" if is_repeat else "DOWN"
+        print(f"  [{tag}] raw={evdev_key_name!r}  display={_display_name(evdev_key_name)!r}")
+
+    def key_up(self, evdev_key_name: str) -> None:
+        print(f"  [UP]   raw={evdev_key_name!r}  display={_display_name(evdev_key_name)!r}")
+
+
+def debug_listen() -> None:
+    """
+    Prints every keyboard event from every discovered device until
+    Ctrl+C. No combo matching, no daemon, no OBS -- just "is this app
+    seeing my keypresses at all, and what do they look like". Run this,
+    then press your hotkey (and try a few other keys too) and watch what
+    prints.
+    """
+    print("Discovering keyboard devices...")
+    paths = discover_keyboard_devices()
+    if not paths:
+        print(
+            "No keyboard devices found. This means either:\n"
+            "  - this user can't read /dev/input/event* at all (check `groups`\n"
+            "    includes 'input'; if you just added it, you need to log out\n"
+            "    and back in for it to take effect), or\n"
+            "  - no device on this system reports both KEY_A and KEY_F1\n"
+            "    capability (the heuristic this app uses to recognize a\n"
+            "    'real' keyboard) -- possible if a keyboard exposes itself\n"
+            "    across multiple event nodes and the main one doesn't carry\n"
+            "    both, which can happen with some gaming keyboards."
+        )
+        return
+
+    print(f"Found {len(paths)} device(s): {paths}")
+    print("Listening for key events. Press keys now (Ctrl+C to stop)...\n")
+
+    adapter = _DebugPrintAdapter()
+    listener = EvdevHotkeyListener(adapter, device_paths=paths)
+    listener.start()
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        listener.stop()
+        print("\nStopped.")
+
+
 class RecorderAdapter:
     """
     Lets EvdevHotkeyListener feed a ComboRecorder instead of a

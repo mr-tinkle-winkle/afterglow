@@ -24,6 +24,10 @@ Examples:
 
   python cli.py editor trim 3 --start 4.2 --end 19.8 --frame-perfect
   python cli.py editor undo 3
+
+  python cli.py debug-listen  # prints every raw key event live; use this
+                               # when hotkeys aren't firing to check whether
+                               # keypresses reach the app at all
 """
 from __future__ import annotations
 
@@ -38,6 +42,7 @@ from .clips import ClipError
 from .library import LibraryError
 from .editor import EditorError
 from .obs_client import OBSError
+from . import hotkeys
 
 
 def cmd_settings_show(args):
@@ -196,6 +201,10 @@ def cmd_editor_undo(args):
     print(f"Undone #{v.id}: now {v.duration_sec:.3f}s (has_edit={v.has_edit})")
 
 
+def cmd_debug_listen(args):
+    hotkeys.debug_listen()
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="cli.py")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -288,6 +297,15 @@ def build_parser() -> argparse.ArgumentParser:
     p_ed_undo = ed_sub.add_parser("undo")
     p_ed_undo.add_argument("id", type=int)
     p_ed_undo.set_defaults(func=cmd_editor_undo)
+
+    p_debug = sub.add_parser(
+        "debug-listen",
+        description="Print every raw keyboard event live, bypassing combo "
+                    "matching and the daemon entirely. Use this to check "
+                    "whether keypresses reach the app at all, and what "
+                    "they look like, when hotkeys aren't firing.",
+    )
+    p_debug.set_defaults(func=cmd_debug_listen)
 
     return parser
 
