@@ -18,7 +18,52 @@ Build order, in progress:
 3. YouTube OAuth/upload — after that (the Library's "Upload" action
    currently shows a "not implemented yet" message).
 
-## This delivery: a real diagnostic tool, since guessing further isn't working
+## This delivery: hotkeys work now, but captured clips weren't trimmed
+
+Your `debug-listen` run confirmed key detection, matching, and the
+capture pipeline all work correctly now. "It clipped but didn't trim" was
+a real, separate, fourth bug -- found and fixed.
+
+### Root cause: fast trim mode silently fails on sparse-keyframe files
+
+`trigger_clip()`'s automatic trim step used fast/keyframe-seek mode
+(stream-copy, no re-encode) rather than frame-perfect mode. Fast mode
+seeks to the nearest keyframe *at or before* the requested start time --
+which works fine when keyframes are frequent, but OBS's replay buffer
+output can have a keyframe interval larger than the requested clip
+length, depending on encoder settings. In the worst case (effectively one
+keyframe near the very start of the saved segment), fast mode can't seek
+forward at all: it snaps back to that single keyframe regardless of what
+start time was actually requested, handing back the *entire* raw buffer
+with zero trim applied -- silently, no error, exactly matching what you
+saw.
+
+I reproduced this directly: generated a 20s test file with only one
+keyframe (mirroring a sparse-keyframe OBS-style recording), requested the
+last 5 seconds via the exact logic `trigger_clip()` uses, and confirmed
+fast mode returned the full 20s untouched.
+
+**Fixed:** trigger-time trims now always use frame-perfect mode (full
+re-encode) instead of fast mode. This is a real behavior change, not just
+a bug fix -- fast mode's speed advantage isn't worth it here, since
+whether it actually cuts anything at all depends on OBS's keyframe
+interval, which is outside this app's control. The entire point of
+automatic capture is reliably getting the requested length; frame-perfect
+guarantees that regardless of OBS's encoder settings, at the cost of a
+short re-encode per capture (a few seconds on modern hardware for a
+typical short clip). `frame_perfect` remains available as an explicit
+opt-in for the manual Editor (still to be built) for precise custom-range
+trims, but is no longer something the automatic pipeline can silently get
+wrong.
+
+Verified with the same reproduction case (sparse-keyframe 20s file,
+requesting the last 5s): frame-perfect mode now correctly returns exactly
+5.00s. Also re-ran the full `trigger_clip()` pipeline end-to-end with a
+fake OBS producing that same sparse-keyframe file, confirming the
+complete capture → trim → library-registration flow now produces the
+correct duration.
+
+## Previous delivery: a real diagnostic tool, since guessing further isn't working
 
 Two rounds of fixes (the mute-key tuple crash, the OBS file-timing race)
 and hotkeys still do nothing. Both of those were real, confirmed bugs --

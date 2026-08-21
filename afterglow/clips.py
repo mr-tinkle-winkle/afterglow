@@ -184,7 +184,23 @@ def trigger_clip(clip_config_id: int) -> Video:
 
     request = TrimRequest(
         video_path=raw_path, start_sec=trim_start, end_sec=raw_duration,
-        frame_perfect=False,  # trigger-time trims are always fast; frame-perfect is an Editor-only opt-in
+        # Trigger-time trims must always be frame-perfect (full re-encode),
+        # NOT fast/keyframe-seek mode -- confirmed by direct reproduction:
+        # OBS's replay buffer output can have a keyframe interval larger
+        # than the requested clip length (sometimes only a single keyframe
+        # near the very start of the saved segment, depending on encoder
+        # settings). Fast mode snaps the start time back to the nearest
+        # keyframe at-or-before the request -- if that's the file's only
+        # keyframe, at time 0, you get the ENTIRE raw buffer back with no
+        # trim applied at all, regardless of the requested clip length.
+        # This is exactly what "it clipped but didn't trim" was: not a
+        # crash, just silently wrong output. The whole point of automatic
+        # capture is hitting the requested length reliably, so correctness
+        # here matters more than the encode-time cost. frame_perfect
+        # remains an explicit opt-in only in the (still-unbuilt) manual
+        # Editor, where a person is choosing a precise custom range rather
+        # than relying on "give me the last N seconds."
+        frame_perfect=True,
     )
     commit_trim(request, has_prior_edit=False, existing_backup=None)
     # commit_trim leaves a ".orig" backup next to raw_path we don't need here
