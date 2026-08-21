@@ -18,7 +18,71 @@ Build order, in progress:
 3. YouTube OAuth/upload — after that (the Library's "Upload" action
    currently shows a "not implemented yet" message).
 
-## This delivery: "Could not load the Qt platform plugin"
+## This delivery: the actual root cause of "hotkeys don't work," plus the OBS timing bug
+
+Your `journalctl` output pinned down the real bug directly, and the
+`afterglow-cli trigger` error confirmed your own diagnosis of a second,
+separate one. Both fixed and verified:
+
+### Bug: evdev's mute key crashed the hotkey listener permanently
+
+```
+AttributeError: 'tuple' object has no attribute 'startswith'
+```
+
+Root cause, confirmed directly: evdev's own keycode reverse-mapping isn't
+consistently `str`/`list` -- some key codes resolve to a `tuple` instead.
+Code 113 (mute) is one of them: it maps to
+`('KEY_MIN_INTERESTING', 'KEY_MUTE')`. My code only checked for `list`,
+not `tuple`, so a tuple went straight into `.startswith()` and raised.
+
+Mute is an extremely easy key to hit by accident (volume rocker, media
+keys, a stray keypress), which is exactly why this crashed within seconds
+of the daemon starting in your logs. Worse: the reader thread for that
+keyboard device died **permanently** when this happened -- the daemon
+kept running (which is why `systemctl status` showed "active"), but that
+device's hotkey detection was dead for the rest of the daemon's life,
+with no visible symptom besides "the hotkey does nothing."
+
+Fixed two ways:
+1. `_display_name()` now handles `tuple` as well as `list`, at the source.
+2. **More importantly:** the per-event processing in the reader thread is
+   now wrapped in its own try/except that logs and continues, rather than
+   letting any single malformed event kill the thread forever. This is
+   the actual structural fix -- it means no *future* unexpected evdev
+   quirk (and there may be others; evdev's keycode tables are large and
+   not something I can exhaustively audit from here) can silently kill
+   hotkey detection again the same way.
+
+Verified directly: reproduced the exact tuple (`('KEY_MIN_INTERESTING', 'KEY_MUTE')`)
+using evdev's own event categorization for the real mute keycode, fed it
+through `_display_name()` and `ComboStateMachine.key_down()`, confirmed
+both handle it without raising (this is now a permanent regression test
+in `hotkeys.py`'s `__main__` block).
+
+### Bug: OBS's reported replay file was checked before it finished writing
+
+Your diagnosis was exactly right. `save_replay_buffer()` asks OBS for the
+path it just saved to, then checked `path.exists()` **once, immediately**.
+But OBS can report the destination path before the file is actually done
+being written/remuxed to disk -- so on a slightly slower disk or a larger
+buffer, the file legitimately doesn't exist yet at the moment we check,
+even though OBS did fire the save correctly (matching what you saw: OBS's
+replay buffer visibly triggered, but our own code errored out before ever
+reaching the trim/sound/library-registration steps -- which is also why
+that particular clip ended up untrimmed and silent: our pipeline never
+got that far).
+
+Fixed: now waits up to 15s for the file to (a) exist and (b) have a
+stable size across two consecutive checks (not still growing), instead of
+one immediate check. Verified directly with a simulated OBS that reports
+the path immediately but doesn't actually finish writing the file until
+1.6s later -- confirmed `save_replay_buffer()` now waits and succeeds
+instead of failing immediately. Also verified the genuine-failure path
+still raises a clear error (using the real 15s timeout) when a file
+truly never appears at all.
+
+## Previous delivery: "Could not load the Qt platform plugin"
 
 Root cause, from the error text itself: *"From 6.5.0, xcb-cursor0 or
 libxcb-cursor0 is needed to load the Qt xcb platform plugin"* is Qt's own
@@ -68,7 +132,7 @@ pinned nixpkgs revision, vs. the same runtime plugin error would mean the
 wrapping still isn't reaching the binary correctly) -- paste me whichever
 you get.
 
-## Previous delivery: hotkeys not working at all
+## Earlier delivery: sound-playback and permission diagnostics
 
 Two real bugs found and fixed, plus better diagnostics for whatever's
 still wrong on your specific system (I can't see your logs from here, so

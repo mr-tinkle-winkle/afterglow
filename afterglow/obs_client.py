@@ -145,8 +145,49 @@ class OBSClient:
             )
 
         path = Path(last_path)
+
+        # OBS reporting a path via GetLastReplayBufferReplay does not mean
+        # the file is actually finished being written yet -- it can still
+        # be remuxing/flushing to disk, especially for larger buffers. A
+        # single immediate existence check here was the actual bug: it
+        # would fail with the file legitimately about to appear a moment
+        # later. Wait for the file to exist AND for its size to stop
+        # changing across consecutive checks before treating it as ready.
+        max_wait_sec = 15
+        poll_interval = 0.3
+        waited = 0.0
+        last_size = -1
+        stable_count = 0
+        stable_checks_needed = 2
+
+        while waited < max_wait_sec:
+            if path.exists():
+                try:
+                    size = path.stat().st_size
+                except OSError:
+                    size = -1
+                if size > 0 and size == last_size:
+                    stable_count += 1
+                    if stable_count >= stable_checks_needed:
+                        return path
+                else:
+                    stable_count = 0
+                last_size = size
+            time.sleep(poll_interval)
+            waited += poll_interval
+
         if not path.exists():
-            raise OBSError(f"OBS reported a replay file that doesn't exist on disk: {path}")
+            raise OBSError(
+                f"OBS reported a replay file that never appeared on disk "
+                f"after {max_wait_sec}s: {path}. This can happen if OBS is "
+                f"still remuxing a large buffer, or if the path OBS "
+                f"reported isn't reachable from this process."
+            )
+        # It exists but its size never stabilized within the wait window --
+        # still return it rather than failing outright. A slow disk
+        # finishing the write a moment later is far more likely than
+        # genuine corruption, and the trim step downstream will fail
+        # loudly and specifically if the file actually is bad.
         return path
 
 

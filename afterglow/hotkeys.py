@@ -47,7 +47,17 @@ _MODIFIER_KEY_MAP = {
 }
 
 
-def _display_name(evdev_key_name: str) -> str:
+def _display_name(evdev_key_name: str | list | tuple) -> str:
+    # evdev's own keycode reverse-mapping isn't consistently str/list --
+    # some codes (e.g. 113, which resolves to both 'KEY_MIN_INTERESTING'
+    # and 'KEY_MUTE') come back as a tuple, not a list. Mute is a key
+    # that's trivially easy to hit incidentally, which is exactly what
+    # crashed the reader thread in practice: this function only checked
+    # for `list`, so a tuple went straight into `.startswith()` and blew
+    # up. Handling both defensively here, at the source, rather than
+    # trusting every caller to normalize first.
+    if isinstance(evdev_key_name, (list, tuple)):
+        evdev_key_name = evdev_key_name[0]
     if evdev_key_name in _MODIFIER_KEY_MAP:
         return _MODIFIER_KEY_MAP[evdev_key_name]
     name = evdev_key_name
@@ -315,17 +325,32 @@ class EvdevHotkeyListener:
                 for event in device.read():
                     if event.type != ecodes.EV_KEY:
                         continue
-                    key_event = categorize(event)
-                    key_name = key_event.keycode
-                    if isinstance(key_name, list):  # evdev sometimes gives aliases as a list
-                        key_name = key_name[0]
+                    try:
+                        key_event = categorize(event)
+                        key_name = key_event.keycode
+                        # evdev's keycode reverse-mapping isn't consistently
+                        # str/list -- some codes (e.g. mute) come back as a
+                        # tuple. _display_name() also guards against this,
+                        # but normalizing here too means key_name is a
+                        # predictable single string everywhere downstream.
+                        if isinstance(key_name, (list, tuple)):
+                            key_name = key_name[0]
 
-                    if key_event.keystate == key_event.key_down:
-                        self.state_machine.key_down(key_name, is_repeat=False)
-                    elif key_event.keystate == key_event.key_hold:
-                        self.state_machine.key_down(key_name, is_repeat=True)
-                    elif key_event.keystate == key_event.key_up:
-                        self.state_machine.key_up(key_name)
+                        if key_event.keystate == key_event.key_down:
+                            self.state_machine.key_down(key_name, is_repeat=False)
+                        elif key_event.keystate == key_event.key_hold:
+                            self.state_machine.key_down(key_name, is_repeat=True)
+                        elif key_event.keystate == key_event.key_up:
+                            self.state_machine.key_up(key_name)
+                    except Exception as e:
+                        # A single malformed/unexpected event must never
+                        # kill this thread -- this is exactly what happened
+                        # in practice: one bad event (mute key, tuple
+                        # keycode bug) took down the whole reader thread
+                        # for that device permanently, silently, for the
+                        # rest of the daemon's life. Log and keep reading.
+                        logger.error(f"Error processing input event from {path}: {e}")
+                        continue
         finally:
             device.close()
 
@@ -376,3 +401,23 @@ if __name__ == "__main__":
     rec.key_down("KEY_F9")
     result = rec.key_up("KEY_LEFTSHIFT")
     print("  recorded combo:", result)
+
+    print("\nRegression test -- evdev's mute key (code 113) resolves to a "
+          "TUPLE ('KEY_MIN_INTERESTING', 'KEY_MUTE'), not a list. This "
+          "crashed the reader thread permanently in practice (mute is an "
+          "easy key to hit incidentally). Confirming it's handled now:")
+    try:
+        import evdev
+        from evdev import categorize, ecodes
+        mute_event = evdev.InputEvent(0, 0, ecodes.EV_KEY, ecodes.KEY_MUTE, 1)  # value=1 -> key down
+        key_event = categorize(mute_event)
+        raw_keycode = key_event.keycode
+        print(f"  raw keycode from evdev: {raw_keycode!r} (type: {type(raw_keycode).__name__})")
+        result = _display_name(raw_keycode)
+        print(f"  _display_name() result: {result!r} (no crash)")
+
+        sm2 = ComboStateMachine()
+        sm2.key_down(raw_keycode)  # this used to raise AttributeError
+        print("  ComboStateMachine.key_down() with tuple keycode: OK, no crash")
+    except ImportError:
+        print("  (evdev not installed in this environment -- skipped)")
