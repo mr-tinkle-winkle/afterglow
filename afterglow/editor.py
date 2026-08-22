@@ -55,6 +55,12 @@ class TrimRequest:
     start_sec: float
     end_sec: float
     frame_perfect: bool = False
+    # Only affects frame_perfect mode's re-encode. "medium" is a reasonable
+    # default for manual Editor use where quality matters more than speed;
+    # trigger_clip()'s automatic pipeline overrides this to something
+    # faster, since speed matters far more for "give me my clip now" than
+    # a few percent smaller file size at the same CRF quality level.
+    preset: str = "medium"
 
     def validate(self, duration: float) -> None:
         if self.start_sec < 0:
@@ -63,6 +69,36 @@ class TrimRequest:
             raise EditorError("End time must be after start time.")
         if self.end_sec > duration + 0.05:  # small tolerance for float/probe drift
             raise EditorError(f"End time {self.end_sec}s exceeds video duration {duration:.2f}s.")
+
+
+def _find_keyframe_at_or_before(video_path: Path, target_sec: float) -> float:
+    """
+    Fast keyframe lookup via -skip_frame nokey, which reads packet headers
+    without decoding non-keyframe packets -- quick even on long files.
+    Returns 0.0 (start of file) if probing fails or no keyframe is found
+    at or before target_sec, which just means the dual-seek trick below
+    degrades to decoding from the start -- correct, just not faster.
+    """
+    result = subprocess.run(
+        [
+            "ffprobe", "-v", "error", "-select_streams", "v:0",
+            "-skip_frame", "nokey", "-show_entries", "frame=pts_time",
+            "-of", "csv=p=0", str(video_path),
+        ],
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        return 0.0
+
+    keyframe_times = []
+    for line in result.stdout.strip().splitlines():
+        try:
+            keyframe_times.append(float(line))
+        except ValueError:
+            continue
+
+    candidates = [t for t in keyframe_times if t <= target_sec]
+    return max(candidates) if candidates else 0.0
 
 
 def _backup_path_for(video_path: Path) -> Path:
@@ -94,12 +130,27 @@ def commit_trim(request: TrimRequest, has_prior_edit: bool, existing_backup: Pat
     duration_arg = request.end_sec - request.start_sec
 
     if request.frame_perfect:
+        # Fast-seek + residual-correction: input-side -ss jumps quickly to
+        # the nearest keyframe at or before the target (cheap, no
+        # decoding), then a second, small -ss after -i decodes just the
+        # short remaining gap for exact frame accuracy, rather than
+        # decoding the ENTIRE file from frame 0 -- which is what a single
+        # post-input -ss does, and which was the actual reason real
+        # captures were taking 20+ seconds: every trim re-decoded from the
+        # very start of the raw OBS buffer, even when only trimming the
+        # last few seconds off a much longer file. This matters most for
+        # exactly the common case here: trimming near the END of a long
+        # replay buffer, where the "wasted" front portion can be most of
+        # the file.
+        keyframe_before = _find_keyframe_at_or_before(video_path, request.start_sec)
+        residual = request.start_sec - keyframe_before
         cmd = [
             "ffmpeg", "-y",
+            "-ss", f"{keyframe_before}",
             "-i", str(video_path),
-            "-ss", f"{request.start_sec}",
+            "-ss", f"{residual}",
             "-t", f"{duration_arg}",
-            "-c:v", "libx264", "-preset", "medium", "-crf", "18",
+            "-c:v", "libx264", "-preset", request.preset, "-crf", "18",
             "-c:a", "aac", "-b:a", "192k",
             str(tmp_output),
         ]

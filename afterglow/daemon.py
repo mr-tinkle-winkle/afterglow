@@ -15,7 +15,9 @@ time -- letting them race would mean the second trigger's
 GetLastReplayBufferReplay call could plausibly pick up the first trigger's
 saved file. Queuing keeps it simple and correct at the cost of the second
 clip's capture starting a beat later, which is an acceptable tradeoff for
-how this is used.
+how this is used. This serialization is bounded, not unbounded, though --
+see CAPTURE_TIMEOUT_SECONDS below for why a single hung capture can't take
+every future hotkey press down with it.
 """
 from __future__ import annotations
 
@@ -33,6 +35,19 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 logger = logging.getLogger("clipping-daemon")
 
 RELOAD_INTERVAL_SEC = 2.0
+
+# If a single capture takes longer than this, the worker loop stops
+# waiting on it and moves on to any further queued hotkey presses, rather
+# than blocking on it forever. Every capture up to now funnels through one
+# worker thread (see the module docstring for why), which means a single
+# truly-hung trigger_clip() call -- an OBS websocket that never responds,
+# an ffmpeg process that never exits -- would otherwise silently and
+# permanently stop ALL future hotkey presses from doing anything, with no
+# obvious symptom besides "it just stopped working." Generous on purpose:
+# even a slow real capture (large buffer, high resolution) should finish
+# well under this; it's a safety net for genuine hangs, not a normal-case
+# limit.
+CAPTURE_TIMEOUT_SECONDS = 120
 
 
 def _fingerprint(configs: list[ClipConfig]) -> tuple:
@@ -91,13 +106,36 @@ class ClipDaemon:
                 clip_config_id = self._trigger_queue.get(timeout=0.5)
             except queue.Empty:
                 continue
-            try:
-                cfg = clips.get_clip_config(clip_config_id)
-                logger.info(f"Hotkey fired: '{cfg.name}' -- capturing clip...")
-                video = clips.trigger_clip(clip_config_id)
-                logger.info(f"Captured: {video.title} -> {video.path}")
-            except Exception as e:
-                logger.error(f"Failed to capture clip (config id {clip_config_id}): {e}")
+
+            def _run_capture(clip_config_id=clip_config_id):
+                try:
+                    cfg = clips.get_clip_config(clip_config_id)
+                    logger.info(f"Hotkey fired: '{cfg.name}' -- capturing clip...")
+                    video = clips.trigger_clip(clip_config_id)
+                    logger.info(f"Captured: {video.title} -> {video.path}")
+                except Exception as e:
+                    logger.error(f"Failed to capture clip (config id {clip_config_id}): {e}")
+
+            capture_thread = threading.Thread(target=_run_capture, daemon=True)
+            capture_thread.start()
+            capture_thread.join(timeout=CAPTURE_TIMEOUT_SECONDS)
+
+            if capture_thread.is_alive():
+                # It's still running -- let it keep going in the background
+                # (it may yet finish and register its clip normally; killing
+                # it mid-ffmpeg/mid-OBS-call is riskier than just not
+                # waiting on it further) but stop blocking the worker loop
+                # on it, so the next queued hotkey press can be processed.
+                logger.error(
+                    f"Clip capture (config id {clip_config_id}) has been running for "
+                    f"over {CAPTURE_TIMEOUT_SECONDS}s and appears stuck. Moving on to "
+                    f"process any further queued hotkey presses rather than blocking "
+                    f"on it indefinitely -- the stuck capture keeps running in the "
+                    f"background and may still complete on its own. If this keeps "
+                    f"happening, it points to something hanging inside OBS "
+                    f"communication or ffmpeg specifically, and is worth reporting "
+                    f"with these logs."
+                )
 
     # ------------------------------------------------------------ lifecycle
 

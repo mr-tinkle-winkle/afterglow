@@ -18,7 +18,71 @@ Build order, in progress:
 3. YouTube OAuth/upload — after that (the Library's "Upload" action
    currently shows a "not implemented yet" message).
 
-## This delivery: redesigned capture sequencing, per your proposal
+## This delivery: the real performance bug, plus a hang safety net
+
+Your description this time -- one button works (slowly, ~20s), then
+that exact button goes dead, then a *different* button works once and
+also goes dead -- pointed away from a per-capture correctness bug (which
+was already re-checked and held up) and toward the single shared worker
+thread that all captures funnel through getting permanently stuck. Found
+two real, compounding problems and fixed both.
+
+### The actual reason captures were slow: decoding the entire file from frame 0, every time
+
+Frame-perfect mode's `-ss` placement (after `-i`, for accuracy) means
+ffmpeg decodes from the very start of the file up through the target
+point, discarding everything before it. For a short synthetic test clip
+this is barely noticeable -- but I benchmarked it against a more
+realistic 1080p60 file and it took **27.5 seconds** to trim the last 5
+seconds off a 30-second clip. For a real OBS replay buffer (often 60-120+
+seconds, at real gameplay resolution/bitrate), this scales up
+significantly, and gets *worse* the shorter your configured clip length
+is relative to the buffer -- you're decoding almost the entire buffer
+just to keep the last few seconds of it.
+
+Fixed with the standard two-stage technique: a fast input-side seek
+lands on the nearest keyframe at or before the target (cheap, no
+decoding), then a small residual seek decodes just the short remaining
+gap for exact accuracy -- instead of decoding from frame 0 every time.
+Also switched the automatic pipeline's encode preset from `medium` to
+`veryfast` (manual Editor exports, once built, will still default to
+`medium` where quality-per-size matters more than speed). Measured
+directly on the same realistic test file: **27.5s → 11.2s, ~59% faster**,
+with duration still exactly correct. The improvement scales further with
+a longer real buffer relative to a short clip length -- which is exactly
+the common case.
+
+This alone should explain most of the ~20s wait, and likely explains why
+a second hotkey press while the first was still processing looked like
+"nothing happened" -- it just meant it was queued.
+
+### The actual reason things went permanently dead: no timeout on a stuck capture
+
+All captures run through a single serialized worker (intentional --
+avoids two hotkeys racing to talk to OBS's replay buffer at the same
+time), but there was no upper bound on how long the worker would wait for
+one capture before moving to the next. If any single capture ever
+genuinely hangs -- an OBS websocket call that never returns, an ffmpeg
+process that never exits -- every future hotkey press queues up behind
+it and never runs, with no error, no crash, nothing: exactly "it just
+stopped working," for every button, permanently.
+
+Fixed: the worker now gives each capture up to 120 seconds (generous --
+well beyond even a slow real capture) before logging a clear error and
+moving on to the next queued press, rather than waiting forever. Verified
+directly: simulated a capture that hangs indefinitely, confirmed a
+second, different capture queued shortly after still gets processed
+instead of waiting on the first forever.
+
+**Worth knowing about the tradeoff here:** if the timeout does trigger,
+the "only one OBS conversation at a time" guarantee is briefly given up
+in exchange for not permanently bricking hotkeys -- a rare stuck capture
+could in principle overlap with the next one's OBS calls. Given the
+timeout is generous and this only matters in the genuine-hang case (which
+should now be rare with the speed fix above), that's a reasonable trade,
+but flagging it as an intentional decision rather than an oversight.
+
+## Previous delivery: redesigned capture sequencing, per your proposal
 
 Trimming stopped working again after some back-to-back testing and a
 `pkill`/restart, and stayed broken even after a clean daemon restart --

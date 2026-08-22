@@ -260,6 +260,14 @@ def trigger_clip(clip_config_id: int) -> Video:
         # Editor, where a person is choosing a precise custom range rather
         # than relying on "give me the last N seconds."
         frame_perfect=True,
+        # "veryfast" rather than editor.py's "medium" default -- measured
+        # directly: on a realistic 1080p60 test clip, veryfast cut total
+        # trim time roughly in half versus medium, with file size much
+        # closer to medium's efficiency than "ultrafast" (which is faster
+        # still but bloats file size significantly). Speed matters more
+        # here than optimal compression -- this is the automatic "give me
+        # my clip right now" pipeline, not a considered export.
+        preset="veryfast",
     )
     commit_trim(request, has_prior_edit=False, existing_backup=None)
 
