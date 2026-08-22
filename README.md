@@ -18,7 +18,59 @@ Build order, in progress:
 3. YouTube OAuth/upload — after that (the Library's "Upload" action
    currently shows a "not implemented yet" message).
 
-## This delivery: hotkeys work now, but captured clips weren't trimmed
+## This delivery: redesigned capture sequencing, per your proposal
+
+Trimming stopped working again after some back-to-back testing and a
+`pkill`/restart, and stayed broken even after a clean daemon restart --
+which pointed away from stale process state and toward something in the
+pipeline's own sequencing/robustness. Reproducing OBS's actual internal
+behavior (its replay buffer is a concatenation of ring-buffer segments,
+which can leave discontinuous timestamps) didn't reveal a correctness bug
+in the existing frame-perfect trim -- but the redesign you proposed
+directly addresses the real gaps regardless: not waiting for OBS's own
+post-save bookkeeping to finish, not verifying the trim actually did what
+it was supposed to, and not cleaning up OBS's own leftover files.
+
+Implemented exactly as you described:
+
+1. **Save order changed.** Sound now plays immediately once OBS confirms
+   the raw file exists and is done being written -- before the slower
+   trim/re-encode step, not buried after it. Verified directly: the sound
+   callback now fires measurably before `trigger_clip()` returns, not at
+   the very end.
+2. **Added a settle delay** (2s default, `POST_SAVE_SETTLE_SECONDS` in
+   `clips.py`) after the raw file looks stable, before starting the trim
+   -- a defensive buffer for OBS still finishing internal work (e.g. its
+   own "Automatically Remux to mp4" setting, which runs as a separate step
+   after the replay file itself is written and can produce a second file
+   we didn't ask for).
+3. **Added a duration sanity check.** After trimming, the actual duration
+   is now compared against what was requested (within 1.5s tolerance) --
+   if it's off, `trigger_clip()` now raises a clear `ClipError` and
+   *leaves the raw OBS file in place for inspection* instead of silently
+   moving a wrong-length clip into your library. This is the single
+   biggest change: "clipped but didn't trim" can no longer happen
+   silently, regardless of what causes a bad trim in the future --
+   verified directly by forcing a no-op trim and confirming it now raises
+   instead of passing through.
+4. **Cleans up OBS's own leftover files.** If OBS's "Automatically Remux
+   to mp4" setting produces a sibling file (e.g. reports the `.mkv` but
+   also independently creates a same-named `.mp4`), that sibling is now
+   deleted once we've extracted what we need -- verified directly with a
+   simulated sibling remux file, confirmed removed after a successful
+   capture.
+5. **Filenames are now just the timestamp** (e.g. `2026-08-22_01-21-01.mkv`),
+   not prefixed with the clip config's name -- the config's name still
+   appears in the video's *title* in the library, this only changes what
+   the file itself is called on disk, matching what you asked for.
+
+All five verified together in one integration test: a fake OBS producing
+both a raw file and a simulated remux sibling, confirming the correct
+call order, correct final filename/title, correct duration, and both the
+original file *and* the sibling fully cleaned up from OBS's folder
+afterward.
+
+## Previous delivery: hotkeys work now, but captured clips weren't trimmed
 
 Your `debug-listen` run confirmed key detection, matching, and the
 capture pipeline all work correctly now. "It clipped but didn't trim" was

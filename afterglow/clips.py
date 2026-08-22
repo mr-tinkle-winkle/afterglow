@@ -2,20 +2,31 @@
 Clip options: named presets of (length_seconds, sound, hotkey), plus the
 pipeline that fires when a hotkey is pressed:
 
-    1. tell OBS to save its replay buffer -> get the raw saved file
-    2. trim the raw file down to this clip option's configured length
-       (always fast/keyframe mode -- trigger-time trims are not the
-       "frame perfect accuracy" opt-in, that's only in the Editor)
-    3. move the trimmed file into the clips library folder
-    4. play the configured feedback sound
-    5. register it in the DB (title defaults to clip config name + timestamp,
-       so it shows up immediately in the library and can be renamed later)
+    1. tell OBS to save its replay buffer -> wait for the raw file to
+       actually exist and finish being written
+    2. play the configured feedback sound (immediate confirmation that the
+       raw capture succeeded, before the slower trim/re-encode step)
+    3. wait a short settle period -- OBS can still be doing internal
+       bookkeeping (e.g. its own "automatically remux to mp4" pass) even
+       after the raw file's size has stabilized
+    4. trim the raw file down to this clip option's configured length
+       (always frame-perfect/re-encode -- see trigger_clip()'s docstring
+       for why fast/keyframe mode is unsafe here)
+    5. verify the trimmed duration actually matches what was requested,
+       loudly, rather than silently accepting a wrong-length result
+    6. move the trimmed file into the clips library folder, named by
+       timestamp alone (the clip config's name still goes in the title,
+       just not the filename)
+    7. delete the original raw file, and any sibling file OBS's own
+       "automatically remux to mp4" setting may have produced alongside it
+    8. register the result in the library DB
 """
 from __future__ import annotations
 
 import shutil
 import sqlite3
 import subprocess
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -25,6 +36,21 @@ from . import config as config_module
 from .editor import TrimRequest, commit_trim, probe_duration, EditorError
 from .obs_client import OBSClient, OBSError
 from .library import add_video, Video
+
+# How long to wait after the raw replay file's size has stabilized before
+# starting the trim. This is a defensive buffer for OBS's own internal
+# post-save work (e.g. "Automatically Remux to mp4" in Advanced output
+# settings runs as a separate step after the replay buffer file itself is
+# written) that can still be in flight even once the file we're watching
+# looks done.
+POST_SAVE_SETTLE_SECONDS = 2.0
+
+# How far off the actual trimmed duration is allowed to be from the
+# requested length before we treat it as a real failure rather than normal
+# encoding rounding. Generous on purpose -- this is a last-resort sanity
+# check, not a precision requirement (frame_perfect mode is already what
+# gets us precision; this just catches "something went very wrong").
+DURATION_TOLERANCE_SECONDS = 1.5
 
 
 class ClipError(RuntimeError):
@@ -167,6 +193,30 @@ def play_sound(sound_path: str | None) -> None:
     )
 
 
+# ---------------------------------------------------------------- cleanup helpers
+
+def _cleanup_sibling_remux(raw_path: Path) -> None:
+    """
+    OBS's "Automatically Remux to mp4" setting (Settings -> Advanced ->
+    Recording) can produce a second file alongside the one it reports via
+    the websocket API -- e.g. reports the .mkv, but also independently
+    creates a same-named .mp4 (or vice versa). We've already extracted
+    what we need from whichever file OBS told us about, so any leftover
+    sibling in *its* recording folder is pure clutter. Best-effort: if
+    this fails for any reason, we've still completed the actual capture
+    successfully, so don't let cleanup errors escalate into a failure.
+    """
+    for sibling_ext in (".mp4", ".mkv"):
+        if sibling_ext == raw_path.suffix:
+            continue
+        sibling = raw_path.with_suffix(sibling_ext)
+        if sibling.exists():
+            try:
+                sibling.unlink()
+            except OSError as e:
+                print(f"Warning: could not remove leftover OBS remux file {sibling}: {e}")
+
+
 # ---------------------------------------------------------------- trigger pipeline
 
 def trigger_clip(clip_config_id: int) -> Video:
@@ -177,10 +227,23 @@ def trigger_clip(clip_config_id: int) -> Video:
     settings = config_module.load()
 
     with OBSClient(settings.obs) as obs_client:
-        raw_path = obs_client.save_replay_buffer()
+        raw_path = obs_client.save_replay_buffer()  # already waits for exists + size-stable
+
+    # Confirmation the raw capture is done -- play the feedback sound now,
+    # immediately, rather than after the slower trim/re-encode step below.
+    sound_to_play = clip_cfg.sound_path or settings.default_sound_path
+    try:
+        play_sound(sound_to_play)
+    except Exception as e:
+        print(f"Warning: failed to play clip sound (clip capture still succeeded): {e}")
+
+    # Extra settle time in case OBS is still doing internal post-save work
+    # (e.g. auto-remux) even though the raw file itself looks stable.
+    time.sleep(POST_SAVE_SETTLE_SECONDS)
 
     raw_duration = probe_duration(raw_path)
     trim_start = max(0.0, raw_duration - clip_cfg.length_seconds)
+    requested_duration = raw_duration - trim_start
 
     request = TrimRequest(
         video_path=raw_path, start_sec=trim_start, end_sec=raw_duration,
@@ -193,16 +256,25 @@ def trigger_clip(clip_config_id: int) -> Video:
         # keyframe at-or-before the request -- if that's the file's only
         # keyframe, at time 0, you get the ENTIRE raw buffer back with no
         # trim applied at all, regardless of the requested clip length.
-        # This is exactly what "it clipped but didn't trim" was: not a
-        # crash, just silently wrong output. The whole point of automatic
-        # capture is hitting the requested length reliably, so correctness
-        # here matters more than the encode-time cost. frame_perfect
-        # remains an explicit opt-in only in the (still-unbuilt) manual
+        # frame_perfect remains an explicit opt-in only in the manual
         # Editor, where a person is choosing a precise custom range rather
         # than relying on "give me the last N seconds."
         frame_perfect=True,
     )
     commit_trim(request, has_prior_edit=False, existing_backup=None)
+
+    # Verify the trim actually produced roughly the requested length,
+    # loudly, rather than trusting ffmpeg's exit code alone. This is what
+    # would have caught "clipped but didn't trim" as an immediate error
+    # instead of a silent wrong-length file reaching the library.
+    actual_duration = probe_duration(raw_path)
+    if abs(actual_duration - requested_duration) > DURATION_TOLERANCE_SECONDS:
+        raise ClipError(
+            f"Trim produced an unexpected duration: got {actual_duration:.2f}s, "
+            f"expected ~{requested_duration:.2f}s. The raw OBS file has been left "
+            f"in place at {raw_path} for inspection rather than being moved/deleted."
+        )
+
     # commit_trim leaves a ".orig" backup next to raw_path we don't need here
     # (this is a fresh OBS export, not a library video with undo semantics) --
     # clean it up.
@@ -213,20 +285,17 @@ def trigger_clip(clip_config_id: int) -> Video:
     clips_dir = settings.clips_path()
     clips_dir.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    final_name = f"{clip_cfg.name}_{timestamp}{raw_path.suffix}"
+    # Filename is just the timestamp now (not prefixed with the clip
+    # config's name) -- the config's name still shows up in the title
+    # below, this only changes what the file on disk is called.
+    final_name = f"{timestamp}{raw_path.suffix}"
     final_path = clips_dir / final_name
-    shutil.move(str(raw_path), str(final_path))
 
-    sound_to_play = clip_cfg.sound_path or settings.default_sound_path
-    try:
-        play_sound(sound_to_play)
-    except Exception as e:
-        # Sound is a nice-to-have feedback cue, not a reason to lose an
-        # otherwise-successful capture. Log and keep going -- this used to
-        # be unguarded, and a missing audio player would silently prevent
-        # the clip from ever reaching add_video() below even though the
-        # file had already been moved into the clips folder.
-        print(f"Warning: failed to play clip sound (clip capture still succeeded): {e}")
+    # Clean up any OBS auto-remux sibling BEFORE moving our file, while
+    # raw_path (and therefore its sibling-detection logic) still points at
+    # OBS's original recording folder.
+    _cleanup_sibling_remux(raw_path)
+    shutil.move(str(raw_path), str(final_path))
 
     video = add_video(
         final_path,
