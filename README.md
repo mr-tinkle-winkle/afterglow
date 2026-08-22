@@ -18,7 +18,52 @@ Build order, in progress:
 3. YouTube OAuth/upload — after that (the Library's "Upload" action
    currently shows a "not implemented yet" message).
 
-## This delivery: the real performance bug, plus a hang safety net
+## This delivery: ruled out one theory, found no smoking gun, added real visibility instead
+
+Still no sound, no trim, clip lands in OBS's own Replay folder (not
+afterglow's Clips folder) -- confirmed via your answers that this isn't
+OBS's own native hotkey duplicating the save (it's only bound in
+afterglow), which means our own `save_replay_buffer()` is failing on
+every single attempt, silently, before ever reaching the sound step.
+
+I had a specific, testable hypothesis: that I'd used the wrong attribute
+name (`saved_replay_path`) for reading OBS's websocket response, which
+would fail silently every time (Python's `getattr(..., default)` doesn't
+raise on a wrong name, it just returns the default) regardless of OBS
+successfully doing its own save. **I checked this directly** by pulling
+apart the actual installed `obsws-python` library's response-conversion
+code and confirming `savedReplayPath` → `saved_replay_path` is exactly
+right. Ruling this out is worth stating plainly rather than silently
+moving on -- it means the bug is genuinely somewhere else, not this.
+
+Since I don't have your actual error message to work from this round (no
+fresh logs were shared), I'm not going to guess at a specific fix blind
+again. Instead:
+
+- **Much more generous timeouts.** The wait for OBS to report the saved
+  path went from 5s → 20s; the wait for the file to exist and stabilize
+  on disk went from 15s → 30s. If a real, longer/higher-resolution replay
+  buffer genuinely takes OBS longer to process than my conservative
+  synthetic-test-based estimates, this alone may fix it.
+- **Real progress logging**, not just failure messages. `save_replay_buffer()`
+  now logs each stage as it happens: the save request being sent, each
+  polling attempt for OBS to report a path (roughly every 2s while
+  waiting), the path once reported, and the file-stabilization wait.
+  Verified this logging actually fires correctly against the real method
+  body (not a stubbed-out version). **Also fixed a gap that would have
+  made this pointless for direct diagnosis:** `afterglow-cli` never
+  configured logging output at all, so these new messages would have been
+  silent when running `afterglow-cli trigger --name X` -- the exact
+  command I'd suggest for isolating this. Fixed.
+
+**What I need from you now:** run `afterglow-cli trigger --name <your
+clip config>` directly (not through the daemon -- this shows the logging
+immediately in your terminal rather than needing `journalctl`), and send
+me everything it prints. With the logging above, this should show
+exactly which stage it's stuck or failing on, rather than me continuing
+to guess between several plausible-but-unconfirmed causes.
+
+
 
 Your description this time -- one button works (slowly, ~20s), then
 that exact button goes dead, then a *different* button works once and

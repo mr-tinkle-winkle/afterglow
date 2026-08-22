@@ -32,7 +32,16 @@ Examples:
 from __future__ import annotations
 
 import argparse
+import logging
 import sys
+
+# Configured here (not just in daemon.py) so `afterglow-cli trigger` shows
+# the same live progress logging (OBS save/wait/stabilize steps) that the
+# daemon shows -- this is the direct diagnostic path for "what exactly is
+# OBS doing right now", and without this, obs_client.py's logger.info()
+# calls would be silently dropped (no handler configured) when running
+# through the CLI rather than the daemon.
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
 from . import config as config_module
 from . import db
