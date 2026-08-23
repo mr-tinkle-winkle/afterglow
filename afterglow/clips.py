@@ -52,6 +52,14 @@ POST_SAVE_SETTLE_SECONDS = 2.0
 # gets us precision; this just catches "something went very wrong").
 DURATION_TOLERANCE_SECONDS = 1.5
 
+# How close raw_duration needs to be to the requested clip length before
+# we skip trimming entirely and just move the raw capture into place.
+# This covers both "exactly equal" and "raw buffer is actually shorter
+# than the requested length" (trim_start would be 0 either way -- there's
+# nothing to cut). Re-encoding a file that's already the right length (or
+# shorter) wastes time and a generation of quality for zero benefit.
+SKIP_TRIM_TOLERANCE_SECONDS = 0.2
+
 
 class ClipError(RuntimeError):
     pass
@@ -221,50 +229,63 @@ def trigger_clip(clip_config_id: int) -> Video:
     trim_start = max(0.0, raw_duration - clip_cfg.length_seconds)
     requested_duration = raw_duration - trim_start
 
-    request = TrimRequest(
-        video_path=raw_path, start_sec=trim_start, end_sec=raw_duration,
-        # Trigger-time trims must always be frame-perfect (full re-encode),
-        # NOT fast/keyframe-seek mode -- confirmed by direct reproduction:
-        # OBS's replay buffer output can have a keyframe interval larger
-        # than the requested clip length (sometimes only a single keyframe
-        # near the very start of the saved segment, depending on encoder
-        # settings). Fast mode snaps the start time back to the nearest
-        # keyframe at-or-before the request -- if that's the file's only
-        # keyframe, at time 0, you get the ENTIRE raw buffer back with no
-        # trim applied at all, regardless of the requested clip length.
-        # frame_perfect remains an explicit opt-in only in the manual
-        # Editor, where a person is choosing a precise custom range rather
-        # than relying on "give me the last N seconds."
-        frame_perfect=True,
-        # "veryfast" rather than editor.py's "medium" default -- measured
-        # directly: on a realistic 1080p60 test clip, veryfast cut total
-        # trim time roughly in half versus medium, with file size much
-        # closer to medium's efficiency than "ultrafast" (which is faster
-        # still but bloats file size significantly). Speed matters more
-        # here than optimal compression -- this is the automatic "give me
-        # my clip right now" pipeline, not a considered export.
-        preset="veryfast",
-    )
-    commit_trim(request, has_prior_edit=False, existing_backup=None)
-
-    # Verify the trim actually produced roughly the requested length,
-    # loudly, rather than trusting ffmpeg's exit code alone. This is what
-    # would have caught "clipped but didn't trim" as an immediate error
-    # instead of a silent wrong-length file reaching the library.
-    actual_duration = probe_duration(raw_path)
-    if abs(actual_duration - requested_duration) > DURATION_TOLERANCE_SECONDS:
-        raise ClipError(
-            f"Trim produced an unexpected duration: got {actual_duration:.2f}s, "
-            f"expected ~{requested_duration:.2f}s. The raw OBS file has been left "
-            f"in place at {raw_path} for inspection rather than being moved/deleted."
+    if trim_start <= SKIP_TRIM_TOLERANCE_SECONDS:
+        # The raw buffer is already at or under the requested clip length
+        # -- there's nothing meaningful to cut. Skip the re-encode
+        # entirely and just use the raw capture as-is, renamed into place
+        # below like any other result. Saves the encode time/quality cost
+        # for a trim that would have been a no-op anyway.
+        print(
+            f"Raw capture ({raw_duration:.2f}s) is already at or under the "
+            f"requested length ({clip_cfg.length_seconds}s) -- skipping "
+            f"trim, using it as-is."
         )
+        actual_duration = raw_duration
+    else:
+        request = TrimRequest(
+            video_path=raw_path, start_sec=trim_start, end_sec=raw_duration,
+            # Trigger-time trims must always be frame-perfect (full re-encode),
+            # NOT fast/keyframe-seek mode -- confirmed by direct reproduction:
+            # OBS's replay buffer output can have a keyframe interval larger
+            # than the requested clip length (sometimes only a single keyframe
+            # near the very start of the saved segment, depending on encoder
+            # settings). Fast mode snaps the start time back to the nearest
+            # keyframe at-or-before the request -- if that's the file's only
+            # keyframe, at time 0, you get the ENTIRE raw buffer back with no
+            # trim applied at all, regardless of the requested clip length.
+            # frame_perfect remains an explicit opt-in only in the manual
+            # Editor, where a person is choosing a precise custom range rather
+            # than relying on "give me the last N seconds."
+            frame_perfect=True,
+            # "veryfast" rather than editor.py's "medium" default -- measured
+            # directly: on a realistic 1080p60 test clip, veryfast cut total
+            # trim time roughly in half versus medium, with file size much
+            # closer to medium's efficiency than "ultrafast" (which is faster
+            # still but bloats file size significantly). Speed matters more
+            # here than optimal compression -- this is the automatic "give me
+            # my clip right now" pipeline, not a considered export.
+            preset="veryfast",
+        )
+        commit_trim(request, has_prior_edit=False, existing_backup=None)
 
-    # commit_trim leaves a ".orig" backup next to raw_path we don't need here
-    # (this is a fresh OBS export, not a library video with undo semantics) --
-    # clean it up.
-    stray_backup = raw_path.with_name(raw_path.stem + ".orig" + raw_path.suffix)
-    if stray_backup.exists():
-        stray_backup.unlink()
+        # Verify the trim actually produced roughly the requested length,
+        # loudly, rather than trusting ffmpeg's exit code alone. This is what
+        # would have caught "clipped but didn't trim" as an immediate error
+        # instead of a silent wrong-length file reaching the library.
+        actual_duration = probe_duration(raw_path)
+        if abs(actual_duration - requested_duration) > DURATION_TOLERANCE_SECONDS:
+            raise ClipError(
+                f"Trim produced an unexpected duration: got {actual_duration:.2f}s, "
+                f"expected ~{requested_duration:.2f}s. The raw OBS file has been left "
+                f"in place at {raw_path} for inspection rather than being moved/deleted."
+            )
+
+        # commit_trim leaves a ".orig" backup next to raw_path we don't need
+        # here (this is a fresh OBS export, not a library video with undo
+        # semantics) -- clean it up.
+        stray_backup = raw_path.with_name(raw_path.stem + ".orig" + raw_path.suffix)
+        if stray_backup.exists():
+            stray_backup.unlink()
 
     clips_dir = settings.clips_path()
     clips_dir.mkdir(parents=True, exist_ok=True)

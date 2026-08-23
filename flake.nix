@@ -33,6 +33,24 @@
           doCheck = false;
           pythonImportsCheck = [ "obsws_python" ];
         };
+
+        # Also not in nixpkgs as far as I could confirm -- same treatment.
+        # Pinned against 1.0.8; single-module package (mpv.py), no deps of
+        # its own beyond libmpv itself at runtime (provided separately via
+        # mpv-unwrapped in buildInputs below, not through this overlay).
+        python-mpv = pyFinal.buildPythonPackage rec {
+          pname = "python-mpv";
+          version = "1.0.8";
+          format = "pyproject";
+          src = pyFinal.fetchPypi {
+            pname = "python_mpv";
+            inherit version;
+            hash = "sha256-AX+jWdoFnIMalMQZCDSRkD5tL3yBuYQcM8GWyr9LP+M=";
+          };
+          nativeBuildInputs = [ pyFinal.setuptools ];
+          doCheck = false;
+          pythonImportsCheck = [ "mpv" ];
+        };
       };
 
       mkPython = pkgs: pkgs.python3.override {
@@ -60,10 +78,16 @@
           # explicitly called out in the error you hit -- Qt >=6.5 requires
           # it for the xcb plugin) are actually present in the closure, not
           # just the plugin .so files themselves being "found" by path.
+          # mpv-unwrapped provides libmpv.so for python-mpv's ctypes-based
+          # FFI (the render-API video widget dlopens it at runtime, not at
+          # Python import time, so this needs to be reachable via
+          # LD_LIBRARY_PATH -- handled in postFixup below, not just listed
+          # as a build dependency).
           buildInputs = [
             pkgs.qt6.qtbase
             pkgs.qt6.qtwayland
             pkgs.xcb-util-cursor
+            pkgs.mpv-unwrapped
           ];
 
           propagatedBuildInputs = with python.pkgs; [
@@ -71,6 +95,8 @@
             tomli-w
             pyside6
             evdev
+            python-mpv
+            pyopengl
           ];
 
           # ffmpeg and paplay (pipewire) are invoked as subprocesses, not
@@ -117,7 +143,8 @@
             for prog in afterglow afterglow-daemon afterglow-cli; do
               wrapQtApp "$out/bin/$prog"
               wrapProgram "$out/bin/$prog" \
-                --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.ffmpeg pkgs.pipewire pkgs.pulseaudio ]}
+                --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.ffmpeg pkgs.pipewire pkgs.pulseaudio ]} \
+                --prefix LD_LIBRARY_PATH : ${pkgs.lib.makeLibraryPath [ pkgs.mpv-unwrapped ]}
             done
           '';
 
@@ -155,19 +182,23 @@
                 ps.tomli-w
                 ps.pyside6
                 ps.evdev
+                ps.python-mpv
+                ps.pyopengl
                 ps.setuptools
               ]))
               pkgs.ffmpeg
               pkgs.pipewire
               pkgs.qt6.qtbase
               pkgs.qt6.qtwayland
+              pkgs.mpv-unwrapped
             ];
             # Same runtime-linking issue as the packaged app -- a plain
             # `nix develop` shell doesn't get automatic Qt wrapping the
             # way wrapQtAppsHook gives the built package, so the plugin
-            # paths need setting by hand here too.
+            # paths need setting by hand here too. Same for libmpv.
             shellHook = ''
               export QT_PLUGIN_PATH="${pkgs.qt6.qtbase}/lib/qt-6/plugins:${pkgs.qt6.qtwayland}/lib/qt-6/plugins''${QT_PLUGIN_PATH:+:$QT_PLUGIN_PATH}"
+              export LD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath [ pkgs.mpv-unwrapped ]}''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
               echo "afterglow dev shell (via flake). Try: python -m afterglow.cli settings show"
             '';
           };

@@ -8,6 +8,8 @@ dependencies = [
     "tomli_w",
     "PySide6",
     "evdev",
+    "python-mpv",
+    "PyOpenGL",
 ]
 
 [project.scripts]

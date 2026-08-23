@@ -10,7 +10,7 @@ from PySide6.QtCore import Qt, Signal, QSize
 from PySide6.QtGui import QPixmap, QPainter, QColor
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QMenu, QMessageBox, QLineEdit,
-    QCompleter, QPushButton, QDialog, QHBoxLayout,
+    QCompleter, QPushButton, QDialog, QHBoxLayout, QInputDialog,
 )
 
 from .. import library, thumbnails
@@ -67,6 +67,7 @@ class VideoCard(QWidget):
     deleted = Signal(int)             # video_id
     upload_requested = Signal(int)    # video_id
     tags_changed = Signal()           # tag added/removed -- parent should refresh filter list
+    renamed = Signal()                # title changed -- parent should refresh (search may no longer match)
 
     def __init__(self, video: "library.Video", parent=None):
         super().__init__(parent)
@@ -112,6 +113,7 @@ class VideoCard(QWidget):
     def _show_context_menu(self, pos) -> None:
         menu = QMenu(self)
         edit_action = menu.addAction("Edit")
+        rename_action = menu.addAction("Rename")
         upload_action = menu.addAction("Upload")
         add_filter_action = menu.addAction("Add Filter")
         delete_action = menu.addAction("Delete")
@@ -119,12 +121,27 @@ class VideoCard(QWidget):
         chosen = menu.exec(self.mapToGlobal(pos))
         if chosen == edit_action:
             self.edit_requested.emit(self.video_id)
+        elif chosen == rename_action:
+            self._rename()
         elif chosen == upload_action:
             self.upload_requested.emit(self.video_id)
         elif chosen == add_filter_action:
             self._add_filter()
         elif chosen == delete_action:
             self._confirm_delete()
+
+    def _rename(self) -> None:
+        new_title, ok = QInputDialog.getText(
+            self, "Rename Video", "Title:", QLineEdit.Normal, self._video.title
+        )
+        if not ok:
+            return
+        new_title = new_title.strip()
+        if not new_title or new_title == self._video.title:
+            return
+        self._video = library.rename_video(self.video_id, title=new_title)
+        self.title_label.setText(self._video.title)
+        self.renamed.emit()
 
     def _add_filter(self) -> None:
         dialog = AddTagDialog(self)

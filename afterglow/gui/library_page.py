@@ -114,6 +114,7 @@ class _VideoGridTab(QWidget):
             card.edit_requested.connect(self.edit_requested.emit)
             card.deleted.connect(lambda _vid: self.refresh())
             card.tags_changed.connect(self.refresh)
+            card.renamed.connect(self.refresh)
             card.upload_requested.connect(self._handle_upload_request)
             row, col = divmod(index, GRID_COLUMNS)
             self.grid_layout.addWidget(card, row, col)
@@ -133,6 +134,11 @@ class LibraryPage(QWidget):
         super().__init__(parent)
         layout = QVBoxLayout(self)
 
+        # Prune before the tabs build their initial grids, so the very
+        # first render already reflects reality rather than showing stale
+        # entries until the next refresh.
+        library.prune_missing_videos()
+
         self.tabs = QTabWidget()
         self.local_tab = _VideoGridTab(uploaded_only=False, local_only=True)
         self.uploaded_tab = _VideoGridTab(uploaded_only=True, local_only=False)
@@ -145,6 +151,12 @@ class LibraryPage(QWidget):
 
     def refresh(self) -> None:
         """Called by MainWindow whenever the Library page becomes visible,
-        so edits/deletes made from the Editor page are reflected."""
+        so edits/deletes made from the Editor page are reflected, and any
+        clip files removed outside the app (deleted manually, etc.) drop
+        out of the list instead of lingering as broken entries forever."""
+        removed_ids = library.prune_missing_videos()
+        if removed_ids:
+            print(f"Removed {len(removed_ids)} library entr{'y' if len(removed_ids) == 1 else 'ies'} "
+                  f"whose file no longer exists on disk.")
         self.local_tab.refresh()
         self.uploaded_tab.refresh()

@@ -11,35 +11,62 @@ no extra save/restore logic needed. This is why load_video() below is the
 ONLY place state changes -- there's no "on page shown, reload state" path,
 because there's nothing to reload from; it never went away.
 
-The actual Medal-style trim UI (libmpv preview, drag handles, audio graph
-with per-segment volume/mute/trim/reposition) is the next build phase and
-isn't implemented yet -- this page currently shows which video is loaded
-and basic info about it, as the correctly-wired shell that phase will be
-built into.
+This delivery adds actual video playback (play/pause, seek slider, time
+display) via MpvVideoWidget -- previously this page only showed a static
+thumbnail. The Medal-style trim UI (drag handles for start/end, live
+scrub-while-dragging, the audio graph editor) is still the next build
+phase; this is "you can now watch the video," not yet "you can now trim
+it visually."
 """
 from __future__ import annotations
 
-from pathlib import Path
-
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QPixmap
-from PySide6.QtWidgets import QWidget, QVBoxLayout, QLabel, QHBoxLayout, QPushButton
+from PySide6.QtWidgets import (
+    QWidget, QVBoxLayout, QLabel, QHBoxLayout, QPushButton, QSlider,
+)
 
-from .. import library, thumbnails
+from .. import library
+from .mpv_widget import MpvVideoWidget
+
+
+def _format_time(seconds: float) -> str:
+    seconds = max(0, int(seconds))
+    minutes, secs = divmod(seconds, 60)
+    return f"{minutes}:{secs:02d}"
 
 
 class EditorPage(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.current_video_id: int | None = None
+        self._duration: float = 0.0
+        self._slider_being_dragged = False
 
         layout = QVBoxLayout(self)
 
-        self.preview_label = QLabel()
-        self.preview_label.setAlignment(Qt.AlignCenter)
-        self.preview_label.setMinimumHeight(300)
-        self.preview_label.setStyleSheet("background: #1a1a1a;")
-        layout.addWidget(self.preview_label, stretch=1)
+        self.video_widget = MpvVideoWidget()
+        layout.addWidget(self.video_widget, stretch=1)
+        self.video_widget.position_changed.connect(self._on_position_changed)
+        self.video_widget.duration_known.connect(self._on_duration_known)
+        self.video_widget.playback_ended.connect(self._on_playback_ended)
+
+        # ---- transport controls ----
+        transport_row = QHBoxLayout()
+        self.play_pause_btn = QPushButton("Play")
+        self.play_pause_btn.setEnabled(False)
+        self.play_pause_btn.clicked.connect(self._toggle_play_pause)
+        transport_row.addWidget(self.play_pause_btn)
+
+        self.time_label = QLabel("0:00 / 0:00")
+        transport_row.addWidget(self.time_label)
+
+        self.seek_slider = QSlider(Qt.Horizontal)
+        self.seek_slider.setEnabled(False)
+        self.seek_slider.setRange(0, 1000)  # fixed resolution; mapped to actual duration in _on_slider_*
+        self.seek_slider.sliderPressed.connect(lambda: setattr(self, "_slider_being_dragged", True))
+        self.seek_slider.sliderReleased.connect(self._on_slider_released)
+        transport_row.addWidget(self.seek_slider, stretch=1)
+        layout.addLayout(transport_row)
 
         self.info_label = QLabel("No video selected. Double-click a clip in the Library, "
                                   "or right-click it and choose Edit.")
@@ -47,15 +74,13 @@ class EditorPage(QWidget):
         self.info_label.setWordWrap(True)
         layout.addWidget(self.info_label)
 
-        coming_soon_row = QHBoxLayout()
         coming_soon_label = QLabel(
-            "Trim controls, live preview scrubbing, and the audio graph editor "
-            "are coming in the next build phase."
+            "Trim handles, live scrub-while-dragging, and the audio graph "
+            "editor are coming in the next build phase."
         )
         coming_soon_label.setStyleSheet("color: gray;")
         coming_soon_label.setAlignment(Qt.AlignCenter)
-        coming_soon_row.addWidget(coming_soon_label)
-        layout.addLayout(coming_soon_row)
+        layout.addWidget(coming_soon_label)
 
         button_row = QHBoxLayout()
         self.undo_btn = QPushButton("Undo Last Edit")
@@ -64,36 +89,69 @@ class EditorPage(QWidget):
         button_row.addWidget(self.undo_btn)
         layout.addLayout(button_row)
 
+    # ------------------------------------------------------------ loading
+
     def load_video(self, video_id: int) -> None:
         self.current_video_id = video_id
+        self._duration = 0.0
         self._refresh_display()
 
     def _refresh_display(self) -> None:
         if self.current_video_id is None:
-            self.preview_label.clear()
-            self.preview_label.setText("")
             self.info_label.setText(
                 "No video selected. Double-click a clip in the Library, "
                 "or right-click it and choose Edit."
             )
             self.undo_btn.setEnabled(False)
+            self.play_pause_btn.setEnabled(False)
+            self.seek_slider.setEnabled(False)
             return
 
         video = library.get_video(self.current_video_id)
-        thumb_path = thumbnails.get_thumbnail(video.id, Path(video.path))
-        if thumb_path:
-            pixmap = QPixmap(str(thumb_path))
-            self.preview_label.setPixmap(
-                pixmap.scaled(640, 360, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-            )
-        else:
-            self.preview_label.setText("(no preview available)")
+        self.video_widget.load(video.path)
+        self.play_pause_btn.setEnabled(True)
+        self.play_pause_btn.setText("Play")
+        self.seek_slider.setEnabled(True)
+        self.seek_slider.setValue(0)
 
         self.info_label.setText(
-            f"<b>{video.title}</b><br>{video.duration_sec:.1f}s"
+            f"<b>{video.title}</b>"
             f"{' &middot; ' + ', '.join(video.tags) if video.tags else ''}"
         )
         self.undo_btn.setEnabled(video.has_edit)
+
+    # ------------------------------------------------------------ transport
+
+    def _toggle_play_pause(self) -> None:
+        if self.video_widget.is_paused:
+            self.video_widget.play()
+            self.play_pause_btn.setText("Pause")
+        else:
+            self.video_widget.pause()
+            self.play_pause_btn.setText("Play")
+
+    def _on_position_changed(self, position: float) -> None:
+        if not self._slider_being_dragged and self._duration > 0:
+            slider_value = int((position / self._duration) * self.seek_slider.maximum())
+            self.seek_slider.blockSignals(True)
+            self.seek_slider.setValue(slider_value)
+            self.seek_slider.blockSignals(False)
+        self.time_label.setText(f"{_format_time(position)} / {_format_time(self._duration)}")
+
+    def _on_duration_known(self, duration: float) -> None:
+        self._duration = duration
+        self.time_label.setText(f"0:00 / {_format_time(duration)}")
+
+    def _on_slider_released(self) -> None:
+        self._slider_being_dragged = False
+        if self._duration > 0:
+            fraction = self.seek_slider.value() / self.seek_slider.maximum()
+            self.video_widget.seek(fraction * self._duration)
+
+    def _on_playback_ended(self) -> None:
+        self.play_pause_btn.setText("Play")
+
+    # ------------------------------------------------------------ undo
 
     def _undo(self) -> None:
         if self.current_video_id is not None:

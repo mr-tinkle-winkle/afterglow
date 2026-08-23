@@ -9,16 +9,96 @@ system flake.
 
 Build order, in progress:
 
-1. **Settings page + OBS-backed clip capture — done.**
+1. **Settings page + OBS-backed clip capture — done and confirmed working
+   end-to-end on your machine.**
 2. **Library page (Local + Uploaded tabs, search, tag filters, thumbnail
-   grid, right-click Edit/Upload/Delete/Add Filter) — done.**
-   **Editor page shell with cross-page persistent state — done.** The
-   actual Medal-style trim UI (libmpv live preview, audio graph editor)
-   is still next.
+   grid, right-click Edit/Upload/Delete/Add Filter/Rename, auto-pruning
+   of missing files) — done.** **Editor page with real video playback
+   (play/pause, seek, time display) and persistent cross-page state —
+   done.** The Medal-style trim UI (drag handles, live scrub-while-
+   dragging, audio graph editor) is still next.
 3. YouTube OAuth/upload — after that (the Library's "Upload" action
    currently shows a "not implemented yet" message).
 
-## This delivery: the actual root cause, and a full redesign of how we find the captured file
+## This delivery
+
+### Skip-trim redundancy check (as requested)
+
+`trigger_clip()` now checks whether the raw OBS capture is already at or
+under the requested clip length before trimming at all -- if so, it skips
+the re-encode entirely and just renames/moves the raw file into place.
+Re-encoding a file that's already the right length (or shorter) was pure
+waste: slower, and a lossy re-encode generation for zero benefit. Verified
+directly: a buffer shorter than the requested length now skips the trim
+path completely (confirmed via logging and that no backup/temp files are
+created), while a buffer longer than requested still goes through the
+normal trim path correctly.
+
+### Library: stale entries now get pruned, not just added
+
+Added `library.prune_missing_videos()`, which removes any library entry
+whose underlying file no longer exists on disk -- called automatically
+whenever the Library page loads or is navigated back to. Verified with a
+video added, then its file deleted outside the app, confirming the DB
+entry (and its tags) disappear on the next refresh while an untouched
+video is unaffected.
+
+### Library: Rename added to the right-click menu
+
+Straightforward addition -- but building it surfaced a real, separate bug
+worth calling out: **`library.rename_video()` was silently returning the
+OLD title even though the database itself was correctly updated.** Root
+cause: it opened a fresh database connection to read back the row it had
+just written, before the connection that made the write had committed --
+so the fresh connection couldn't see it yet (SQLite connections don't see
+each other's uncommitted writes, only their own). Fixed by reading the
+updated row back through the *same* connection/transaction instead.
+Confirmed both the returned object and the UI label now update correctly
+together.
+
+### Editor: actual video playback
+
+This was the biggest piece. The Editor previously showed only a static
+thumbnail. It now embeds a real video player with play/pause, a seek
+slider, and time display, backed by `libmpv` via `python-mpv`.
+
+**One important design decision here:** this uses mpv's OpenGL **render
+API**, not the simpler window-handle ("wid") embedding most python-mpv+Qt
+examples use. wid-embedding is an X11-specific mechanism -- it doesn't
+work when Qt runs as a native Wayland client, and given the earlier "Qt
+platform plugin" fix means this app can now actually *start* as a native
+Wayland client (rather than crash before getting that far), relying on an
+X11-only embedding trick would likely have just traded one Wayland
+problem for another. The render API sidesteps this: mpv draws into an
+OpenGL context Qt hands it, and doesn't care what's ultimately hosting
+that context on either backend.
+
+**What's tested vs. not, precisely:** the sandbox this was built in has
+no display or GPU, and its `offscreen` Qt platform plugin doesn't support
+`QOpenGLWidget` at all (confirmed directly, not assumed) -- so the actual
+on-screen rendering in `paintGL()`/`initializeGL()` could not be
+exercised end-to-end. What I *could* and did verify directly: mpv's
+underlying playback control -- load, pause/play, absolute seeking,
+position and duration tracking via `observe_property` -- all work
+correctly, tested against a real mpv instance using its headless
+`vo=null` output (which exercises every part of the control path except
+the GL draw calls). Separately, all of the surrounding Qt UI logic (play/
+pause button state, slider-to-position mapping, time formatting,
+seek-on-release) was tested against a mocked video widget standing in for
+mpv, so that logic is independent of both mpv and GL. If the video area
+comes up blank on your machine while the controls otherwise behave
+correctly, that narrows the problem specifically to the GL/proc-address
+wiring, not the playback logic around it -- and would be useful
+information either way.
+
+`flake.nix` updated to match: `python-mpv` and `PyOpenGL` as Python
+dependencies (`python-mpv` packaged inline from PyPI, same treatment as
+`obsws-python`, since I couldn't confirm it's in nixpkgs either; `PyOpenGL`
+does exist in nixpkgs as `pyopengl`, confirmed), plus `mpv-unwrapped` for
+`libmpv.so` itself, added to `LD_LIBRARY_PATH` in the wrapper since
+python-mpv loads it via ctypes at runtime rather than at Python import time.
+
+
 
 Your logs finally gave the real answer: OBS reported
 `Replay 2026-08-22 14-03-38.mkv`, but the file it had actually just

@@ -157,7 +157,17 @@ def rename_video(video_id: int, title: str | None = None, description: str | Non
         new_desc = description if description is not None else row["description"]
         conn.execute("UPDATE videos SET title = ?, description = ? WHERE id = ?",
                      (new_title, new_desc, video_id))
-        return get_video(video_id)
+        # Build the return value from THIS SAME connection/transaction,
+        # not via get_video() (which opens a separate connection) -- a
+        # separate connection can't see this transaction's write until it
+        # commits, which only happens when this `with` block exits. Doing
+        # that unearthed a real bug: rename_video() was silently returning
+        # a Video with the OLD title even though the DB itself was
+        # correctly updated, because get_video() was called before the
+        # commit that its own fresh connection needed to see the change.
+        updated_row = conn.execute("SELECT * FROM videos WHERE id = ?", (video_id,)).fetchone()
+        tags = _tags_for_video(conn, video_id)
+        return _row_to_video(updated_row, tags)
 
 
 def delete_video(video_id: int, delete_file: bool = True) -> None:
@@ -171,6 +181,28 @@ def delete_video(video_id: int, delete_file: bool = True) -> None:
         backup = Path(video.backup_path) if video.backup_path else None
         if backup and backup.exists():
             backup.unlink()
+
+
+def prune_missing_videos() -> list[int]:
+    """
+    Remove library entries whose underlying file no longer exists on disk
+    (deleted outside the app, moved, drive unmounted, etc.) -- the
+    library only ever gains entries otherwise (add_video on capture,
+    manual import later), so without this, a video removed externally
+    stays listed forever, unclickable/broken.
+
+    Returns the ids of removed entries. Doesn't touch anything else on
+    disk (a missing file has nothing to clean up) -- this only prunes the
+    DB row and its tag associations (via ON DELETE CASCADE).
+    """
+    removed_ids = []
+    with db.get_conn() as conn:
+        rows = conn.execute("SELECT id, path FROM videos").fetchall()
+        for row in rows:
+            if not Path(row["path"]).exists():
+                conn.execute("DELETE FROM videos WHERE id = ?", (row["id"],))
+                removed_ids.append(row["id"])
+    return removed_ids
 
 
 # ---------------------------------------------------------------- tags
