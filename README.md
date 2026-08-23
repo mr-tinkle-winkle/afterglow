@@ -18,7 +18,55 @@ Build order, in progress:
 3. YouTube OAuth/upload — after that (the Library's "Upload" action
    currently shows a "not implemented yet" message).
 
-## This delivery: ruled out one theory, found no smoking gun, added real visibility instead
+## This delivery: the actual root cause, and a full redesign of how we find the captured file
+
+Your logs finally gave the real answer: OBS reported
+`Replay 2026-08-22 14-03-38.mkv`, but the file it had actually just
+created was `Replay 2026-08-22 14-14-08.mkv` -- a completely different,
+older timestamp. `GetLastReplayBufferReplay` was returning **stale
+state** from a previous save, not the one just requested. Our code then
+correctly (if confusingly) reported that stale file as "never appeared on
+disk" -- because it hadn't just appeared; it had already been consumed
+and moved into the Clips folder by an earlier successful capture, so at
+that point it genuinely didn't exist under that name anymore. Every
+"fix" up to now was correctly handling a file we were never going to find,
+because we were asking OBS the wrong question.
+
+**Implemented exactly the redesign you proposed:** stop trusting
+`GetLastReplayBufferReplay`'s reported path at all. Instead:
+
+1. Query OBS's actual output directory directly (`GetRecordDirectory` --
+   a proper, purpose-built request for this, rather than trying to infer
+   a directory from an unreliable path).
+2. Snapshot the directory's contents *before* requesting the save.
+3. Request the save, then watch for whichever new file(s) actually show
+   up -- ground truth from the filesystem itself, not a websocket
+   response that's proven to lag behind reality.
+4. If a `.mkv` and a remuxed `.mp4` both appear (OBS's "Automatically
+   Remux to mp4"), prefer the `.mp4` as the real target, matching what
+   you asked for -- and delete the unused sibling immediately, rather
+   than guessing at sibling filenames later based on suffix-swapping.
+5. Wait for the target file's size to stop changing before treating it
+   as finished, same as before.
+
+One real bug found and fixed *while building this*: my first version
+detected the `.mkv` the instant it appeared and immediately started
+treating it as "the" file, before the `.mp4` remux -- created moments
+later, not simultaneously -- had a chance to show up. Caught this via a
+timed simulation where the `.mkv` and `.mp4` appear roughly a second
+apart, confirmed the bug, and fixed it with a short grace period after
+the first new file appears, to let a near-simultaneous sibling catch up
+before committing to a target.
+
+Verified with direct tests: (1) a stale pre-existing file in the
+directory correctly ignored, a `.mkv`+`.mp4` pair appearing about a
+second apart correctly resolved to the `.mp4`, with the unused `.mkv`
+cleaned up; (2) a single file with no remux sibling handled correctly;
+(3) the genuine "nothing ever appears" case still fails with a clear
+error; (4) the full `trigger_clip()` pipeline end-to-end, confirming OBS's
+directory is left completely clean afterward.
+
+## Previous delivery: ruled out one theory, found no smoking gun, added real visibility instead
 
 Still no sound, no trim, clip lands in OBS's own Replay folder (not
 afterglow's Clips folder) -- confirmed via your answers that this isn't
@@ -63,7 +111,7 @@ me everything it prints. With the logging above, this should show
 exactly which stage it's stuck or failing on, rather than me continuing
 to guess between several plausible-but-unconfirmed causes.
 
-
+## Previous delivery: the real performance bug, plus a hang safety net
 
 Your description this time -- one button works (slowly, ~20s), then
 that exact button goes dead, then a *different* button works once and

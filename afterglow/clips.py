@@ -3,12 +3,14 @@ Clip options: named presets of (length_seconds, sound, hotkey), plus the
 pipeline that fires when a hotkey is pressed:
 
     1. tell OBS to save its replay buffer -> wait for the raw file to
-       actually exist and finish being written
+       actually exist and finish being written (obs_client.py identifies
+       the new file by watching OBS's output directory for new entries,
+       and already deletes any unused sibling -- e.g. an auto-remux
+       counterpart -- as soon as it picks the one to use)
     2. play the configured feedback sound (immediate confirmation that the
        raw capture succeeded, before the slower trim/re-encode step)
     3. wait a short settle period -- OBS can still be doing internal
-       bookkeeping (e.g. its own "automatically remux to mp4" pass) even
-       after the raw file's size has stabilized
+       bookkeeping even after the raw file's size has stabilized
     4. trim the raw file down to this clip option's configured length
        (always frame-perfect/re-encode -- see trigger_clip()'s docstring
        for why fast/keyframe mode is unsafe here)
@@ -17,9 +19,7 @@ pipeline that fires when a hotkey is pressed:
     6. move the trimmed file into the clips library folder, named by
        timestamp alone (the clip config's name still goes in the title,
        just not the filename)
-    7. delete the original raw file, and any sibling file OBS's own
-       "automatically remux to mp4" setting may have produced alongside it
-    8. register the result in the library DB
+    7. register the result in the library DB
 """
 from __future__ import annotations
 
@@ -193,30 +193,6 @@ def play_sound(sound_path: str | None) -> None:
     )
 
 
-# ---------------------------------------------------------------- cleanup helpers
-
-def _cleanup_sibling_remux(raw_path: Path) -> None:
-    """
-    OBS's "Automatically Remux to mp4" setting (Settings -> Advanced ->
-    Recording) can produce a second file alongside the one it reports via
-    the websocket API -- e.g. reports the .mkv, but also independently
-    creates a same-named .mp4 (or vice versa). We've already extracted
-    what we need from whichever file OBS told us about, so any leftover
-    sibling in *its* recording folder is pure clutter. Best-effort: if
-    this fails for any reason, we've still completed the actual capture
-    successfully, so don't let cleanup errors escalate into a failure.
-    """
-    for sibling_ext in (".mp4", ".mkv"):
-        if sibling_ext == raw_path.suffix:
-            continue
-        sibling = raw_path.with_suffix(sibling_ext)
-        if sibling.exists():
-            try:
-                sibling.unlink()
-            except OSError as e:
-                print(f"Warning: could not remove leftover OBS remux file {sibling}: {e}")
-
-
 # ---------------------------------------------------------------- trigger pipeline
 
 def trigger_clip(clip_config_id: int) -> Video:
@@ -298,11 +274,6 @@ def trigger_clip(clip_config_id: int) -> Video:
     # below, this only changes what the file on disk is called.
     final_name = f"{timestamp}{raw_path.suffix}"
     final_path = clips_dir / final_name
-
-    # Clean up any OBS auto-remux sibling BEFORE moving our file, while
-    # raw_path (and therefore its sibling-detection logic) still points at
-    # OBS's original recording folder.
-    _cleanup_sibling_remux(raw_path)
     shutil.move(str(raw_path), str(final_path))
 
     video = add_video(
