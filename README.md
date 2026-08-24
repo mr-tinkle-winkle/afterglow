@@ -15,12 +15,56 @@ Build order, in progress:
    grid, right-click Edit/Upload/Delete/Add Filter/Rename, auto-pruning
    of missing files) — done.** **Editor page with real video playback
    (play/pause, seek, time display) and persistent cross-page state —
-   done.** The Medal-style trim UI (drag handles, live scrub-while-
-   dragging, audio graph editor) is still next.
-3. YouTube OAuth/upload — after that (the Library's "Upload" action
-   currently shows a "not implemented yet" message).
+   done, pending your build confirming it renders correctly.** The
+   Medal-style trim UI is still next.
+3. YouTube OAuth/upload — after that.
 
-## This delivery
+## This delivery: fixed a real `nix build` failure in the python-mpv packaging
+
+Your build log caught something I couldn't have found without an actual
+Nix build: `python-mpv`'s package definition failed at
+`pythonImportsCheckPhase` with
+
+```
+OSError: Cannot find libmpv in the usual places.
+```
+
+This is a different, earlier failure point than anything runtime-related
+-- it happens while Nix is building the **standalone `python-mpv`
+package in isolation**, before the final `afterglow` package (with its
+own `postFixup` step that puts `libmpv` on `LD_LIBRARY_PATH`) exists at
+all. `mpv.py`'s own module-level code calls
+`ctypes.util.find_library("mpv")` the instant it's imported, and in that
+isolated build sandbox, nothing had made `libmpv` reachable yet -- so the
+check correctly failed at asking a question that couldn't be true yet.
+
+**Fixed:** added `mpv-unwrapped` (confirmed to be the correct nixpkgs
+attribute for `libmpv.so`) as a `buildInput` of the `python-mpv`
+derivation itself, and set `LD_LIBRARY_PATH` as a plain derivation
+attribute (available across every build phase unconditionally) rather
+than inside a `preCheck` hook -- deliberately avoiding a timing question
+I couldn't verify without a real build: `preCheck` is tied to
+`checkPhase`, which is skipped when `doCheck = false` (as it is here),
+and I wasn't confident that hook would even run before the *separate*
+`pythonImportsCheckPhase` that actually failed.
+
+**Also fixed while in there:** the overlay defining `obsws-python` and
+`python-mpv` was relying on a `pyFinal.pkgs` backlink to reach the main
+nixpkgs set from inside the Python package-set overlay, which I
+introduced without being able to confirm it actually resolves on this
+exact nixpkgs revision. Restructured so `pkgs` is passed in explicitly
+from `mkPython` instead, removing that assumption entirely rather than
+leaving an unverified guess sitting in there for the *next* build to
+possibly trip over.
+
+I verified `mpv-unwrapped` itself is a real, well-established nixpkgs
+attribute (not just assumed, per the pattern that's bitten this project
+before) -- but the fix as a whole is still unverified against an actual
+`nix build`, same caveat as always given I don't have `nix` in my
+environment. If this specific error is gone but you hit something new,
+that's still forward progress -- send it over.
+
+## Previous delivery
 
 ### Skip-trim redundancy check (as requested)
 

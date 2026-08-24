@@ -17,7 +17,14 @@
       # you ever update it (get the new hash with:
       #   nix hash convert --hash-algo sha256 --to sri $(sha256sum FILE | cut -d' ' -f1)
       # after downloading the new sdist).
-      obswsPythonOverlay = pyFinal: pyPrev: {
+      #
+      # Takes `pkgs` as an explicit parameter (applied per-system in
+      # mkPython below) rather than reaching for a `pyFinal.pkgs` backlink
+      # -- that backlink exists on some nixpkgs python package sets but
+      # isn't something worth depending on without being able to verify
+      # it directly against the exact nixpkgs revision this ends up
+      # building against.
+      pythonOverlay = pkgs: pyFinal: pyPrev: {
         obsws-python = pyFinal.buildPythonPackage rec {
           pname = "obsws-python";
           version = "1.8.0";
@@ -36,8 +43,25 @@
 
         # Also not in nixpkgs as far as I could confirm -- same treatment.
         # Pinned against 1.0.8; single-module package (mpv.py), no deps of
-        # its own beyond libmpv itself at runtime (provided separately via
-        # mpv-unwrapped in buildInputs below, not through this overlay).
+        # its own beyond libmpv itself at runtime.
+        #
+        # pythonImportsCheck runs `import mpv` inside an ISOLATED build
+        # sandbox, before the final afterglow package (with its own
+        # postFixup LD_LIBRARY_PATH wrapping) exists at all -- mpv.py's
+        # own module-level code calls ctypes.util.find_library("mpv") the
+        # moment it's imported, which fails in that sandbox since nothing
+        # has put libmpv on its LD_LIBRARY_PATH yet. This isn't the same
+        # question as "will the final wrapped binary find libmpv at real
+        # runtime" (it will, via postFixup below) -- it's "can this
+        # isolated check find it", which needs its own explicit answer.
+        #
+        # Setting LD_LIBRARY_PATH as a plain derivation attribute (rather
+        # than inside a preCheck/preBuild hook) makes it available across
+        # every phase regardless of hook ordering or whether doCheck is
+        # true -- deliberately sidestepping the question of exactly when
+        # pythonImportsCheckPhase runs relative to check-specific hooks,
+        # which isn't something worth guessing at without being able to
+        # test-build this.
         python-mpv = pyFinal.buildPythonPackage rec {
           pname = "python-mpv";
           version = "1.0.8";
@@ -48,13 +72,15 @@
             hash = "sha256-AX+jWdoFnIMalMQZCDSRkD5tL3yBuYQcM8GWyr9LP+M=";
           };
           nativeBuildInputs = [ pyFinal.setuptools ];
+          buildInputs = [ pkgs.mpv-unwrapped ];
+          LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath [ pkgs.mpv-unwrapped ];
           doCheck = false;
           pythonImportsCheck = [ "mpv" ];
         };
       };
 
       mkPython = pkgs: pkgs.python3.override {
-        packageOverrides = obswsPythonOverlay;
+        packageOverrides = pythonOverlay pkgs;
       };
 
       mkAfterglowPackage = pkgs:
