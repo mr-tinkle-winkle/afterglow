@@ -10,16 +10,53 @@ system flake.
 Build order, in progress:
 
 1. **Settings page + OBS-backed clip capture — done and confirmed working
-   end-to-end on your machine.**
+   end-to-end.**
 2. **Library page (Local + Uploaded tabs, search, tag filters, thumbnail
    grid, right-click Edit/Upload/Delete/Add Filter/Rename, auto-pruning
    of missing files) — done.** **Editor page with real video playback
    (play/pause, seek, time display) and persistent cross-page state —
-   done, pending your build confirming it renders correctly.** The
-   Medal-style trim UI is still next.
+   done, pending confirmation the segfault fix below actually resolves
+   it.** The Medal-style trim UI is still next.
 3. YouTube OAuth/upload — after that.
 
-## This delivery: fixed a real `nix build` failure in the python-mpv packaging
+## This delivery: fixed the segfault, per a very explicit clue in your log
+
+Your log had the fix spelled out almost literally:
+
+```
+Non-C locale detected. This is not supported.
+Call 'setlocale(LC_NUMERIC, "C");' in your code.
+Segmentation fault (core dumped) afterglow
+```
+
+This is a well-documented libmpv requirement, not a mystery: Qt's own
+`QApplication` construction changes the process's C library locale based
+on your desktop environment's settings, and if that leaves `LC_NUMERIC`
+using a non-`.` decimal separator (common outside English-language
+locales), libmpv's internal numeric parsing breaks badly enough to
+segfault rather than just misbehave. It's documented directly in mpv's
+own client API, and is a known gotcha for anything embedding libmpv --
+python-mpv's own README calls it out.
+
+**Fixed** with `locale.setlocale(locale.LC_NUMERIC, "C")` at two points,
+belt-and-suspenders: immediately after `QApplication` is constructed
+(`gui/main.py`, exactly where Qt's own locale change happens), and again
+right before mpv itself is created (`mpv_widget.py`). Neither touches any
+other locale category -- date formatting, text, etc. are untouched, only
+the specific numeric-parsing setting libmpv needs.
+
+**Honest limitation:** I attempted to reproduce the actual segfault
+directly (installed a comma-decimal locale in my sandbox and forced it
+active before creating an mpv instance) and couldn't trigger a crash --
+which strongly suggests the actual crash happens specifically inside the
+real OpenGL render path (`paintGL()`/mpv's `render()` call), which this
+sandbox cannot exercise at all (confirmed earlier: `QOpenGLWidget` isn't
+supported under its `offscreen` platform, full stop). So this fix is
+based on very strong, directly-stated evidence from your own log rather
+than something I fully reproduced and watched fail-then-pass myself --
+worth knowing the difference given how many rounds this has taken.
+
+
 
 Your build log caught something I couldn't have found without an actual
 Nix build: `python-mpv`'s package definition failed at

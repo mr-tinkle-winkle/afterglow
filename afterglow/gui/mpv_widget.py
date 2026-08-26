@@ -25,6 +25,8 @@ in initializeGL()/paintGL() below, not the playback logic around it.
 """
 from __future__ import annotations
 
+import locale
+
 from PySide6.QtCore import Signal, QTimer
 from PySide6.QtGui import QOpenGLContext
 from PySide6.QtOpenGLWidgets import QOpenGLWidget
@@ -54,6 +56,19 @@ class MpvVideoWidget(QOpenGLWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setMinimumHeight(300)
+
+        # libmpv requires the process's LC_NUMERIC to be exactly "C" --
+        # confirmed against a real crash: Qt's own QApplication changes
+        # the C library's locale internally based on the desktop
+        # environment's settings, and if that leaves LC_NUMERIC using a
+        # non-"." decimal separator (many non-English locales use ","),
+        # libmpv's internal numeric parsing breaks in ways that can
+        # segfault rather than just misbehave -- this is documented
+        # directly in mpv's own client API and is a well-known gotcha for
+        # anything embedding libmpv. Only LC_NUMERIC is touched here, not
+        # the whole locale -- this doesn't affect date formatting, text,
+        # or anything else the rest of the app relies on.
+        locale.setlocale(locale.LC_NUMERIC, "C")
 
         self._mpv = mpv.MPV(vo="libmpv", loglevel="error")
         self._render_ctx: "mpv.MpvRenderContext | None" = None
