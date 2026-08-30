@@ -45,23 +45,26 @@
         # Pinned against 1.0.8; single-module package (mpv.py), no deps of
         # its own beyond libmpv itself at runtime.
         #
-        # pythonImportsCheck runs `import mpv` inside an ISOLATED build
-        # sandbox, before the final afterglow package (with its own
-        # postFixup LD_LIBRARY_PATH wrapping) exists at all -- mpv.py's
-        # own module-level code calls ctypes.util.find_library("mpv") the
-        # moment it's imported, which fails in that sandbox since nothing
-        # has put libmpv on its LD_LIBRARY_PATH yet. This isn't the same
-        # question as "will the final wrapped binary find libmpv at real
-        # runtime" (it will, via postFixup below) -- it's "can this
-        # isolated check find it", which needs its own explicit answer.
+        # mpv.py's module-level code resolves libmpv via
+        # `ctypes.util.find_library("mpv")` the moment it's imported. On
+        # NixOS this can only ever succeed by accident: find_library's
+        # primary path shells out to `ldconfig -p`, which NixOS never
+        # populates for store paths, and its only fallback
+        # (_findLib_gcc/_findLib_ld) needs `gcc`/`ld` on PATH -- present in
+        # the Nix build sandbox (via stdenv), which is why the
+        # LD_LIBRARY_PATH attribute below made `pythonImportsCheck` pass
+        # during `nix build`, but absent from the final wrapped binary's
+        # runtime PATH (postFixup only adds ffmpeg/pipewire/pulseaudio),
+        # which is why the packaged app fails with "Cannot find libmpv in
+        # the usual places" even though the build itself succeeds.
         #
-        # Setting LD_LIBRARY_PATH as a plain derivation attribute (rather
-        # than inside a preCheck/preBuild hook) makes it available across
-        # every phase regardless of hook ordering or whether doCheck is
-        # true -- deliberately sidestepping the question of exactly when
-        # pythonImportsCheckPhase runs relative to check-specific hooks,
-        # which isn't something worth guessing at without being able to
-        # test-build this.
+        # Fix: patch mpv.py to skip find_library entirely and hardcode the
+        # resolved store path to libmpv.so, same as nixpkgs' own
+        # python3Packages.python-mpv derivation does for exactly this
+        # reason. This makes the LD_LIBRARY_PATH attribute unnecessary
+        # (CDLL() is now given an absolute path, no linker search
+        # involved) but it's left in place since it's harmless and still
+        # documents the runtime dependency.
         python-mpv = pyFinal.buildPythonPackage rec {
           pname = "python-mpv";
           version = "1.0.8";
@@ -74,6 +77,11 @@
           nativeBuildInputs = [ pyFinal.setuptools ];
           buildInputs = [ pkgs.mpv-unwrapped ];
           LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath [ pkgs.mpv-unwrapped ];
+          postPatch = ''
+            substituteInPlace mpv.py \
+              --replace-fail "sofile = ctypes.util.find_library('mpv')" \
+                             'sofile = "${pkgs.mpv-unwrapped}/lib/libmpv${pkgs.stdenv.hostPlatform.extensions.sharedLibrary}"'
+          '';
           doCheck = false;
           pythonImportsCheck = [ "mpv" ];
         };
