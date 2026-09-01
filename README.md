@@ -10,16 +10,55 @@ system flake.
 Build order, in progress:
 
 1. **Settings page + OBS-backed clip capture — done and confirmed working
-   end-to-end.**
-2. **Library page (Local + Uploaded tabs, search, tag filters, thumbnail
-   grid, right-click Edit/Upload/Delete/Add Filter/Rename, auto-pruning
-   of missing files) — done.** **Editor page with real video playback
-   (play/pause, seek, time display) and persistent cross-page state —
-   done, pending confirmation the segfault fix below actually resolves
-   it.** The Medal-style trim UI is still next.
-3. YouTube OAuth/upload — after that.
+   end-to-end on your and your friend's machines.**
+2. **Library page — done.** **Editor page: video playback (confirmed
+   working after the libmpv/locale fixes) and now the actual trim UI --
+   drag handles, live scrub, Local Save / Save & Upload — done.** The
+   audio graph editor (per-segment volume/mute/trim/reposition) is still
+   next.
+3. YouTube OAuth/upload — after that (Save & Upload currently shows a
+   "not implemented yet" message, same as the Library's Upload action).
 
-## This delivery: fixed the segfault, per a very explicit clue in your log
+## This delivery: the trim UI
+
+Built on top of the video playback from the last phase:
+
+- **`gui/trim_timeline.py`** — a dual-handle timeline widget. Drag either
+  handle to set the trim start/end; dragging live-seeks the preview to
+  follow the handle (Medal-style "see where the cut lands"), and starting
+  a drag pauses playback first so the live-seek feedback isn't fighting
+  normal playback. Deliberately split into pure, testable pieces: the
+  coordinate math (time ↔ pixel) and the actual drag-state logic are
+  separate from the Qt mouse-event handlers, which are just thin wrappers
+  around them. This mattered in practice -- it meant I could directly
+  verify the coordinate round-tripping, drag detection, live signal
+  emission, and handle-crossing protection (dragging start past end
+  clamps with a minimum gap rather than letting them cross) without
+  needing to fight constructing synthetic mouse events or a real display.
+- **Frame Perfect Accuracy checkbox** in the Editor, per the original
+  spec -- on for an exact frame-accurate trim (full re-encode), off for a
+  fast keyframe-based trim. This maps directly to the `frame_perfect` flag
+  `library.apply_trim()`/`editor.py` already supported from the very
+  first backend delivery; the checkbox is just finally exposing it in the UI.
+- **Local Save** calls the real trim pipeline and reloads both the video
+  preview and the trim timeline to reflect the new (shorter) duration
+  afterward. **Save & Upload** is wired up in the UI but shows "not
+  implemented yet" -- same pattern as the Library's existing Upload
+  action, consistent until YouTube OAuth exists.
+
+Verified with a real trim through the full UI flow (not just the pieces
+in isolation): mocked the video widget to isolate the trim/save logic
+from mpv itself, dragged the end handle from 10s down to 6s, confirmed
+the live label and preview-seek updated correctly during the drag, then
+called Local Save and confirmed the **actual file** got trimmed to the
+right length via the real backend (10s → 6.0s with Frame Perfect checked
+in one test, 10s → 5.067s unchecked in another -- correctly showing the
+fast-mode keyframe-snap behavior when the checkbox is off, which is
+expected, not a bug). Also verified the full save → undo cycle: after
+Local Save the Undo button enables and the video widget reloads; after
+Undo, duration reverts to the original and the button disables again.
+
+## Previous delivery: fixed the segfault, per a very explicit clue in your log
 
 Your log had the fix spelled out almost literally:
 
@@ -56,7 +95,7 @@ based on very strong, directly-stated evidence from your own log rather
 than something I fully reproduced and watched fail-then-pass myself --
 worth knowing the difference given how many rounds this has taken.
 
-
+## Previous delivery: fixed a real `nix build` failure in the python-mpv packaging
 
 Your build log caught something I couldn't have found without an actual
 Nix build: `python-mpv`'s package definition failed at

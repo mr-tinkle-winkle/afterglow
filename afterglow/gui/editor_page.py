@@ -11,22 +11,26 @@ no extra save/restore logic needed. This is why load_video() below is the
 ONLY place state changes -- there's no "on page shown, reload state" path,
 because there's nothing to reload from; it never went away.
 
-This delivery adds actual video playback (play/pause, seek slider, time
-display) via MpvVideoWidget -- previously this page only showed a static
-thumbnail. The Medal-style trim UI (drag handles for start/end, live
-scrub-while-dragging, the audio graph editor) is still the next build
-phase; this is "you can now watch the video," not yet "you can now trim
-it visually."
+This delivery adds the actual trim UI on top of the video playback built
+previously: drag handles on a timeline set the start/end range, dragging
+a handle live-seeks the preview to that point (Medal-style "see where the
+cut lands"), a Frame Perfect Accuracy checkbox controls trim precision
+vs. speed, and Local Save commits the trim via library.apply_trim().
+Save & Upload is wired up but not functional yet -- YouTube upload isn't
+built. The audio graph editor (per-segment volume/mute/trim/reposition)
+is still a separate, later phase.
 """
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QHBoxLayout, QPushButton, QSlider,
+    QCheckBox, QMessageBox,
 )
 
 from .. import library
 from .mpv_widget import MpvVideoWidget
+from .trim_timeline import TrimTimeline
 
 
 def _format_time(seconds: float) -> str:
@@ -68,6 +72,18 @@ class EditorPage(QWidget):
         transport_row.addWidget(self.seek_slider, stretch=1)
         layout.addLayout(transport_row)
 
+        # ---- trim timeline ----
+        self.trim_timeline = TrimTimeline()
+        self.trim_timeline.setEnabled(False)
+        self.trim_timeline.range_changed.connect(self._on_trim_range_changed)
+        self.trim_timeline.seek_requested.connect(self._on_trim_seek_requested)
+        self.trim_timeline.drag_started.connect(self._on_trim_drag_started)
+        layout.addWidget(self.trim_timeline)
+
+        self.trim_range_label = QLabel("Start: 0:00   End: 0:00   Selected: 0:00")
+        self.trim_range_label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(self.trim_range_label)
+
         self.info_label = QLabel("No video selected. Double-click a clip in the Library, "
                                   "or right-click it and choose Edit.")
         self.info_label.setAlignment(Qt.AlignCenter)
@@ -75,12 +91,35 @@ class EditorPage(QWidget):
         layout.addWidget(self.info_label)
 
         coming_soon_label = QLabel(
-            "Trim handles, live scrub-while-dragging, and the audio graph "
-            "editor are coming in the next build phase."
+            "The audio graph editor (per-segment volume/mute/trim/reposition) "
+            "is coming in a later build phase."
         )
         coming_soon_label.setStyleSheet("color: gray;")
         coming_soon_label.setAlignment(Qt.AlignCenter)
         layout.addWidget(coming_soon_label)
+
+        # ---- save controls ----
+        save_row = QHBoxLayout()
+        self.frame_perfect_checkbox = QCheckBox("Frame Perfect Accuracy")
+        self.frame_perfect_checkbox.setToolTip(
+            "Exact frame-accurate trim (slower, full re-encode). Off uses a "
+            "fast keyframe-based trim -- fine for most clips, but the actual "
+            "cut point may land on the nearest keyframe rather than exactly "
+            "where you dragged the handle."
+        )
+        save_row.addWidget(self.frame_perfect_checkbox)
+        save_row.addStretch(1)
+
+        self.local_save_btn = QPushButton("Local Save")
+        self.local_save_btn.setEnabled(False)
+        self.local_save_btn.clicked.connect(self._local_save)
+        save_row.addWidget(self.local_save_btn)
+
+        self.save_upload_btn = QPushButton("Save && Upload")
+        self.save_upload_btn.setEnabled(False)
+        self.save_upload_btn.clicked.connect(self._save_and_upload)
+        save_row.addWidget(self.save_upload_btn)
+        layout.addLayout(save_row)
 
         button_row = QHBoxLayout()
         self.undo_btn = QPushButton("Undo Last Edit")
@@ -105,6 +144,9 @@ class EditorPage(QWidget):
             self.undo_btn.setEnabled(False)
             self.play_pause_btn.setEnabled(False)
             self.seek_slider.setEnabled(False)
+            self.trim_timeline.setEnabled(False)
+            self.local_save_btn.setEnabled(False)
+            self.save_upload_btn.setEnabled(False)
             return
 
         video = library.get_video(self.current_video_id)
@@ -113,6 +155,9 @@ class EditorPage(QWidget):
         self.play_pause_btn.setText("Play")
         self.seek_slider.setEnabled(True)
         self.seek_slider.setValue(0)
+        self.trim_timeline.setEnabled(True)
+        self.local_save_btn.setEnabled(True)
+        self.save_upload_btn.setEnabled(True)
 
         self.info_label.setText(
             f"<b>{video.title}</b>"
@@ -137,10 +182,13 @@ class EditorPage(QWidget):
             self.seek_slider.setValue(slider_value)
             self.seek_slider.blockSignals(False)
         self.time_label.setText(f"{_format_time(position)} / {_format_time(self._duration)}")
+        self.trim_timeline.set_playhead(position)
 
     def _on_duration_known(self, duration: float) -> None:
         self._duration = duration
         self.time_label.setText(f"0:00 / {_format_time(duration)}")
+        self.trim_timeline.set_duration(duration)
+        self._update_trim_range_label(0.0, duration)
 
     def _on_slider_released(self) -> None:
         self._slider_being_dragged = False
@@ -150,6 +198,49 @@ class EditorPage(QWidget):
 
     def _on_playback_ended(self) -> None:
         self.play_pause_btn.setText("Play")
+
+    # ------------------------------------------------------------ trim timeline
+
+    def _on_trim_drag_started(self) -> None:
+        # Dragging a handle while the video is playing makes the live-seek
+        # feedback confusing to watch -- pause first, matching how Medal
+        # and similar tools behave while scrubbing trim handles.
+        self.video_widget.pause()
+        self.play_pause_btn.setText("Play")
+
+    def _on_trim_range_changed(self, start: float, end: float) -> None:
+        self._update_trim_range_label(start, end)
+
+    def _on_trim_seek_requested(self, position: float) -> None:
+        self.video_widget.seek(position)
+
+    def _update_trim_range_label(self, start: float, end: float) -> None:
+        self.trim_range_label.setText(
+            f"Start: {_format_time(start)}   End: {_format_time(end)}   "
+            f"Selected: {_format_time(end - start)}"
+        )
+
+    # ------------------------------------------------------------ save
+
+    def _local_save(self) -> None:
+        if self.current_video_id is None:
+            return
+        start = self.trim_timeline.start
+        end = self.trim_timeline.end
+        frame_perfect = self.frame_perfect_checkbox.isChecked()
+        try:
+            library.apply_trim(self.current_video_id, start, end, frame_perfect=frame_perfect)
+        except Exception as e:
+            QMessageBox.critical(self, "Trim Failed", str(e))
+            return
+        self._refresh_display()
+
+    def _save_and_upload(self) -> None:
+        QMessageBox.information(
+            self, "Not Implemented Yet",
+            "YouTube upload is coming in a later build phase (OAuth setup "
+            "isn't wired up yet). Use Local Save for now.",
+        )
 
     # ------------------------------------------------------------ undo
 
