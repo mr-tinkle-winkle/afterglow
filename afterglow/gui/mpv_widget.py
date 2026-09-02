@@ -74,6 +74,16 @@ class MpvVideoWidget(QOpenGLWidget):
         self._render_ctx: "mpv.MpvRenderContext | None" = None
         self._duration_reported = False
 
+        # Stored as an instance attribute, not a throwaway inline
+        # expression in initializeGL() -- ctypes function-pointer callback
+        # objects need something on the Python side to keep them alive for
+        # as long as the C/mpv side might call them. If nothing holds a
+        # reference, Python can garbage-collect the wrapper while mpv
+        # still has the raw function pointer, producing an intermittent,
+        # very hard-to-diagnose crash later. Keeping it on self for the
+        # widget's whole lifetime avoids that class of bug entirely.
+        self._get_proc_address_cfunc = mpv.MpvGlGetProcAddressFn(_get_proc_address)
+
         # mpv's property-observer callbacks fire on mpv's own internal
         # thread, not Qt's -- QTimer.singleShot(0, ...) bounces them back
         # onto the Qt event loop rather than touching signals/widgets from
@@ -85,7 +95,18 @@ class MpvVideoWidget(QOpenGLWidget):
     def initializeGL(self) -> None:
         self._render_ctx = mpv.MpvRenderContext(
             self._mpv, "opengl",
-            opengl_init_params={"get_proc_address": _get_proc_address},
+            opengl_init_params={
+                # Must be an actual ctypes function pointer, not a plain
+                # Python callable -- python-mpv's MpvOpenGLInitParams
+                # structure declares this field's type as
+                # MpvGlGetProcAddressFn (a CFUNCTYPE), and assigning a bare
+                # Python function to a ctypes Structure field of function-
+                # pointer type doesn't implicitly convert it. This was the
+                # actual crash: "expected CFunctionType instance, got
+                # function". Confirmed directly against python-mpv 1.0.8's
+                # source (mpv.py) before applying this.
+                "get_proc_address": self._get_proc_address_cfunc,
+            },
         )
         self._render_ctx.update_cb = self.update
 
