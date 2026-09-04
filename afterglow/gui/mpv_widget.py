@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import locale
 
-from PySide6.QtCore import Signal, QTimer
+from PySide6.QtCore import Signal
 from PySide6.QtGui import QOpenGLContext
 from PySide6.QtOpenGLWidgets import QOpenGLWidget
 
@@ -85,9 +85,29 @@ class MpvVideoWidget(QOpenGLWidget):
         self._get_proc_address_cfunc = mpv.MpvGlGetProcAddressFn(_get_proc_address)
 
         # mpv's property-observer callbacks fire on mpv's own internal
-        # thread, not Qt's -- QTimer.singleShot(0, ...) bounces them back
-        # onto the Qt event loop rather than touching signals/widgets from
-        # a foreign thread, which Qt does not support safely.
+        # thread, not Qt's. Signals are emitted directly from that thread
+        # below -- Qt's signal/slot mechanism automatically marshals a
+        # cross-thread emission onto the RECEIVER's event loop (Qt::Auto-
+        # Connection becomes queued when sender and receiver live in
+        # different threads), which only requires an event loop on the
+        # receiving side (always true here -- it's the main GUI thread).
+        #
+        # An earlier version of this wrapped each emit in
+        # QTimer.singleShot(0, ...), on the assumption that this was needed
+        # to safely bounce onto the Qt thread. That was itself the actual
+        # bug behind "video renders but the clock/scrubber never move":
+        # QTimer.singleShot(msec, callback) requires a running Qt event
+        # loop on the thread that CALLS it, and mpv's internal callback
+        # thread doesn't have one, so those timers were silently created
+        # and never fired. Confirmed directly with a headless repro
+        # (vo=null, no GL/display needed): the QTimer.singleShot version
+        # received 0 position updates across a 3.5s real clip; emitting
+        # the signal directly received 30/30. The GL render path
+        # (update_cb = self.update, below) was unaffected by this bug
+        # because QWidget.update() posts its event directly rather than
+        # going through a timer that needs an event loop on the caller's
+        # side -- which is also why video could render while the time
+        # display and scrubber stayed frozen at 0:00.
         self._mpv.observe_property("time-pos", self._on_time_pos)
         self._mpv.observe_property("duration", self._on_duration)
         self._mpv.observe_property("eof-reached", self._on_eof)
@@ -156,13 +176,13 @@ class MpvVideoWidget(QOpenGLWidget):
 
     def _on_time_pos(self, _name, value) -> None:
         if value is not None:
-            QTimer.singleShot(0, lambda v=value: self.position_changed.emit(v))
+            self.position_changed.emit(value)
 
     def _on_duration(self, _name, value) -> None:
         if value is not None and not self._duration_reported:
             self._duration_reported = True
-            QTimer.singleShot(0, lambda v=value: self.duration_known.emit(v))
+            self.duration_known.emit(value)
 
     def _on_eof(self, _name, value) -> None:
         if value:
-            QTimer.singleShot(0, self.playback_ended.emit)
+            self.playback_ended.emit()
