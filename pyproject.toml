@@ -23,3 +23,11 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 include = ["afterglow*"]
+
+# GUI icon/texture assets (afterglow/gui/resources/) are loaded at runtime
+# via importlib.resources, so they need to ship inside the installed
+# package itself -- separate from data/icons/, which is the freedesktop
+# icon-theme install (system tray/dock/taskbar) handled directly by
+# flake.nix's postInstall, not by the Python package.
+[tool.setuptools.package-data]
+afterglow = ["gui/resources/*.png"]

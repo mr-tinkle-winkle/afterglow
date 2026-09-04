@@ -17,7 +17,8 @@ from __future__ import annotations
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QGroupBox, QLineEdit,
-    QSpinBox, QPushButton, QFileDialog, QLabel, QScrollArea, QMessageBox,
+    QSpinBox, QDoubleSpinBox, QPushButton, QFileDialog, QLabel, QScrollArea,
+    QMessageBox,
 )
 
 from .. import config as config_module
@@ -76,6 +77,20 @@ class SettingsPage(QWidget):
         pw_row.addWidget(self.obs_password_edit)
         pw_row.addWidget(show_btn)
         form.addRow("Password:", pw_row)
+
+        self.obs_wait_after_finish_spin = QDoubleSpinBox()
+        self.obs_wait_after_finish_spin.setRange(0.0, 30.0)
+        self.obs_wait_after_finish_spin.setSingleStep(0.5)
+        self.obs_wait_after_finish_spin.setSuffix(" sec")
+        self.obs_wait_after_finish_spin.setValue(
+            self._settings.obs.wait_after_replay_buffer_finishes_sec
+        )
+        self.obs_wait_after_finish_spin.setToolTip(
+            "afterglow reacts to OBS's own ReplayBufferSaved event, so this "
+            "should normally stay at 0. Only raise it if capture still "
+            "seems to grab an incomplete/truncated file on your machine."
+        )
+        form.addRow("Wait after OBS Replay Buffer Finishes:", self.obs_wait_after_finish_spin)
 
         test_btn = QPushButton("Test Connection")
         test_btn.clicked.connect(self._test_obs_connection)
@@ -210,6 +225,9 @@ class SettingsPage(QWidget):
         self._settings.obs.host = self.obs_host_edit.text().strip()
         self._settings.obs.port = self.obs_port_spin.value()
         self._settings.obs.password = self.obs_password_edit.text()
+        self._settings.obs.wait_after_replay_buffer_finishes_sec = (
+            self.obs_wait_after_finish_spin.value()
+        )
         self._settings.clips_dir = self.clips_dir_edit.text().strip()
         self._settings.default_sound_path = self.default_sound_edit.text().strip()
         config_module.save(self._settings)

@@ -27,6 +27,13 @@ class OBSSettings:
     host: str = "localhost"
     port: int = 4455
     password: str = ""  # obs-websocket "server password", not an API key per se
+    # Extra grace period AFTER OBS reports the replay buffer save as
+    # finished (via its ReplayBufferSaved event), before afterglow treats
+    # the file as ready to use. Defaults to 0 -- the event itself is
+    # normally sufficient -- but is here as an escape hatch in case a
+    # slower disk/filesystem needs a moment longer than OBS's own event
+    # accounts for.
+    wait_after_replay_buffer_finishes_sec: float = 0.0
 
 
 @dataclass

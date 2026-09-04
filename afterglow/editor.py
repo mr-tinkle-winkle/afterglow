@@ -101,8 +101,26 @@ def _find_keyframe_at_or_before(video_path: Path, target_sec: float) -> float:
     return max(candidates) if candidates else 0.0
 
 
+# Backups live in a sibling "Edit Backups" folder next to the clip itself,
+# rather than as a same-directory ".orig" file -- the library's filesystem
+# scan (library.scan_and_ingest_new_videos) skips this folder by name so
+# backups never show up as their own library entries.
+EDIT_BACKUPS_DIRNAME = "Edit Backups"
+
+
 def _backup_path_for(video_path: Path) -> Path:
-    return video_path.with_name(video_path.stem + ".orig" + video_path.suffix)
+    backups_dir = video_path.parent / EDIT_BACKUPS_DIRNAME
+    backups_dir.mkdir(exist_ok=True)
+    return backups_dir / (video_path.stem + ".orig" + video_path.suffix)
+
+
+def clear_backup(backup_path: Path) -> None:
+    """Delete a video's edit backup without touching the (already-edited)
+    working file. This gives up the ability to Undo, but the edit itself
+    stays applied -- distinct from undo_trim(), which restores from the
+    backup instead of discarding it."""
+    if backup_path.exists():
+        backup_path.unlink()
 
 
 def commit_trim(request: TrimRequest, has_prior_edit: bool, existing_backup: Path | None) -> Path:

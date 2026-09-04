@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (
 
 from .. import library, thumbnails
 
-THUMB_SIZE = QSize(200, 112)  # 16:9
+THUMB_SIZE = QSize(400, 224)  # 16:9, doubled from the original 200x112
 
 
 def _placeholder_pixmap() -> QPixmap:
@@ -94,6 +94,16 @@ class VideoCard(QWidget):
             tag_label.setStyleSheet("color: gray; font-size: 10px;")
             tag_label.setAlignment(Qt.AlignCenter)
             layout.addWidget(tag_label)
+
+        # Without this, extra vertical space the grid gives this card
+        # (e.g. because another card in the same row is taller, due to
+        # having tags and this one not) gets distributed by the layout
+        # instead of landing predictably at the bottom -- which is what
+        # made the title look like it sat "a percent of the way down"
+        # rather than snug under the thumbnail. Pinning the stretch to
+        # the bottom keeps thumbnail/title/tags packed together
+        # regardless of how tall the card ends up being.
+        layout.addStretch(1)
 
         self.setContextMenuPolicy(Qt.CustomContextMenu)
         self.customContextMenuRequested.connect(self._show_context_menu)

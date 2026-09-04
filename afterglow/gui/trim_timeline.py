@@ -14,9 +14,11 @@ constructing real QMouseEvent objects or simulate an actual display.
 """
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, Signal, QPointF
+from PySide6.QtCore import Qt, Signal, QPointF, QRect
 from PySide6.QtGui import QPainter, QColor, QPen
 from PySide6.QtWidgets import QWidget
+
+from .resources import resource_qpixmap
 
 HANDLE_WIDTH = 8
 MIN_GAP_SEC = 0.05  # smallest allowed distance between start and end handles
@@ -26,6 +28,7 @@ class TrimTimeline(QWidget):
     range_changed = Signal(float, float)   # start, end -- emitted live while dragging a handle
     seek_requested = Signal(float)         # emitted while dragging, so the preview follows the handle
     drag_started = Signal()                # emitted on press, before any movement -- callers can pause playback here
+    drag_finished = Signal(float, float)   # start, end -- emitted on release, once the range is committed
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -35,6 +38,14 @@ class TrimTimeline(QWidget):
         self._end = 0.0
         self._playhead = 0.0
         self._dragging: str | None = None  # None | "start" | "end"
+
+        # Loaded once, then stretched to fit at paint time -- the handle
+        # is a scroll handle, not a repeating pattern, so it's stretched
+        # to the handle's own proportions rather than tiled. Same for the
+        # connector gradient: one image, resized to whatever width the
+        # current start/end gap happens to be on each repaint.
+        self._handle_pixmap = resource_qpixmap("handle_texture.png")
+        self._gradient_pixmap = resource_qpixmap("handle_connector_gradient.png")
 
     # ------------------------------------------------------------ public API
 
@@ -89,7 +100,16 @@ class TrimTimeline(QWidget):
             self._dragging = "end"
             self.drag_started.emit()
         else:
-            self._dragging = None
+            # Clicked on the bar itself, not on a handle. Move whichever
+            # handle is on the same side of the current playback marker
+            # as the click -- left of the playhead always moves the
+            # start handle, right of it always moves the end handle --
+            # and start dragging it from there immediately, rather than
+            # requiring the handle to be grabbed precisely first.
+            playhead_x = self._time_to_x(self._playhead)
+            self._dragging = "start" if x < playhead_x else "end"
+            self.drag_started.emit()
+            self._drag_to(self._x_to_time(x))
 
     def _drag_to(self, t: float) -> None:
         if self._dragging is None:
@@ -103,7 +123,10 @@ class TrimTimeline(QWidget):
         self.seek_requested.emit(t)
 
     def _release(self) -> None:
+        was_dragging = self._dragging is not None
         self._dragging = None
+        if was_dragging:
+            self.drag_finished.emit(self._start, self._end)
 
     # ------------------------------------------------------------ Qt event wrappers
 
@@ -131,20 +154,23 @@ class TrimTimeline(QWidget):
         # Full-duration background track
         painter.fillRect(bar_rect_left, bar_y, int(bar_rect_width), bar_height, QColor("#3a3a3a"))
 
-        # Selected range highlight
+        # Selected range highlight -- the connector gradient image,
+        # stretched to whatever width the current start/end gap is.
         start_x = self._time_to_x(self._start)
         end_x = self._time_to_x(self._end)
-        painter.fillRect(int(start_x), bar_y, int(end_x - start_x), bar_height, QColor("#4a90d9"))
+        selection_rect = QRect(int(start_x), bar_y, max(int(end_x - start_x), 0), bar_height)
+        if selection_rect.width() > 0:
+            painter.drawPixmap(selection_rect, self._gradient_pixmap)
 
         # Playhead
         playhead_x = self._time_to_x(self._playhead)
         painter.setPen(QPen(QColor("#ffffff"), 2))
         painter.drawLine(QPointF(playhead_x, 4), QPointF(playhead_x, self.height() - 4))
 
-        # Handles
+        # Handles -- the texture image stretched to the handle's own
+        # rect (not tiled; it's a scroll handle, not a repeating pattern).
         for x in (start_x, end_x):
-            painter.setPen(QPen(QColor("#000000"), 1))
-            painter.setBrush(QColor("#e0e0e0"))
-            painter.drawRect(int(x - HANDLE_WIDTH / 2), 2, HANDLE_WIDTH, self.height() - 4)
+            handle_rect = QRect(int(x - HANDLE_WIDTH / 2), 2, HANDLE_WIDTH, self.height() - 4)
+            painter.drawPixmap(handle_rect, self._handle_pixmap)
 
         painter.end()

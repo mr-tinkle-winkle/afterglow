@@ -45,14 +45,37 @@ class EditorPage(QWidget):
         self.current_video_id: int | None = None
         self._duration: float = 0.0
         self._slider_being_dragged = False
+        # Live playback preview is bounded to the current UNSAVED trim
+        # selection -- Play always starts from the trim start, and
+        # playback auto-pauses at the trim end, so scrubbing through a
+        # long capture to find your cut points doesn't mean sitting
+        # through everything after them too. Deliberately separate from
+        # trim_timeline.start/end: those update continuously while a
+        # handle is being dragged (for the live label), but the preview
+        # bounds below only update once the handle is released, so the
+        # clamp point doesn't jitter mid-drag.
+        self._preview_start: float = 0.0
+        self._preview_end: float = 0.0
 
         layout = QVBoxLayout(self)
 
+        # ---- video + volume slider row ----
+        video_row = QHBoxLayout()
+        self.volume_slider = QSlider(Qt.Vertical)
+        self.volume_slider.setRange(0, 100)
+        self.volume_slider.setValue(100)
+        self.volume_slider.setToolTip("Playback volume (this doesn't affect the saved video)")
+        self.volume_slider.valueChanged.connect(self._on_volume_changed)
+        video_row.addWidget(self.volume_slider)
+
         self.video_widget = MpvVideoWidget()
-        layout.addWidget(self.video_widget, stretch=1)
+        video_row.addWidget(self.video_widget, stretch=1)
+        layout.addLayout(video_row, stretch=1)
+
         self.video_widget.position_changed.connect(self._on_position_changed)
         self.video_widget.duration_known.connect(self._on_duration_known)
         self.video_widget.playback_ended.connect(self._on_playback_ended)
+        self.video_widget.set_volume(self.volume_slider.value())
 
         # ---- transport controls ----
         transport_row = QHBoxLayout()
@@ -78,6 +101,7 @@ class EditorPage(QWidget):
         self.trim_timeline.range_changed.connect(self._on_trim_range_changed)
         self.trim_timeline.seek_requested.connect(self._on_trim_seek_requested)
         self.trim_timeline.drag_started.connect(self._on_trim_drag_started)
+        self.trim_timeline.drag_finished.connect(self._on_trim_drag_finished)
         layout.addWidget(self.trim_timeline)
 
         self.trim_range_label = QLabel("Start: 0:00   End: 0:00   Selected: 0:00")
@@ -122,10 +146,19 @@ class EditorPage(QWidget):
         layout.addLayout(save_row)
 
         button_row = QHBoxLayout()
-        self.undo_btn = QPushButton("Undo Last Edit")
+        self.undo_btn = QPushButton("Undo Edits")
         self.undo_btn.setEnabled(False)
         self.undo_btn.clicked.connect(self._undo)
         button_row.addWidget(self.undo_btn)
+
+        self.clear_backup_btn = QPushButton("Clear Edit Backup")
+        self.clear_backup_btn.setToolTip(
+            "Delete this video's edit backup to free up space. The edit "
+            "itself stays applied -- you just give up the ability to Undo."
+        )
+        self.clear_backup_btn.setEnabled(False)
+        self.clear_backup_btn.clicked.connect(self._clear_edit_backup)
+        button_row.addWidget(self.clear_backup_btn)
         layout.addLayout(button_row)
 
     # ------------------------------------------------------------ loading
@@ -142,6 +175,7 @@ class EditorPage(QWidget):
                 "or right-click it and choose Edit."
             )
             self.undo_btn.setEnabled(False)
+            self.clear_backup_btn.setEnabled(False)
             self.play_pause_btn.setEnabled(False)
             self.seek_slider.setEnabled(False)
             self.trim_timeline.setEnabled(False)
@@ -163,19 +197,53 @@ class EditorPage(QWidget):
             f"<b>{video.title}</b>"
             f"{' &middot; ' + ', '.join(video.tags) if video.tags else ''}"
         )
-        self.undo_btn.setEnabled(video.has_edit)
+        # Both require an actual backup to act on -- once Clear Edit Backup
+        # (or a prior Undo) has removed it, has_edit can still be true
+        # (the trim is still applied) but there's nothing left to undo or
+        # clear.
+        can_undo = video.has_edit and video.backup_path is not None
+        self.undo_btn.setEnabled(can_undo)
+        self.clear_backup_btn.setEnabled(can_undo)
 
     # ------------------------------------------------------------ transport
 
     def _toggle_play_pause(self) -> None:
         if self.video_widget.is_paused:
+            # Starting playback from outside (or at the tail of) the
+            # current trim selection jumps to the trim start first,
+            # rather than resuming from wherever the playhead happened
+            # to be left -- otherwise "Play" after scrubbing past the end
+            # bound would just immediately hit it again and stop.
+            position = self._current_position()
+            if position < self._preview_start or position >= self._preview_end:
+                self.video_widget.seek(self._preview_start)
             self.video_widget.play()
             self.play_pause_btn.setText("Pause")
         else:
             self.video_widget.pause()
             self.play_pause_btn.setText("Play")
 
+    def _on_volume_changed(self, value: int) -> None:
+        self.video_widget.set_volume(value)
+
+    def _current_position(self) -> float:
+        if self._duration <= 0:
+            return 0.0
+        return (self.seek_slider.value() / self.seek_slider.maximum()) * self._duration
+
     def _on_position_changed(self, position: float) -> None:
+        if (
+            not self.video_widget.is_paused
+            and self._preview_end > 0
+            and position >= self._preview_end
+        ):
+            # Live preview is bounded to the unsaved trim selection --
+            # stop right at the trim end instead of playing on into
+            # footage that's about to be cut.
+            self.video_widget.pause()
+            self.video_widget.seek(self._preview_end)
+            self.play_pause_btn.setText("Play")
+            return
         if not self._slider_being_dragged and self._duration > 0:
             slider_value = int((position / self._duration) * self.seek_slider.maximum())
             self.seek_slider.blockSignals(True)
@@ -188,6 +256,8 @@ class EditorPage(QWidget):
         self._duration = duration
         self.time_label.setText(f"0:00 / {_format_time(duration)}")
         self.trim_timeline.set_duration(duration)
+        self._preview_start = 0.0
+        self._preview_end = duration
         self._update_trim_range_label(0.0, duration)
 
     def _on_slider_released(self) -> None:
@@ -210,6 +280,13 @@ class EditorPage(QWidget):
 
     def _on_trim_range_changed(self, start: float, end: float) -> None:
         self._update_trim_range_label(start, end)
+
+    def _on_trim_drag_finished(self, start: float, end: float) -> None:
+        # Commit the new preview bounds only now, on release -- not on
+        # every intermediate range_changed while the handle is still
+        # moving, so the live-playback clamp doesn't jitter mid-drag.
+        self._preview_start = start
+        self._preview_end = end
 
     def _on_trim_seek_requested(self, position: float) -> None:
         self.video_widget.seek(position)
@@ -247,4 +324,9 @@ class EditorPage(QWidget):
     def _undo(self) -> None:
         if self.current_video_id is not None:
             library.undo_edit(self.current_video_id)
+            self._refresh_display()
+
+    def _clear_edit_backup(self) -> None:
+        if self.current_video_id is not None:
+            library.clear_edit_backup(self.current_video_id)
             self._refresh_display()

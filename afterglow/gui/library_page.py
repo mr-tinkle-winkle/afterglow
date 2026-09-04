@@ -20,9 +20,13 @@ from PySide6.QtWidgets import (
 )
 
 from .. import library
-from .video_card import VideoCard
+from .video_card import VideoCard, THUMB_SIZE
+from .resources import resource_qicon
 
-GRID_COLUMNS = 4
+# Approximate on-screen width of one card (thumbnail + its own internal
+# margins + the grid's inter-column spacing) -- used only to decide how
+# many columns currently fit, not as an exact pixel layout.
+_APPROX_CARD_WIDTH = THUMB_SIZE.width() + 24
 
 
 class _VideoGridTab(QWidget):
@@ -33,6 +37,13 @@ class _VideoGridTab(QWidget):
         self._uploaded_only = uploaded_only
         self._local_only = local_only
         self._active_tags: set[str] = set()
+        # Persisted across resizes so a window resize can just re-flow
+        # the existing cards into a new column count instead of
+        # re-querying the DB and rebuilding every VideoCard from scratch
+        # (which refresh() -- called on actual data changes -- still
+        # does).
+        self._cards: list[VideoCard] = []
+        self._current_columns = 1
 
         outer = QVBoxLayout(self)
 
@@ -92,12 +103,16 @@ class _VideoGridTab(QWidget):
     def refresh(self) -> None:
         self._rebuild_filters_menu()
 
-        # Clear existing cards.
+        # Clear existing cards -- data may have changed (new/deleted
+        # video, rename, tag change), so these are rebuilt from scratch
+        # rather than reused. Resizing (_relayout below) is the cheaper
+        # path that doesn't hit this.
         while self.grid_layout.count():
             item = self.grid_layout.takeAt(0)
             widget = item.widget()
             if widget:
                 widget.deleteLater()
+        self._cards = []
 
         videos = library.list_videos(
             tag_filter=list(self._active_tags) or None,
@@ -109,15 +124,36 @@ class _VideoGridTab(QWidget):
         self.empty_label.setVisible(len(videos) == 0)
         self.scroll.setVisible(len(videos) > 0)
 
-        for index, video in enumerate(videos):
+        for video in videos:
             card = VideoCard(video)
             card.edit_requested.connect(self.edit_requested.emit)
             card.deleted.connect(lambda _vid: self.refresh())
             card.tags_changed.connect(self.refresh)
             card.renamed.connect(self.refresh)
             card.upload_requested.connect(self._handle_upload_request)
-            row, col = divmod(index, GRID_COLUMNS)
-            self.grid_layout.addWidget(card, row, col)
+            self._cards.append(card)
+
+        self._relayout(self._columns_for_width(self.scroll.viewport().width()))
+
+    def _columns_for_width(self, width: int) -> int:
+        return max(1, width // _APPROX_CARD_WIDTH)
+
+    def _relayout(self, columns: int) -> None:
+        """Re-flow the existing card widgets into `columns` columns,
+        without recreating or re-querying them. Cheap enough to call on
+        every resize that actually changes the column count."""
+        for card in self._cards:
+            self.grid_layout.removeWidget(card)
+        for index, card in enumerate(self._cards):
+            row, col = divmod(index, columns)
+            self.grid_layout.addWidget(card, row, col, Qt.AlignTop)
+        self._current_columns = columns
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        columns = self._columns_for_width(self.scroll.viewport().width())
+        if columns != self._current_columns and self._cards:
+            self._relayout(columns)
 
     def _handle_upload_request(self, video_id: int) -> None:
         QMessageBox.information(
@@ -134,9 +170,11 @@ class LibraryPage(QWidget):
         super().__init__(parent)
         layout = QVBoxLayout(self)
 
-        # Prune before the tabs build their initial grids, so the very
-        # first render already reflects reality rather than showing stale
-        # entries until the next refresh.
+        # Ingest/prune before the tabs build their initial grids, so the
+        # very first render already reflects reality (manually-dropped-in
+        # clips included) rather than showing stale/incomplete entries
+        # until the next refresh.
+        library.scan_and_ingest_new_videos()
         library.prune_missing_videos()
 
         self.tabs = QTabWidget()
@@ -145,15 +183,44 @@ class LibraryPage(QWidget):
         self.local_tab.edit_requested.connect(self.edit_requested.emit)
         self.uploaded_tab.edit_requested.connect(self.edit_requested.emit)
 
-        self.tabs.addTab(self.local_tab, "Local")
-        self.tabs.addTab(self.uploaded_tab, "Uploaded")
+        # Icon-only tabs (no text) -- the floppy disk / wifi icons stand in
+        # for Local / Uploaded.
+        self.tabs.addTab(self.local_tab, resource_qicon("local_videos.png"), "")
+        self.tabs.addTab(self.uploaded_tab, resource_qicon("uploaded_videos.png"), "")
+        self.tabs.setTabToolTip(0, "Local")
+        self.tabs.setTabToolTip(1, "Uploaded")
         layout.addWidget(self.tabs)
+
+        # Shown when the Editor is opened with no video ever having been
+        # selected -- MainWindow redirects here and calls
+        # show_status_message() instead of leaving the Editor on its own
+        # empty state.
+        self.status_bar = QLabel("")
+        self.status_bar.setAlignment(Qt.AlignCenter)
+        self.status_bar.setStyleSheet("background: palette(midlight); padding: 6px;")
+        self.status_bar.setVisible(False)
+        layout.addWidget(self.status_bar)
+
+        # Once an actual video is picked to edit, any "Select a video."
+        # prompt no longer applies.
+        self.edit_requested.connect(lambda _video_id: self.clear_status_message())
+
+    def show_status_message(self, text: str) -> None:
+        self.status_bar.setText(text)
+        self.status_bar.setVisible(True)
+
+    def clear_status_message(self) -> None:
+        self.status_bar.setVisible(False)
 
     def refresh(self) -> None:
         """Called by MainWindow whenever the Library page becomes visible,
         so edits/deletes made from the Editor page are reflected, and any
         clip files removed outside the app (deleted manually, etc.) drop
         out of the list instead of lingering as broken entries forever."""
+        newly_added = library.scan_and_ingest_new_videos()
+        if newly_added:
+            print(f"Picked up {len(newly_added)} video{'s' if len(newly_added) != 1 else ''} "
+                  f"found in the clips folder that weren't in the library yet.")
         removed_ids = library.prune_missing_videos()
         if removed_ids:
             print(f"Removed {len(removed_ids)} library entr{'y' if len(removed_ids) == 1 else 'ies'} "

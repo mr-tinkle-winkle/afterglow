@@ -13,6 +13,19 @@ def main() -> None:
     db.init_db()
     app = QApplication(sys.argv)
 
+    # QApplication.setWindowIcon() only covers the title bar. The tray,
+    # taskbar, and dock instead identify the app by WM_CLASS, which Qt
+    # derives from the running binary's name unless told otherwise -- for
+    # an app launched via a Python entry point that's the interpreter
+    # (python3), not afterglow, which is why the tray showed the Python
+    # icon/name, and why the icon lookup then failed and fell back to the
+    # empty placeholder rather than resolving through the icon theme at
+    # all. setDesktopFileName() tells Qt/the window manager which
+    # installed .desktop entry (data/applications/afterglow.desktop) this
+    # process corresponds to, so tray/taskbar/dock icon and name resolve
+    # correctly instead of falling back to the interpreter's identity.
+    app.setDesktopFileName("afterglow")
+
     # Defense in depth alongside the same call in mpv_widget.py: QApplication
     # construction is exactly where Qt changes the process's C library
     # locale based on the desktop environment's settings, which is what

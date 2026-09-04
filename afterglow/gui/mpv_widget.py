@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import locale
 
-from PySide6.QtCore import Signal
+from PySide6.QtCore import Signal, QTimer
 from PySide6.QtGui import QOpenGLContext
 from PySide6.QtOpenGLWidgets import QOpenGLWidget
 
@@ -130,6 +130,24 @@ class MpvVideoWidget(QOpenGLWidget):
         )
         self._render_ctx.update_cb = self.update
 
+        # Covers a startup race: Qt only calls initializeGL() lazily, on
+        # this widget's first actual paint -- which can land either before
+        # or after load() has already told mpv to start decoding.
+        # update_cb is what mpv calls to say "a new frame is ready,
+        # please repaint", but if mpv had already produced (and tried to
+        # announce) its first frame before update_cb existed above, that
+        # one announcement is simply lost -- nothing was listening yet.
+        # Combined with the matching self.update() scheduled from load()
+        # below (for the opposite ordering, where GL isn't initialized
+        # yet when load() runs), this means at least one repaint always
+        # happens shortly after BOTH "GL is ready" and "mpv has a frame"
+        # are true, regardless of which happened first. This is the
+        # mechanism behind the reported first-play black screen: video
+        # controls (audio, position/duration, the scrubber) were
+        # confirmed unaffected since they don't go through update_cb at
+        # all, only the actual GL draw was ever missing.
+        self.update()
+
     def paintGL(self) -> None:
         if self._render_ctx is None:
             return
@@ -150,6 +168,19 @@ class MpvVideoWidget(QOpenGLWidget):
         self._mpv.play(path)
         self._mpv.pause = True  # load paused -- Editor decides whether/when to auto-play
 
+        # Second half of the first-frame fix explained in initializeGL()
+        # above: if GL wasn't initialized yet when load() runs, the
+        # self.update() there did nothing (paintGL() no-ops while
+        # self._render_ctx is still None). Once GL init does happen, its
+        # own self.update() call might in turn land before mpv has
+        # actually decoded/queued this video's first frame. A short
+        # delayed nudge here covers that ordering too, without needing to
+        # know exactly which of the two already fired. Safe to use
+        # QTimer.singleShot directly (unlike the mpv-callback-thread case
+        # documented on observe_property above) -- load() always runs on
+        # the main/Qt thread, which has a running event loop.
+        QTimer.singleShot(150, self.update)
+
     def play(self) -> None:
         self._mpv.pause = False
 
@@ -162,6 +193,12 @@ class MpvVideoWidget(QOpenGLWidget):
 
     def seek(self, position_sec: float) -> None:
         self._mpv.seek(position_sec, reference="absolute", precision="exact")
+
+    def set_volume(self, value: int) -> None:
+        """Client-side playback volume only (0-100) -- akin to a YouTube
+        player's volume control, this affects nothing about the saved
+        video file, only how loud THIS preview plays back."""
+        self._mpv.volume = max(0, min(100, value))
 
     def shutdown(self) -> None:
         """Call before the widget/app is destroyed -- mpv holds real

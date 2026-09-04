@@ -6,19 +6,27 @@ Responsibilities:
 - Make sure the replay buffer is running (start it if not).
 - Trigger a save, and figure out which file it just wrote.
 
-We do NOT rely on GetLastReplayBufferReplay's reported path to identify
-the new file -- confirmed unreliable in practice: it returned a STALE
-filename from a PREVIOUS save, not the one just requested, which then
-correctly (if confusingly) failed our own existence check since that
-older file had already been consumed and moved away by an earlier
-successful capture. Instead: snapshot OBS's output directory before
-requesting the save, then watch for whatever new file(s) actually appear
--- directory contents are ground truth in a way a possibly-cached API
-response isn't.
+save_replay_buffer() primarily waits on OBS's own ReplayBufferSaved event
+(via obsws-python's EventClient) to learn both WHEN the save is done and
+WHICH file it wrote (the event's savedReplayPath) -- this is what OBS
+itself uses to mean "done," so it's both faster and more precise than
+polling the output directory for a new file to appear and then guessing
+when its size has stopped changing.
+
+The directory-polling approach (_save_replay_buffer_via_polling) is kept
+as a fallback for if the event never arrives -- e.g. an obs-websocket
+version where OUTPUTS-category events aren't sent for some reason, or a
+network hiccup drops the one message we needed. We do NOT rely on
+GetLastReplayBufferReplay's reported path as a fallback identifier --
+confirmed unreliable in practice: it returned a STALE filename from a
+PREVIOUS save, not the one just requested, which then correctly (if
+confusingly) failed our own existence check since that older file had
+already been consumed and moved away by an earlier successful capture.
 """
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from pathlib import Path
 
@@ -34,9 +42,10 @@ logging.getLogger("obsws_python").setLevel(logging.CRITICAL)
 
 logger = logging.getLogger("afterglow.obs_client")
 
-# How long to wait for a new file to appear in OBS's output directory
-# after requesting a save, and separately, how long to wait for that new
-# file's size to stop changing before treating it as finished.
+# How long to wait for OBS's ReplayBufferSaved event before falling back to
+# directory polling, and separately (within that fallback), how long to
+# wait for a new file to appear and then for its size to stop changing.
+EVENT_MAX_WAIT_SEC = 10
 DIR_WATCH_MAX_WAIT_SEC = 30
 STABILIZE_MAX_WAIT_SEC = 30
 POLL_INTERVAL_SEC = 0.3
@@ -50,6 +59,7 @@ class OBSClient:
     def __init__(self, settings: OBSSettings):
         self._settings = settings
         self._client: obs.ReqClient | None = None
+        self._event_client: obs.EventClient | None = None
 
     def connect(self) -> None:
         try:
@@ -65,10 +75,32 @@ class OBSClient:
                 f"Is OBS running with obs-websocket enabled? ({e})"
             ) from e
 
+        # Best-effort: a second, event-subscribed connection used only to
+        # learn the instant a replay buffer save finishes. If this fails
+        # for any reason, save_replay_buffer() just falls back to
+        # directory polling entirely (see its docstring) -- it's not
+        # required for the app to function, only for it to react quickly.
+        try:
+            self._event_client = obs.EventClient(
+                host=self._settings.host,
+                port=self._settings.port,
+                password=self._settings.password,
+                timeout=5,
+            )
+        except Exception as e:
+            logger.warning(
+                f"Could not open an event subscription to OBS (falling back to "
+                f"directory polling for replay buffer saves): {e}"
+            )
+            self._event_client = None
+
     def disconnect(self) -> None:
         if self._client is not None:
             self._client.disconnect()
             self._client = None
+        if self._event_client is not None:
+            self._event_client.disconnect()
+            self._event_client = None
 
     def __enter__(self) -> "OBSClient":
         self.connect()
@@ -145,16 +177,80 @@ class OBSClient:
     def save_replay_buffer(self) -> Path:
         """
         Trigger OBS to flush its replay buffer to disk, and return the path
-        of the NEW file it wrote -- identified by watching OBS's output
-        directory for new entries, not by trusting GetLastReplayBufferReplay
-        (see module docstring for why). If OBS's "Automatically Remux to
-        mp4" setting produces a second file alongside the raw one, the
-        remuxed file is preferred as the target (matches OBS's own notion
-        of "the finished output" when that setting is on), and any other
-        new file is deleted once we've confirmed which one we're using.
+        of the file it wrote. Waits on OBS's own ReplayBufferSaved event to
+        learn both when it's done and which file it is (see module
+        docstring) -- falling back to directory polling if that event
+        doesn't arrive, or if the event subscription itself never
+        connected. Either way, applies the user-configurable
+        wait_after_replay_buffer_finishes_sec grace period at the end.
+        """
+        self.ensure_replay_buffer_active()
+
+        if self._event_client is not None:
+            path = self._save_replay_buffer_via_event()
+            if path is not None:
+                time.sleep(self._settings.wait_after_replay_buffer_finishes_sec)
+                return path
+            logger.warning(
+                f"ReplayBufferSaved event didn't arrive within {EVENT_MAX_WAIT_SEC}s -- "
+                f"falling back to directory polling."
+            )
+
+        path = self._save_replay_buffer_via_polling()
+        time.sleep(self._settings.wait_after_replay_buffer_finishes_sec)
+        return path
+
+    def _save_replay_buffer_via_event(self) -> Path | None:
+        """
+        Returns the saved file's path as soon as OBS's ReplayBufferSaved
+        event reports it, or None on timeout/failure (caller falls back
+        to polling). The save is only actually requested once this
+        callback is registered and ready to catch it -- registering
+        AFTER calling save_replay_buffer() would risk missing the event
+        if OBS responds unusually fast.
         """
         c = self._require_client()
-        self.ensure_replay_buffer_active()
+        got_event = threading.Event()
+        result: dict[str, str] = {}
+
+        def on_replay_buffer_saved(data) -> None:
+            result["path"] = data.saved_replay_path
+            got_event.set()
+
+        # obsws-python identifies callbacks by function name
+        # (on_<snake_case_event_name>) -- see callback.py's trigger().
+        self._event_client.callback.register(on_replay_buffer_saved)
+        try:
+            c.save_replay_buffer()
+            logger.info("Requested replay buffer save from OBS -- waiting for ReplayBufferSaved event...")
+            if not got_event.wait(timeout=EVENT_MAX_WAIT_SEC):
+                return None
+        except Exception as e:
+            logger.warning(f"Error while requesting/awaiting replay buffer save via event: {e}")
+            return None
+        finally:
+            self._event_client.callback.deregister(on_replay_buffer_saved)
+
+        path = Path(result["path"])
+        if not path.exists():
+            logger.warning(
+                f"ReplayBufferSaved event reported {path}, but it doesn't exist "
+                f"from this process's point of view (e.g. a path OBS sees "
+                f"differently than we do) -- falling back to directory polling."
+            )
+            return None
+        logger.info(f"Replay file ready (via event): {path}")
+        return path
+
+    def _save_replay_buffer_via_polling(self) -> Path:
+        """
+        Fallback used when the ReplayBufferSaved event isn't available:
+        snapshot OBS's output directory before requesting the save, then
+        watch for whatever new file(s) actually appear -- directory
+        contents are ground truth in a way a possibly-cached API response
+        isn't -- and wait for the resulting file's size to stop changing.
+        """
+        c = self._require_client()
 
         output_dir = self.get_output_directory()
         if output_dir is None:

@@ -13,7 +13,17 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import db
-from .editor import TrimRequest, commit_trim, undo_trim, probe_duration, EditorError
+from . import config
+from .editor import (
+    TrimRequest, commit_trim, undo_trim, clear_backup, probe_duration,
+    EditorError,
+)
+
+# Video file extensions recognized by scan_and_ingest_new_videos(). Matches
+# what OBS itself can produce for the replay buffer (mp4/mkv are the two
+# realistic cases; the others are included for anyone who's changed their
+# OBS output format or drags in clips from elsewhere).
+KNOWN_VIDEO_EXTENSIONS = {".mp4", ".mkv", ".mov", ".webm", ".avi"}
 
 
 class LibraryError(RuntimeError):
@@ -205,6 +215,44 @@ def prune_missing_videos() -> list[int]:
     return removed_ids
 
 
+def scan_and_ingest_new_videos() -> list[Video]:
+    """
+    Pick up video files that exist in the clips folder but aren't tracked
+    in the DB yet -- e.g. dragged/dropped in manually, or copied over from
+    elsewhere. Previously the library only ever gained entries through
+    add_video() being called from the capture pipeline, so anything placed
+    into the clips folder by other means was invisible to it forever.
+
+    Skips the Edit Backups folder (those are .orig copies of tracked
+    videos, not videos in their own right) and any file already present
+    at that exact path in the DB. Ingested videos get their filename stem
+    as a default title and no tags/clip_config -- same starting state a
+    freshly-captured clip would have before the user names it.
+
+    Returns the newly-added Video rows (empty if nothing new was found).
+    """
+    settings = config.load()
+    clips_dir = settings.clips_path()
+    if not clips_dir.is_dir():
+        return []
+
+    with db.get_conn() as conn:
+        known_paths = {row["path"] for row in conn.execute("SELECT path FROM videos")}
+
+    newly_added = []
+    for entry in sorted(clips_dir.iterdir()):
+        if entry.is_dir():
+            continue  # implicitly skips the "Edit Backups" folder itself
+        if entry.suffix.lower() not in KNOWN_VIDEO_EXTENSIONS:
+            continue
+        if entry.name.endswith(".trim_tmp" + entry.suffix):
+            continue  # ffmpeg's in-progress trim output, not a real clip
+        if str(entry) in known_paths:
+            continue
+        newly_added.append(add_video(entry, title=entry.stem))
+    return newly_added
+
+
 # ---------------------------------------------------------------- tags
 
 def add_tag_to_video(video_id: int, tag_name: str) -> None:
@@ -258,6 +306,19 @@ def undo_edit(video_id: int) -> Video:
             "UPDATE videos SET has_edit = 0, backup_path = NULL, duration_sec = ? WHERE id = ?",
             (new_duration, video_id),
         )
+    return get_video(video_id)
+
+
+def clear_edit_backup(video_id: int) -> Video:
+    """Discard a video's edit backup, giving up the ability to Undo while
+    leaving the edit itself in place. Distinct from undo_edit(), which
+    restores from the backup instead of deleting it."""
+    video = get_video(video_id)
+    if not video.has_edit or not video.backup_path:
+        raise LibraryError("This video has no edit backup to clear.")
+    clear_backup(Path(video.backup_path))
+    with db.get_conn() as conn:
+        conn.execute("UPDATE videos SET backup_path = NULL WHERE id = ?", (video_id,))
     return get_video(video_id)
 
 
