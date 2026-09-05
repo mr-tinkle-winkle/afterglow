@@ -241,6 +241,7 @@ class LibraryPage(QWidget):
         # until the next refresh.
         library.scan_and_ingest_new_videos()
         library.prune_missing_videos()
+        library.remove_stray_orig_entries()
 
         self.tabs = QTabWidget()
         self.local_tab = _VideoGridTab(uploaded_only=False, local_only=True)
@@ -296,5 +297,9 @@ class LibraryPage(QWidget):
         if removed_ids:
             print(f"Removed {len(removed_ids)} library entr{'y' if len(removed_ids) == 1 else 'ies'} "
                   f"whose file no longer exists on disk.")
+        stray_orig_ids = library.remove_stray_orig_entries()
+        if stray_orig_ids:
+            print(f"Removed {len(stray_orig_ids)} .orig backup file{'s' if len(stray_orig_ids) != 1 else ''} "
+                  f"that had been mistakenly listed as library entries.")
         self.local_tab.refresh()
         self.uploaded_tab.refresh()

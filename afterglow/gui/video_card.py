@@ -93,14 +93,13 @@ class VideoCard(QWidget):
         self.title_label.setWordWrap(True)
         self.title_label.setAlignment(Qt.AlignCenter)
         self.title_label.setFixedWidth(THUMB_SIZE.width())
-        # 2.5x the app's actual default label size (queried at runtime,
-        # not assumed) -- titles were reportedly unreadable at the
-        # default size.
+        # 1.875x the app's actual default label size -- was 2.5x, then
+        # asked to be brought down to 75% of that (2.5 * 0.75 = 1.875).
         title_font = self.title_label.font()
         base_pt = title_font.pointSizeF()
         if base_pt <= 0:  # some platforms report pixel-based fonts instead
             base_pt = 9.0
-        title_font.setPointSizeF(base_pt * 2.5)
+        title_font.setPointSizeF(base_pt * 1.875)
         self.title_label.setFont(title_font)
         layout.addWidget(self.title_label)
 
@@ -135,10 +134,15 @@ class VideoCard(QWidget):
         # free -- new clips start with has_edit=False (bordered),
         # trimming sets it True (border gone), and deleted files are
         # already removed from the DB entirely by prune_missing_videos.
+        #
+        # Thinner (1px, was 3px) and semi-transparent (rgba alpha 130/255)
+        # -- the original solid 3px was reported as too visually loud.
         if video.has_edit:
             self.setStyleSheet("")
         else:
-            self.setStyleSheet("VideoCard { border: 3px solid orange; border-radius: 4px; }")
+            self.setStyleSheet(
+                "VideoCard { border: 1px solid rgba(255, 165, 0, 130); border-radius: 4px; }"
+            )
 
     def _load_pixmap(self, video: "library.Video") -> QPixmap:
         thumb_path = thumbnails.get_thumbnail(video.id, Path(video.path))

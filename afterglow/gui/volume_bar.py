@@ -19,8 +19,12 @@ from PySide6.QtWidgets import QWidget
 from .resources import resource_qpixmap
 
 ICON_MARGIN = 6      # gap between the speaker icon and the track
-TRACK_HEIGHT = 9      # 40% of the original 22px, matching the panel's own height reduction
-MARKER_SIZE = QSize(12, 12)  # scaled down from 20px alongside the panel; kept above 8px for legibility
+TRACK_HEIGHT = 8      # even (not 9) so it centers exactly on an integer
+                       # pixel -- see the marker-centering note below
+MARKER_SIZE = QSize(15, 15)  # 1.25x the previous 12px
+SPEAKER_ICON_SIZE = 16       # 2x the previous EFFECTIVE drawn size (was a
+                              # 16px box shrunk by a 4px margin on each
+                              # side down to 8px actually drawn)
 
 
 class VolumeBar(QWidget):
@@ -50,12 +54,16 @@ class VolumeBar(QWidget):
     # ------------------------------------------------------------ pure coordinate math
 
     def _icon_size(self) -> int:
-        return self.height()
+        return SPEAKER_ICON_SIZE
 
     def _track_rect(self) -> QRect:
         icon_size = self._icon_size()
         left = icon_size + ICON_MARGIN
         width = max(self.width() - left, 1)
+        # TRACK_HEIGHT is even specifically so this divides with no
+        # remainder -- see the marker vertical-centering note in
+        # paintEvent below for why an odd track height was the actual
+        # cause of the marker looking off-center.
         top = (self.height() - TRACK_HEIGHT) // 2
         return QRect(left, top, width, TRACK_HEIGHT)
 
@@ -92,7 +100,10 @@ class VolumeBar(QWidget):
         painter.setRenderHint(QPainter.SmoothPixmapTransform)
 
         icon_size = self._icon_size()
-        icon_rect = QRect(0, 0, icon_size, icon_size).adjusted(4, 4, -4, -4)
+        # No shrinking margin here (unlike before) -- SPEAKER_ICON_SIZE
+        # already IS the target drawn size, doubled from the old
+        # icon_size-minus-4px-margin-on-each-side result.
+        icon_rect = QRect(0, (self.height() - icon_size) // 2, icon_size, icon_size)
         painter.drawPixmap(icon_rect, self._speaker_pixmap)
 
         track = self._track_rect()
@@ -117,7 +128,14 @@ class VolumeBar(QWidget):
             )
             painter.drawPixmap(remainder_rect, self._inactive_pixmap)
 
-        # Marker at the current value's position.
+        # Marker at the current value's position. Vertically centered on
+        # self.height()/2 exactly -- the marker looking "slightly below"
+        # center was actually TRACK_HEIGHT being odd (9): (16-9)//2 == 3
+        # (integer division truncates down), so the track's own visual
+        # center sat at 3+9/2=7.5 while the marker centered on the
+        # widget's true center of 8.0 -- correct on its own, but visibly
+        # lower than the track it sits on. TRACK_HEIGHT is now even (8),
+        # so its center lands on exactly 8.0 too.
         marker_x = self._x_at_value(self._value)
         marker_rect = QRect(0, 0, MARKER_SIZE.width(), MARKER_SIZE.height())
         marker_rect.moveCenter(QPointF(marker_x, self.height() / 2).toPoint())

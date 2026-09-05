@@ -277,6 +277,24 @@ def prune_missing_videos() -> list[int]:
     return removed_ids
 
 
+def remove_stray_orig_entries() -> list[int]:
+    """
+    Remove any video rows that are themselves .orig backup files --
+    covers entries that got ingested by an earlier version of
+    scan_and_ingest_new_videos(), before it excluded them. Only removes
+    the DB row/tag associations, same as prune_missing_videos() -- the
+    actual .orig file on disk is a legitimate backup and is left alone.
+    """
+    removed_ids = []
+    with db.get_conn() as conn:
+        rows = conn.execute("SELECT id, path FROM videos").fetchall()
+        for row in rows:
+            if Path(row["path"]).stem.endswith(".orig"):
+                conn.execute("DELETE FROM videos WHERE id = ?", (row["id"],))
+                removed_ids.append(row["id"])
+    return removed_ids
+
+
 def scan_and_ingest_new_videos() -> list[Video]:
     """
     Pick up video files that exist in the clips folder but aren't tracked
@@ -286,10 +304,14 @@ def scan_and_ingest_new_videos() -> list[Video]:
     into the clips folder by other means was invisible to it forever.
 
     Skips the Edit Backups folder (those are .orig copies of tracked
-    videos, not videos in their own right) and any file already present
-    at that exact path in the DB. Ingested videos get their filename stem
-    as a default title and no tags/clip_config -- same starting state a
-    freshly-captured clip would have before the user names it.
+    videos, not videos in their own right), any stray .orig file that
+    might exist directly in the clips folder itself (e.g. left over from
+    before backups moved into the Edit Backups folder, or from a version
+    of the app where a capture-time trim briefly created one -- see
+    clips.py's trigger_clip), and any file already present at that exact
+    path in the DB. Ingested videos get their filename stem as a default
+    title and no tags/clip_config -- same starting state a freshly-
+    captured clip would have before the user names it.
 
     Returns the newly-added Video rows (empty if nothing new was found).
     """
@@ -307,6 +329,8 @@ def scan_and_ingest_new_videos() -> list[Video]:
             continue  # implicitly skips the "Edit Backups" folder itself
         if entry.suffix.lower() not in KNOWN_VIDEO_EXTENSIONS:
             continue
+        if entry.stem.endswith(".orig"):
+            continue  # a backup file (<name>.orig.<ext>), not a real clip
         if entry.name.endswith(".trim_tmp" + entry.suffix):
             continue  # ffmpeg's in-progress trim output, not a real clip
         if str(entry) in known_paths:
