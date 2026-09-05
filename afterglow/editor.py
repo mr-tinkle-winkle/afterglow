@@ -108,7 +108,7 @@ def _find_keyframe_at_or_before(video_path: Path, target_sec: float) -> float:
 EDIT_BACKUPS_DIRNAME = "Edit Backups"
 
 
-def _backup_path_for(video_path: Path) -> Path:
+def backup_path_for(video_path: Path) -> Path:
     backups_dir = video_path.parent / EDIT_BACKUPS_DIRNAME
     backups_dir.mkdir(exist_ok=True)
     return backups_dir / (video_path.stem + ".orig" + video_path.suffix)
@@ -123,12 +123,27 @@ def clear_backup(backup_path: Path) -> None:
         backup_path.unlink()
 
 
-def commit_trim(request: TrimRequest, has_prior_edit: bool, existing_backup: Path | None) -> Path:
+def commit_trim(
+    request: TrimRequest, has_prior_edit: bool, existing_backup: Path | None,
+    skip_backup: bool = False,
+) -> Path | None:
     """
     Perform the trim in place (working file at request.video_path is
     replaced by the trimmed result). Returns the backup path that should be
     stored in the DB (created fresh on first edit, unchanged on subsequent
-    edits).
+    edits) -- or None if skip_backup is set.
+
+    skip_backup exists for the automatic capture-time trim (clips.py's
+    trigger_clip, cutting a fresh OBS export down to the requested clip
+    length): there's nothing meaningful to "undo" for a clip the user
+    hasn't even seen yet, so no backup is created at all, rather than
+    creating one via a full extra file copy just to immediately delete it
+    again. An earlier version did exactly that create-then-delete dance,
+    and the deletion step silently stopped working (and was also always
+    unnecessary I/O) once the backup's location changed to the Edit
+    Backups folder without that cleanup code being updated to match --
+    the actual cause of Edit Backups folders and .orig copies appearing
+    in OBS's raw output directory on every single capture.
 
     Caller (library.py) is responsible for updating the DB row.
     """
@@ -136,12 +151,14 @@ def commit_trim(request: TrimRequest, has_prior_edit: bool, existing_backup: Pat
     duration = probe_duration(video_path)
     request.validate(duration)
 
+    if skip_backup:
+        backup_path = None
     # Only back up on the FIRST edit -- subsequent edits should not
     # overwrite the backup with an already-edited version.
-    if has_prior_edit and existing_backup and existing_backup.exists():
+    elif has_prior_edit and existing_backup and existing_backup.exists():
         backup_path = existing_backup
     else:
-        backup_path = _backup_path_for(video_path)
+        backup_path = backup_path_for(video_path)
         shutil.copy2(video_path, backup_path)
 
     tmp_output = video_path.with_name(video_path.stem + ".trim_tmp" + video_path.suffix)

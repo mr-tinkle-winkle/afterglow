@@ -266,7 +266,7 @@ def trigger_clip(clip_config_id: int) -> Video:
             # my clip right now" pipeline, not a considered export.
             preset="veryfast",
         )
-        commit_trim(request, has_prior_edit=False, existing_backup=None)
+        commit_trim(request, has_prior_edit=False, existing_backup=None, skip_backup=True)
 
         # Verify the trim actually produced roughly the requested length,
         # loudly, rather than trusting ffmpeg's exit code alone. This is what
@@ -279,13 +279,6 @@ def trigger_clip(clip_config_id: int) -> Video:
                 f"expected ~{requested_duration:.2f}s. The raw OBS file has been left "
                 f"in place at {raw_path} for inspection rather than being moved/deleted."
             )
-
-        # commit_trim leaves a ".orig" backup next to raw_path we don't need
-        # here (this is a fresh OBS export, not a library video with undo
-        # semantics) -- clean it up.
-        stray_backup = raw_path.with_name(raw_path.stem + ".orig" + raw_path.suffix)
-        if stray_backup.exists():
-            stray_backup.unlink()
 
     clips_dir = settings.clips_path()
     clips_dir.mkdir(parents=True, exist_ok=True)

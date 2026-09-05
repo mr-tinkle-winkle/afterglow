@@ -13,6 +13,7 @@ grid/search/filter wiring twice.
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal, QSize
+from PySide6.QtGui import QActionGroup
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLineEdit, QToolButton,
     QMenu, QScrollArea, QLabel, QTabWidget, QMessageBox, QWidgetAction,
@@ -37,6 +38,7 @@ class _VideoGridTab(QWidget):
         self._uploaded_only = uploaded_only
         self._local_only = local_only
         self._active_tags: set[str] = set()
+        self._sort_by: str = library.DEFAULT_SORT
         # Persisted across resizes so a window resize can just re-flow
         # the existing cards into a new column count instead of
         # re-querying the DB and rebuilding every VideoCard from scratch
@@ -58,6 +60,12 @@ class _VideoGridTab(QWidget):
         self.filters_btn.setText("Filters")
         self.filters_btn.setPopupMode(QToolButton.InstantPopup)
         top_row.addWidget(self.filters_btn)
+
+        self.sort_btn = QToolButton()
+        self.sort_btn.setText("Sort By:")
+        self.sort_btn.setPopupMode(QToolButton.InstantPopup)
+        self._build_sort_menu()
+        top_row.addWidget(self.sort_btn)
         outer.addLayout(top_row)
 
         # ---- grid ----
@@ -65,6 +73,12 @@ class _VideoGridTab(QWidget):
         self.scroll.setWidgetResizable(True)
         self.grid_container = QWidget()
         self.grid_layout = QGridLayout(self.grid_container)
+        # Tightened from the 6px default -- this is on top of the
+        # row-stretch fix in _relayout() below, which addresses the much
+        # larger gap that was actually coming from leftover scroll-area
+        # space being split across rows rather than from this spacing
+        # value itself.
+        self.grid_layout.setVerticalSpacing(2)
         self.scroll.setWidget(self.grid_container)
         outer.addWidget(self.scroll, stretch=1)
 
@@ -98,6 +112,41 @@ class _VideoGridTab(QWidget):
             self._active_tags.discard(tag)
         self.refresh()
 
+    # ------------------------------------------------------------ sort menu
+
+    def _build_sort_menu(self) -> None:
+        # Built once (unlike the filters menu, which depends on which
+        # tags currently exist) -- the sort options themselves never
+        # change, only which one is checked.
+        menu = QMenu(self.sort_btn)
+        group = QActionGroup(menu)
+        group.setExclusive(True)
+
+        # (label, sort_by constant) pairs, each immediately followed by
+        # its inverse -- matches the requested ordering of each mode next
+        # to its opposite.
+        options = [
+            ("Creation date (newest first)", library.SORT_CREATED_NEWEST),
+            ("Creation date (oldest first)", library.SORT_CREATED_OLDEST),
+            ("Last modified (newest first)", library.SORT_MODIFIED_NEWEST),
+            ("Last modified (oldest first)", library.SORT_MODIFIED_OLDEST),
+            ("Name (A to Z)", library.SORT_NAME_A_TO_Z),
+            ("Name (Z to A)", library.SORT_NAME_Z_TO_A),
+            ("Video length (short to long)", library.SORT_LENGTH_SHORT_TO_LONG),
+            ("Video length (long to short)", library.SORT_LENGTH_LONG_TO_SHORT),
+        ]
+        for label, sort_by in options:
+            action = menu.addAction(label)
+            action.setCheckable(True)
+            action.setChecked(sort_by == self._sort_by)
+            action.triggered.connect(lambda checked, s=sort_by: self._set_sort_by(s))
+            group.addAction(action)
+        self.sort_btn.setMenu(menu)
+
+    def _set_sort_by(self, sort_by: str) -> None:
+        self._sort_by = sort_by
+        self.refresh()
+
     # ------------------------------------------------------------ grid rendering
 
     def refresh(self) -> None:
@@ -119,6 +168,7 @@ class _VideoGridTab(QWidget):
             uploaded_only=self._uploaded_only,
             local_only=self._local_only,
             search=self.search_edit.text().strip() or None,
+            sort_by=self._sort_by,
         )
 
         self.empty_label.setVisible(len(videos) == 0)
@@ -148,6 +198,21 @@ class _VideoGridTab(QWidget):
             row, col = divmod(index, columns)
             self.grid_layout.addWidget(card, row, col, Qt.AlignTop)
         self._current_columns = columns
+
+        # Without an absorbing row after the real content, QGridLayout
+        # splits any leftover vertical space (the scroll area's viewport
+        # is usually much taller than a row or two of cards) PROPORTION-
+        # ALLY ACROSS the actual content rows -- stretching them apart
+        # with large gaps between rows instead of packing them together.
+        # Reset a generous range first (a previous, larger row count may
+        # have left a stretch factor on a row index that's no longer the
+        # last one), then give exactly the row just past the real content
+        # all the stretch, so it absorbs 100% of the slack and the real
+        # rows stay packed at their natural height.
+        row_count = -(-len(self._cards) // columns) if self._cards else 0  # ceiling division
+        for stale_row in range(max(row_count + 2, 8)):
+            self.grid_layout.setRowStretch(stale_row, 0)
+        self.grid_layout.setRowStretch(row_count, 1)
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
@@ -184,12 +249,13 @@ class LibraryPage(QWidget):
         self.uploaded_tab.edit_requested.connect(self.edit_requested.emit)
 
         # Icon-only tabs (no text) -- the floppy disk / wifi icons stand in
-        # for Local / Uploaded. Explicitly sized to 3x the style's own
-        # default tab-bar icon size (queried at runtime rather than
-        # assumed, since it's style/platform-dependent) -- at the default
-        # size these were reportedly unreadable.
+        # for Local / Uploaded. 4.5x the style's own default tab-bar icon
+        # size: originally set to 3x (default_icon_size * 3), then asked
+        # to be 1.5x that current size on top -- 3 * 1.5 = 4.5x the
+        # original style default, queried at runtime rather than assumed.
         default_icon_size = self.tabs.style().pixelMetric(QStyle.PM_TabBarIconSize)
-        self.tabs.setIconSize(QSize(default_icon_size * 3, default_icon_size * 3))
+        tab_icon_size = round(default_icon_size * 4.5)
+        self.tabs.setIconSize(QSize(tab_icon_size, tab_icon_size))
         self.tabs.addTab(self.local_tab, resource_qicon("local_videos.png"), "")
         self.tabs.addTab(self.uploaded_tab, resource_qicon("uploaded_videos.png"), "")
         self.tabs.setTabToolTip(0, "Local")

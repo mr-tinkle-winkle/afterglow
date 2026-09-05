@@ -106,8 +106,53 @@ def get_video(video_id: int) -> Video:
         return _row_to_video(row, _tags_for_video(conn, video_id))
 
 
+# Sort modes for list_videos()'s sort_by parameter. "Last modified" isn't
+# a DB column -- edits (and undo) overwrite the video file in place
+# (editor.py's commit_trim/undo_trim both replace the file at its
+# existing path), so the filesystem's own mtime already reflects "last
+# actually changed" with no schema/migration needed; it's just read at
+# sort time instead of being a SQL ORDER BY column like the others.
+SORT_CREATED_NEWEST = "created_newest"
+SORT_CREATED_OLDEST = "created_oldest"
+SORT_MODIFIED_NEWEST = "modified_newest"
+SORT_MODIFIED_OLDEST = "modified_oldest"
+SORT_NAME_A_TO_Z = "name_a_to_z"
+SORT_NAME_Z_TO_A = "name_z_to_a"
+SORT_LENGTH_SHORT_TO_LONG = "length_short_to_long"
+SORT_LENGTH_LONG_TO_SHORT = "length_long_to_short"
+DEFAULT_SORT = SORT_CREATED_NEWEST
+
+
+def _video_mtime(video: "Video") -> float:
+    try:
+        return Path(video.path).stat().st_mtime
+    except OSError:
+        return 0.0  # file momentarily missing/racing a move -- sorts as oldest rather than erroring
+
+
+def _sort_videos(videos: list["Video"], sort_by: str) -> list["Video"]:
+    if sort_by == SORT_CREATED_NEWEST:
+        return sorted(videos, key=lambda v: v.created_at, reverse=True)
+    if sort_by == SORT_CREATED_OLDEST:
+        return sorted(videos, key=lambda v: v.created_at)
+    if sort_by == SORT_MODIFIED_NEWEST:
+        return sorted(videos, key=_video_mtime, reverse=True)
+    if sort_by == SORT_MODIFIED_OLDEST:
+        return sorted(videos, key=_video_mtime)
+    if sort_by == SORT_NAME_A_TO_Z:
+        return sorted(videos, key=lambda v: v.title.casefold())
+    if sort_by == SORT_NAME_Z_TO_A:
+        return sorted(videos, key=lambda v: v.title.casefold(), reverse=True)
+    if sort_by == SORT_LENGTH_SHORT_TO_LONG:
+        return sorted(videos, key=lambda v: v.duration_sec if v.duration_sec is not None else 0.0)
+    if sort_by == SORT_LENGTH_LONG_TO_SHORT:
+        return sorted(videos, key=lambda v: v.duration_sec if v.duration_sec is not None else 0.0, reverse=True)
+    return videos
+
+
 def list_videos(tag_filter: list[str] | None = None, uploaded_only: bool = False,
-                 local_only: bool = False, search: str | None = None) -> list[Video]:
+                 local_only: bool = False, search: str | None = None,
+                 sort_by: str = DEFAULT_SORT) -> list[Video]:
     """
     tag_filter: list of tag names, ANDed together (a video must have ALL of
     them) -- this matches "multiple filters can be applied at once" as an
@@ -144,16 +189,33 @@ def list_videos(tag_filter: list[str] | None = None, uploaded_only: bool = False
             query += " GROUP BY v.id HAVING COUNT(DISTINCT t.id) = ?"
             params.append(len(tag_filter))
 
+        # created_at ordering here is just a stable default fetch order;
+        # the real sort (including the non-SQL modified-date case) is
+        # applied in Python below via _sort_videos.
         query += " ORDER BY v.created_at DESC"
 
         rows = conn.execute(query, params).fetchall()
-        return [_row_to_video(r, _tags_for_video(conn, r["id"])) for r in rows]
+        videos = [_row_to_video(r, _tags_for_video(conn, r["id"])) for r in rows]
+        return _sort_videos(videos, sort_by)
 
 
 def all_known_tags() -> list[str]:
     with db.get_conn() as conn:
         rows = conn.execute("SELECT name FROM tags ORDER BY name").fetchall()
         return [r["name"] for r in rows]
+
+
+def create_tag(tag_name: str) -> None:
+    """Create a tag/filter without applying it to any video -- used by
+    the Editor's Create New Filter dialog when "Apply to current video?"
+    is left unchecked. add_tag_to_video() already creates the tag as a
+    side effect when it IS being applied, so this only needs to cover
+    the create-without-applying case."""
+    tag_name = tag_name.strip()
+    if not tag_name:
+        raise LibraryError("Tag name can't be empty.")
+    with db.get_conn() as conn:
+        conn.execute("INSERT OR IGNORE INTO tags (name) VALUES (?)", (tag_name,))
 
 
 # ---------------------------------------------------------------- edit metadata

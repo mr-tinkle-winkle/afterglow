@@ -74,6 +74,12 @@ class VideoCard(QWidget):
         self.video_id = video.id
         self._video = video
 
+        # QWidget doesn't paint a stylesheet border by default -- needs
+        # this attribute set explicitly, or setStyleSheet below is a
+        # silent no-op.
+        self.setAttribute(Qt.WA_StyledBackground, True)
+        self._apply_edit_border(video)
+
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
 
@@ -87,6 +93,15 @@ class VideoCard(QWidget):
         self.title_label.setWordWrap(True)
         self.title_label.setAlignment(Qt.AlignCenter)
         self.title_label.setFixedWidth(THUMB_SIZE.width())
+        # 2.5x the app's actual default label size (queried at runtime,
+        # not assumed) -- titles were reportedly unreadable at the
+        # default size.
+        title_font = self.title_label.font()
+        base_pt = title_font.pointSizeF()
+        if base_pt <= 0:  # some platforms report pixel-based fonts instead
+            base_pt = 9.0
+        title_font.setPointSizeF(base_pt * 2.5)
+        self.title_label.setFont(title_font)
         layout.addWidget(self.title_label)
 
         if video.tags:
@@ -107,6 +122,23 @@ class VideoCard(QWidget):
 
         self.setContextMenuPolicy(Qt.CustomContextMenu)
         self.customContextMenuRequested.connect(self._show_context_menu)
+
+    def _apply_edit_border(self, video: "library.Video") -> None:
+        # video.has_edit already IS a per-video "has this been trimmed
+        # yet" flag, tracked in the DB and kept correct automatically by
+        # the existing edit/undo/prune/rescan logic -- a separate
+        # tracked list of "unedited" clip paths (built up as new clips
+        # arrive, reconciled against the clips folder on startup) would
+        # just be a second, independently-maintainable copy of the exact
+        # same fact, with its own chance to drift out of sync. Using the
+        # field that already exists gets identical visible behavior for
+        # free -- new clips start with has_edit=False (bordered),
+        # trimming sets it True (border gone), and deleted files are
+        # already removed from the DB entirely by prune_missing_videos.
+        if video.has_edit:
+            self.setStyleSheet("")
+        else:
+            self.setStyleSheet("VideoCard { border: 3px solid orange; border-radius: 4px; }")
 
     def _load_pixmap(self, video: "library.Video") -> QPixmap:
         thumb_path = thumbnails.get_thumbnail(video.id, Path(video.path))

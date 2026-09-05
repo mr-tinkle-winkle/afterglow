@@ -25,13 +25,43 @@ from __future__ import annotations
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QHBoxLayout, QPushButton,
-    QCheckBox, QMessageBox,
+    QCheckBox, QMessageBox, QLineEdit, QToolButton, QMenu, QWidgetAction,
+    QDialog, QDialogButtonBox,
 )
 
 from .. import library
 from .mpv_widget import MpvVideoWidget
 from .trim_timeline import TrimTimeline
 from .volume_bar import VolumeBar
+
+
+class CreateFilterDialog(QDialog):
+    """"Create New Filter": a name field plus "Apply to current video?" --
+    used from the Editor's + button next to its Filters dropdown."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Create New Filter")
+        layout = QVBoxLayout(self)
+
+        self.name_edit = QLineEdit()
+        self.name_edit.setPlaceholderText("Filter name")
+        layout.addWidget(self.name_edit)
+
+        self.apply_checkbox = QCheckBox("Apply to current video?")
+        self.apply_checkbox.setChecked(True)
+        layout.addWidget(self.apply_checkbox)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def filter_name(self) -> str:
+        return self.name_edit.text().strip()
+
+    def apply_to_current(self) -> bool:
+        return self.apply_checkbox.isChecked()
 
 
 def _format_time(seconds: float) -> str:
@@ -68,6 +98,28 @@ class EditorPage(QWidget):
 
         layout = QVBoxLayout(self)
 
+        # ---- title (editable) + filters, at the very top ----
+        title_row = QHBoxLayout()
+        self.title_edit = QLineEdit()
+        self.title_edit.setPlaceholderText("No video selected")
+        self.title_edit.setEnabled(False)
+        self.title_edit.editingFinished.connect(self._on_title_edited)
+        title_row.addWidget(self.title_edit, stretch=1)
+
+        self.filters_btn = QToolButton()
+        self.filters_btn.setText("Filters")
+        self.filters_btn.setPopupMode(QToolButton.InstantPopup)
+        self.filters_btn.setEnabled(False)
+        title_row.addWidget(self.filters_btn)
+
+        self.create_filter_btn = QToolButton()
+        self.create_filter_btn.setText("+")
+        self.create_filter_btn.setToolTip("Create New Filter")
+        self.create_filter_btn.setEnabled(False)
+        self.create_filter_btn.clicked.connect(self._open_create_filter_dialog)
+        title_row.addWidget(self.create_filter_btn)
+        layout.addLayout(title_row)
+
         self.video_widget = MpvVideoWidget()
         # Play/pause is now click-the-video-or-press-space (see
         # MpvVideoWidget) instead of a dedicated button.
@@ -98,17 +150,16 @@ class EditorPage(QWidget):
         self.trim_range_label.setAlignment(Qt.AlignCenter)
         layout.addWidget(self.trim_range_label)
 
-        # ---- volume (left, filling available width) + clip name (right) ----
+        # ---- volume (fills ~1/4 of the row, rest is blank space) ----
         volume_row = QHBoxLayout()
         self.volume_bar = VolumeBar()
         self.volume_bar.value_changed.connect(self._on_volume_changed)
         volume_row.addWidget(self.volume_bar, stretch=1)
-
-        self.info_label = QLabel("No video selected. Double-click a clip in the Library, "
-                                  "or right-click it and choose Edit.")
-        self.info_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        self.info_label.setWordWrap(True)
-        volume_row.addWidget(self.info_label)
+        # The volume bar and this trailing spacer are the row's only two
+        # stretchable items, so a 1:3 ratio gives the bar exactly 1/4 of
+        # the row's width -- "about a fourth of the width it currently
+        # does" -- with the remaining 3/4 showing as blank space.
+        volume_row.addStretch(3)
         layout.addLayout(volume_row)
 
         self.video_widget.set_volume(self.volume_bar.value)
@@ -169,10 +220,11 @@ class EditorPage(QWidget):
 
     def _refresh_display(self) -> None:
         if self.current_video_id is None:
-            self.info_label.setText(
-                "No video selected. Double-click a clip in the Library, "
-                "or right-click it and choose Edit."
-            )
+            self.title_edit.clear()
+            self.title_edit.setEnabled(False)
+            self.filters_btn.setEnabled(False)
+            self.filters_btn.setMenu(None)
+            self.create_filter_btn.setEnabled(False)
             self.undo_btn.setEnabled(False)
             self.clear_backup_btn.setEnabled(False)
             self.trim_timeline.setEnabled(False)
@@ -187,10 +239,12 @@ class EditorPage(QWidget):
         self.local_save_btn.setEnabled(True)
         self.save_upload_btn.setEnabled(True)
 
-        self.info_label.setText(
-            f"<b>{video.title}</b>"
-            f"{' &middot; ' + ', '.join(video.tags) if video.tags else ''}"
-        )
+        self.title_edit.setEnabled(True)
+        self.title_edit.setText(video.title)
+        self.filters_btn.setEnabled(True)
+        self.create_filter_btn.setEnabled(True)
+        self._rebuild_editor_filters_menu(video)
+
         # Both require an actual backup to act on -- once Clear Edit Backup
         # (or a prior Undo) has removed it, has_edit can still be true
         # (the trim is still applied) but there's nothing left to undo or
@@ -198,6 +252,58 @@ class EditorPage(QWidget):
         can_undo = video.has_edit and video.backup_path is not None
         self.undo_btn.setEnabled(can_undo)
         self.clear_backup_btn.setEnabled(can_undo)
+
+    def _on_title_edited(self) -> None:
+        if self.current_video_id is None:
+            return
+        new_title = self.title_edit.text().strip()
+        video = library.get_video(self.current_video_id)
+        if not new_title:
+            # Don't allow blanking the title out -- revert the box rather
+            # than saving an empty one.
+            self.title_edit.setText(video.title)
+            return
+        if new_title != video.title:
+            library.rename_video(self.current_video_id, title=new_title)
+
+    def _rebuild_editor_filters_menu(self, video: "library.Video") -> None:
+        menu = QMenu(self.filters_btn)
+        all_tags = library.all_known_tags()
+        if not all_tags:
+            action = menu.addAction("(no filters yet)")
+            action.setEnabled(False)
+        for tag in all_tags:
+            checkbox = QCheckBox(tag, menu)
+            checkbox.setChecked(tag in video.tags)
+            checkbox.toggled.connect(lambda checked, t=tag: self._toggle_video_filter(t, checked))
+            action = QWidgetAction(menu)
+            action.setDefaultWidget(checkbox)
+            menu.addAction(action)
+        self.filters_btn.setMenu(menu)
+
+    def _toggle_video_filter(self, tag: str, checked: bool) -> None:
+        if self.current_video_id is None:
+            return
+        if checked:
+            library.add_tag_to_video(self.current_video_id, tag)
+        else:
+            library.remove_tag_from_video(self.current_video_id, tag)
+
+    def _open_create_filter_dialog(self) -> None:
+        if self.current_video_id is None:
+            return
+        dialog = CreateFilterDialog(self)
+        if dialog.exec() != QDialog.Accepted:
+            return
+        name = dialog.filter_name()
+        if not name:
+            return
+        if dialog.apply_to_current():
+            library.add_tag_to_video(self.current_video_id, name)
+        else:
+            library.create_tag(name)
+        video = library.get_video(self.current_video_id)
+        self._rebuild_editor_filters_menu(video)
 
     # ------------------------------------------------------------ transport
 

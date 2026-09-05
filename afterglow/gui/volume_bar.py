@@ -19,8 +19,8 @@ from PySide6.QtWidgets import QWidget
 from .resources import resource_qpixmap
 
 ICON_MARGIN = 6      # gap between the speaker icon and the track
-TRACK_HEIGHT = 22
-MARKER_SIZE = QSize(20, 20)  # matches trim_timeline's marker size
+TRACK_HEIGHT = 9      # 40% of the original 22px, matching the panel's own height reduction
+MARKER_SIZE = QSize(12, 12)  # scaled down from 20px alongside the panel; kept above 8px for legibility
 
 
 class VolumeBar(QWidget):
@@ -28,7 +28,8 @@ class VolumeBar(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedHeight(40)
+        # 40% of the original 40px.
+        self.setFixedHeight(16)
         self._value = 100
 
         self._speaker_pixmap = resource_qpixmap("volume_speaker_icon.png")
@@ -95,17 +96,26 @@ class VolumeBar(QWidget):
         painter.drawPixmap(icon_rect, self._speaker_pixmap)
 
         track = self._track_rect()
-        # Static full-width background -- "place the inactive gradient
-        # behind the volume meter, unchanging."
-        painter.drawPixmap(track, self._inactive_pixmap)
 
-        # Active fill, resized to the current value's proportion of the
-        # track -- same technique as the trim timeline's connector
-        # gradient between its two handles.
+        # Active fill (0 to the current value) and the inactive remainder
+        # (value to 100) each get the FULL gradient image resized to fit
+        # their own span -- not the whole gradient stretched across the
+        # entire track with one part painted over. The earlier version
+        # did the latter for the inactive side, which meant whatever was
+        # visible beyond the active fill was only a cropped SLICE of the
+        # inactive gradient (e.g. just its rightmost 30% of colors at
+        # value=70), rather than the inactive gradient's full color range
+        # always being visible within however much space it actually has.
         fill_width = int(track.width() * (self._value / 100))
         if fill_width > 0:
             fill_rect = QRect(track.left(), track.top(), fill_width, track.height())
             painter.drawPixmap(fill_rect, self._active_pixmap)
+        if fill_width < track.width():
+            remainder_rect = QRect(
+                track.left() + fill_width, track.top(),
+                track.width() - fill_width, track.height(),
+            )
+            painter.drawPixmap(remainder_rect, self._inactive_pixmap)
 
         # Marker at the current value's position.
         marker_x = self._x_at_value(self._value)
