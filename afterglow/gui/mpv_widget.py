@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import locale
 
-from PySide6.QtCore import Signal, QTimer
+from PySide6.QtCore import Signal, QTimer, Qt
 from PySide6.QtGui import QOpenGLContext
 from PySide6.QtOpenGLWidgets import QOpenGLWidget
 
@@ -52,10 +52,16 @@ class MpvVideoWidget(QOpenGLWidget):
     position_changed = Signal(float)   # current playback position, seconds
     duration_known = Signal(float)     # fires once when duration becomes available
     playback_ended = Signal()
+    clicked = Signal()                 # left-click on the video, or Space while it has focus -- toggle play/pause
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setMinimumHeight(300)
+        # StrongFocus (not the QOpenGLWidget default of NoFocus) so this
+        # widget can actually receive the Space key and so a click can
+        # grab focus for it -- both needed for the click/Space-to-play
+        # handlers below to work at all.
+        self.setFocusPolicy(Qt.StrongFocus)
 
         # libmpv requires the process's LC_NUMERIC to be exactly "C" --
         # confirmed against a real crash: Qt's own QApplication changes
@@ -199,6 +205,19 @@ class MpvVideoWidget(QOpenGLWidget):
         player's volume control, this affects nothing about the saved
         video file, only how loud THIS preview plays back."""
         self._mpv.volume = max(0, min(100, value))
+
+    # ------------------------------------------------------------ click/keyboard play-pause
+
+    def mousePressEvent(self, event) -> None:
+        if event.button() == Qt.LeftButton:
+            self.setFocus()  # so Space keeps working right after a click, without a separate step
+            self.clicked.emit()
+
+    def keyPressEvent(self, event) -> None:
+        if event.key() == Qt.Key_Space:
+            self.clicked.emit()
+        else:
+            super().keyPressEvent(event)
 
     def shutdown(self) -> None:
         """Call before the widget/app is destroyed -- mpv holds real

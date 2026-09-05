@@ -24,13 +24,14 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QLabel, QHBoxLayout, QPushButton, QSlider,
+    QWidget, QVBoxLayout, QLabel, QHBoxLayout, QPushButton,
     QCheckBox, QMessageBox,
 )
 
 from .. import library
 from .mpv_widget import MpvVideoWidget
 from .trim_timeline import TrimTimeline
+from .volume_bar import VolumeBar
 
 
 def _format_time(seconds: float) -> str:
@@ -44,7 +45,15 @@ class EditorPage(QWidget):
         super().__init__(parent)
         self.current_video_id: int | None = None
         self._duration: float = 0.0
-        self._slider_being_dragged = False
+        # Tracked directly from position_changed rather than derived from
+        # a seek slider's quantized 0-1000 integer range (the old
+        # approach) -- that round-trip through integer steps was
+        # precise enough to visually look right, but not precise enough
+        # for the >= self._preview_end comparison in _toggle_play_pause
+        # below: rounding could land a hair under preview_end, silently
+        # skipping the "jump back to start" branch and making Play/Space
+        # right at the trim end look like it did nothing.
+        self._current_pos: float = 0.0
         # Live playback preview is bounded to the current UNSAVED trim
         # selection -- Play always starts from the trim start, and
         # playback auto-pauses at the trim end, so scrubbing through a
@@ -59,43 +68,24 @@ class EditorPage(QWidget):
 
         layout = QVBoxLayout(self)
 
-        # ---- video + volume slider row ----
-        video_row = QHBoxLayout()
-        self.volume_slider = QSlider(Qt.Vertical)
-        self.volume_slider.setRange(0, 100)
-        self.volume_slider.setValue(100)
-        self.volume_slider.setToolTip("Playback volume (this doesn't affect the saved video)")
-        self.volume_slider.valueChanged.connect(self._on_volume_changed)
-        video_row.addWidget(self.volume_slider)
-
         self.video_widget = MpvVideoWidget()
-        video_row.addWidget(self.video_widget, stretch=1)
-        layout.addLayout(video_row, stretch=1)
+        # Play/pause is now click-the-video-or-press-space (see
+        # MpvVideoWidget) instead of a dedicated button.
+        self.video_widget.clicked.connect(self._toggle_play_pause)
+        layout.addWidget(self.video_widget, stretch=1)
 
         self.video_widget.position_changed.connect(self._on_position_changed)
         self.video_widget.duration_known.connect(self._on_duration_known)
         self.video_widget.playback_ended.connect(self._on_playback_ended)
-        self.video_widget.set_volume(self.volume_slider.value())
 
-        # ---- transport controls ----
+        # ---- transport ----
         transport_row = QHBoxLayout()
-        self.play_pause_btn = QPushButton("Play")
-        self.play_pause_btn.setEnabled(False)
-        self.play_pause_btn.clicked.connect(self._toggle_play_pause)
-        transport_row.addWidget(self.play_pause_btn)
-
         self.time_label = QLabel("0:00 / 0:00")
         transport_row.addWidget(self.time_label)
-
-        self.seek_slider = QSlider(Qt.Horizontal)
-        self.seek_slider.setEnabled(False)
-        self.seek_slider.setRange(0, 1000)  # fixed resolution; mapped to actual duration in _on_slider_*
-        self.seek_slider.sliderPressed.connect(lambda: setattr(self, "_slider_being_dragged", True))
-        self.seek_slider.sliderReleased.connect(self._on_slider_released)
-        transport_row.addWidget(self.seek_slider, stretch=1)
+        transport_row.addStretch(1)
         layout.addLayout(transport_row)
 
-        # ---- trim timeline ----
+        # ---- trim timeline (the only seek/scrub bar -- see class docstring) ----
         self.trim_timeline = TrimTimeline()
         self.trim_timeline.setEnabled(False)
         self.trim_timeline.range_changed.connect(self._on_trim_range_changed)
@@ -108,11 +98,20 @@ class EditorPage(QWidget):
         self.trim_range_label.setAlignment(Qt.AlignCenter)
         layout.addWidget(self.trim_range_label)
 
+        # ---- volume (left, filling available width) + clip name (right) ----
+        volume_row = QHBoxLayout()
+        self.volume_bar = VolumeBar()
+        self.volume_bar.value_changed.connect(self._on_volume_changed)
+        volume_row.addWidget(self.volume_bar, stretch=1)
+
         self.info_label = QLabel("No video selected. Double-click a clip in the Library, "
                                   "or right-click it and choose Edit.")
-        self.info_label.setAlignment(Qt.AlignCenter)
+        self.info_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         self.info_label.setWordWrap(True)
-        layout.addWidget(self.info_label)
+        volume_row.addWidget(self.info_label)
+        layout.addLayout(volume_row)
+
+        self.video_widget.set_volume(self.volume_bar.value)
 
         coming_soon_label = QLabel(
             "The audio graph editor (per-segment volume/mute/trim/reposition) "
@@ -176,8 +175,6 @@ class EditorPage(QWidget):
             )
             self.undo_btn.setEnabled(False)
             self.clear_backup_btn.setEnabled(False)
-            self.play_pause_btn.setEnabled(False)
-            self.seek_slider.setEnabled(False)
             self.trim_timeline.setEnabled(False)
             self.local_save_btn.setEnabled(False)
             self.save_upload_btn.setEnabled(False)
@@ -185,10 +182,7 @@ class EditorPage(QWidget):
 
         video = library.get_video(self.current_video_id)
         self.video_widget.load(video.path)
-        self.play_pause_btn.setEnabled(True)
-        self.play_pause_btn.setText("Play")
-        self.seek_slider.setEnabled(True)
-        self.seek_slider.setValue(0)
+        self.video_widget.setFocus()  # so Space works right away, without needing a click first
         self.trim_timeline.setEnabled(True)
         self.local_save_btn.setEnabled(True)
         self.save_upload_btn.setEnabled(True)
@@ -208,6 +202,8 @@ class EditorPage(QWidget):
     # ------------------------------------------------------------ transport
 
     def _toggle_play_pause(self) -> None:
+        if self.current_video_id is None:
+            return
         if self.video_widget.is_paused:
             # Starting playback from outside (or at the tail of) the
             # current trim selection jumps to the trim start first,
@@ -218,20 +214,17 @@ class EditorPage(QWidget):
             if position < self._preview_start or position >= self._preview_end:
                 self.video_widget.seek(self._preview_start)
             self.video_widget.play()
-            self.play_pause_btn.setText("Pause")
         else:
             self.video_widget.pause()
-            self.play_pause_btn.setText("Play")
 
     def _on_volume_changed(self, value: int) -> None:
         self.video_widget.set_volume(value)
 
     def _current_position(self) -> float:
-        if self._duration <= 0:
-            return 0.0
-        return (self.seek_slider.value() / self.seek_slider.maximum()) * self._duration
+        return self._current_pos
 
     def _on_position_changed(self, position: float) -> None:
+        self._current_pos = position
         if (
             not self.video_widget.is_paused
             and self._preview_end > 0
@@ -242,13 +235,8 @@ class EditorPage(QWidget):
             # footage that's about to be cut.
             self.video_widget.pause()
             self.video_widget.seek(self._preview_end)
-            self.play_pause_btn.setText("Play")
+            self._current_pos = self._preview_end
             return
-        if not self._slider_being_dragged and self._duration > 0:
-            slider_value = int((position / self._duration) * self.seek_slider.maximum())
-            self.seek_slider.blockSignals(True)
-            self.seek_slider.setValue(slider_value)
-            self.seek_slider.blockSignals(False)
         self.time_label.setText(f"{_format_time(position)} / {_format_time(self._duration)}")
         self.trim_timeline.set_playhead(position)
 
@@ -260,14 +248,8 @@ class EditorPage(QWidget):
         self._preview_end = duration
         self._update_trim_range_label(0.0, duration)
 
-    def _on_slider_released(self) -> None:
-        self._slider_being_dragged = False
-        if self._duration > 0:
-            fraction = self.seek_slider.value() / self.seek_slider.maximum()
-            self.video_widget.seek(fraction * self._duration)
-
     def _on_playback_ended(self) -> None:
-        self.play_pause_btn.setText("Play")
+        pass  # nothing to reset -- there's no Play/Pause button label anymore
 
     # ------------------------------------------------------------ trim timeline
 
@@ -276,7 +258,6 @@ class EditorPage(QWidget):
         # feedback confusing to watch -- pause first, matching how Medal
         # and similar tools behave while scrubbing trim handles.
         self.video_widget.pause()
-        self.play_pause_btn.setText("Play")
 
     def _on_trim_range_changed(self, start: float, end: float) -> None:
         self._update_trim_range_label(start, end)

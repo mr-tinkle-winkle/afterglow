@@ -13,6 +13,10 @@ with the window), with Settings demoted to a small gear button pinned to
 the bottom rather than a third nav-list entry -- Library is the page
 you land on and return to, Settings is something you dip into
 occasionally.
+
+The sidebar's width and each nav icon's size both scale with the window
+rather than staying fixed -- a fixed 72px sidebar with fixed 32px icons
+looked proportionally too small once the window was large/fullscreen.
 """
 from __future__ import annotations
 
@@ -32,6 +36,38 @@ _SETTINGS_INDEX = 0
 _LIBRARY_INDEX = 1
 _EDITOR_INDEX = 2
 
+SIDEBAR_WIDTH_FRACTION = 0.07  # of the whole window's width
+SIDEBAR_MIN_WIDTH = 64
+SIDEBAR_MAX_WIDTH = 140
+
+
+class _ScalingIconButton(QToolButton):
+    """A QToolButton whose icon is resized to fill the button's own
+    footprint (minus a small padding) instead of staying at a fixed
+    pixel size regardless of how big the button itself gets."""
+
+    ICON_PADDING = 14
+
+    def __init__(self, icon_name: str, tooltip: str, parent=None):
+        super().__init__(parent)
+        self.setIcon(resource_qicon(icon_name))
+        self.setToolTip(tooltip)
+        self.setCheckable(True)
+        self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
+        self.setAutoRaise(True)
+        self._update_icon_size()
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._update_icon_size()
+
+    def _update_icon_size(self) -> None:
+        # min(width, height) rather than stretching to each dimension
+        # independently -- these are square source icons, and stretching
+        # them non-uniformly would distort them.
+        size = max(min(self.width(), self.height()) - self.ICON_PADDING, 8)
+        self.setIconSize(QSize(size, size))
+
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -45,19 +81,19 @@ class MainWindow(QMainWindow):
 
         # ---- sidebar: Library + Editor (icon-only, fill the height),
         # gear (Settings) pinned to the bottom ----
-        sidebar = QWidget()
-        sidebar.setFixedWidth(72)
-        sidebar_layout = QVBoxLayout(sidebar)
+        self.sidebar = QWidget()
+        self.sidebar.setFixedWidth(round(self.width() * SIDEBAR_WIDTH_FRACTION))
+        sidebar_layout = QVBoxLayout(self.sidebar)
         sidebar_layout.setContentsMargins(4, 4, 4, 4)
         sidebar_layout.setSpacing(4)
-        layout.addWidget(sidebar)
+        layout.addWidget(self.sidebar)
 
         self.nav_group = QButtonGroup(self)
         self.nav_group.setExclusive(True)
 
-        self.library_nav_btn = self._make_nav_button("library.png", "Library")
-        self.editor_nav_btn = self._make_nav_button("editor.png", "Editor")
-        self.settings_nav_btn = self._make_nav_button("settings.png", "Settings")
+        self.library_nav_btn = _ScalingIconButton("library.png", "Library")
+        self.editor_nav_btn = _ScalingIconButton("editor.png", "Editor")
+        self.settings_nav_btn = _ScalingIconButton("settings.png", "Settings")
 
         # Library and Editor stretch to fill most of the sidebar's
         # vertical space; the gear stays a fixed small size at the bottom.
@@ -93,15 +129,11 @@ class MainWindow(QMainWindow):
         self.library_nav_btn.setChecked(True)
         self.stack.setCurrentIndex(_LIBRARY_INDEX)
 
-    def _make_nav_button(self, icon_name: str, tooltip: str) -> QToolButton:
-        btn = QToolButton()
-        btn.setIcon(resource_qicon(icon_name))
-        btn.setIconSize(QSize(32, 32))
-        btn.setToolTip(tooltip)
-        btn.setCheckable(True)
-        btn.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
-        btn.setAutoRaise(True)
-        return btn
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        width = round(self.width() * SIDEBAR_WIDTH_FRACTION)
+        width = max(SIDEBAR_MIN_WIDTH, min(SIDEBAR_MAX_WIDTH, width))
+        self.sidebar.setFixedWidth(width)
 
     def _on_nav_clicked(self, index: int) -> None:
         if index == _EDITOR_INDEX and self.editor_page.current_video_id is None:

@@ -12,11 +12,11 @@ grid/search/filter wiring twice.
 """
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, Signal, QSize
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLineEdit, QToolButton,
     QMenu, QScrollArea, QLabel, QTabWidget, QMessageBox, QWidgetAction,
-    QCheckBox,
+    QCheckBox, QStyle,
 )
 
 from .. import library
@@ -184,7 +184,12 @@ class LibraryPage(QWidget):
         self.uploaded_tab.edit_requested.connect(self.edit_requested.emit)
 
         # Icon-only tabs (no text) -- the floppy disk / wifi icons stand in
-        # for Local / Uploaded.
+        # for Local / Uploaded. Explicitly sized to 3x the style's own
+        # default tab-bar icon size (queried at runtime rather than
+        # assumed, since it's style/platform-dependent) -- at the default
+        # size these were reportedly unreadable.
+        default_icon_size = self.tabs.style().pixelMetric(QStyle.PM_TabBarIconSize)
+        self.tabs.setIconSize(QSize(default_icon_size * 3, default_icon_size * 3))
         self.tabs.addTab(self.local_tab, resource_qicon("local_videos.png"), "")
         self.tabs.addTab(self.uploaded_tab, resource_qicon("uploaded_videos.png"), "")
         self.tabs.setTabToolTip(0, "Local")
