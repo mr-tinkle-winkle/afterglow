@@ -62,6 +62,7 @@ class MpvVideoWidget(QOpenGLWidget):
         # grab focus for it -- both needed for the click/Space-to-play
         # handlers below to work at all.
         self.setFocusPolicy(Qt.StrongFocus)
+        self._first_load_done = False
 
         # libmpv requires the process's LC_NUMERIC to be exactly "C" --
         # confirmed against a real crash: Qt's own QApplication changes
@@ -187,37 +188,24 @@ class MpvVideoWidget(QOpenGLWidget):
         self._mpv.play(path)
         self._mpv.pause = True  # load paused -- Editor decides whether/when to auto-play
 
-        # Second half of the first-frame fix explained in initializeGL()
-        # above: if GL wasn't initialized yet when load() runs, the
-        # self.update() there did nothing (paintGL() no-ops while
-        # self._render_ctx is still None). Once GL init does happen, its
-        # own self.update() call might in turn land before mpv has
-        # actually decoded/queued this video's first frame. A short
-        # delayed nudge here covers that ordering too, without needing to
-        # know exactly which of the two already fired. Safe to use
-        # QTimer.singleShot directly (unlike the mpv-callback-thread case
-        # documented on observe_property above) -- load() always runs on
-        # the main/Qt thread, which has a running event loop.
-        #
-        # Reported as still happening after the self.update()-only
-        # version of this fix, so a second, more forceful mitigation is
-        # added here too: an explicit re-seek to the current position.
-        # This can't be verified in this sandbox (no GL context at all),
-        # so it's still a best-effort mitigation rather than a confirmed
-        # fix -- if it's STILL not enough, that would point toward the
-        # actual mpv render() call itself failing at the GL level on the
-        # first draw (e.g. an invalid/not-yet-valid framebuffer object on
-        # QOpenGLWidget's very first paintGL()), which isn't something
-        # more repaint/seek nudges from the Python side can work around --
-        # at that point the next thing worth trying is swapping vo/render
-        # backends (e.g. "gpu-next") to see if it's specific to this one.
-        QTimer.singleShot(150, self._nudge_first_frame)
+        if not self._first_load_done:
+            self._first_load_done = True
+            # Reported as still showing a black screen on the very first
+            # video played after opening the GUI specifically (not on
+            # subsequent loads), even after two rounds of repaint/seek-
+            # based mitigations aimed at a suspected GL-init/render-
+            # context timing race. Simplest fix, suggested directly:
+            # just request the load a SECOND time. Whatever combination
+            # of timing dropped the first request's frame, a second
+            # request shortly after lands once all of that has already
+            # settled. Only done for the first video of the widget's
+            # lifetime -- later loads aren't affected, and reloading
+            # every time would just add a pointless flicker/reset.
+            QTimer.singleShot(150, lambda p=path: self._reload_first_video(p))
 
-    def _nudge_first_frame(self) -> None:
-        try:
-            self._mpv.seek(0, reference="absolute", precision="exact")
-        except Exception:
-            pass  # best-effort -- nothing to load yet, or mpv already moved on
+    def _reload_first_video(self, path: str) -> None:
+        self._mpv.play(path)
+        self._mpv.pause = True
         self.update()
 
     def play(self) -> None:

@@ -219,6 +219,20 @@ class TrimTimeline(QWidget):
         playhead_x = self._time_to_x(self._playhead)
         marker_rect = QRect(0, 0, self._marker_size.width(), self._marker_size.height())
         marker_rect.moveCenter(QPointF(playhead_x, self.height() / 2).toPoint())
+        # Same defensive clamp as volume_bar.py's marker, applied
+        # proactively here too even though this one wasn't specifically
+        # reported as clipping -- same underlying mechanism (moveCenter's
+        # integer rounding can place the rect a pixel outside the widget
+        # at the very ends of its range), so worth guarding against
+        # unconditionally rather than waiting for it to actually surface.
+        if marker_rect.right() >= self.width():
+            marker_rect.moveRight(self.width() - 1)
+        if marker_rect.left() < 0:
+            marker_rect.moveLeft(0)
+        if marker_rect.bottom() >= self.height():
+            marker_rect.moveBottom(self.height() - 1)
+        if marker_rect.top() < 0:
+            marker_rect.moveTop(0)
         painter.drawPixmap(marker_rect, self._marker_pixmap)
 
         # Handles -- a solid base (this IS the visible handle shape/body)

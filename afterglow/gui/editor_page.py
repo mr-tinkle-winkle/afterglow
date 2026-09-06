@@ -70,6 +70,14 @@ def _format_time(seconds: float) -> str:
     return f"{minutes}:{secs:02d}"
 
 
+# Tolerance for "close enough to count as at the end/start" comparisons
+# around the preview-bound clamp and restart-seek logic below -- mpv's
+# last actually-decoded frame is very often a hair before the nominal
+# duration (frame timing/rounding), so exact equality comparisons there
+# are unreliable.
+_EOF_EPSILON_SEC = 0.15
+
+
 class EditorPage(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -84,6 +92,21 @@ class EditorPage(QWidget):
         # skipping the "jump back to start" branch and making Play/Space
         # right at the trim end look like it did nothing.
         self._current_pos: float = 0.0
+        # Set right after an explicit restart-seek (Play/Space pressed
+        # while stopped at/past the end) and cleared once a position
+        # report consistent with that seek having actually taken effect
+        # is seen. Needed because mpv's seek() is async: a position
+        # report reflecting where playback was BEFORE the seek can still
+        # be "in flight" and arrive just after we call seek()+play(),
+        # which would otherwise immediately re-trigger the preview_end
+        # clamp below and look like either "does nothing" (untrimmed --
+        # the stale report is right at the old end, so is_paused flips
+        # true again almost instantly) or "plays for a moment then
+        # stops" (trimmed -- same mechanism, just with the seek target
+        # being preview_start instead of 0). While this is set, incoming
+        # position reports that still look like the OLD (pre-seek)
+        # position are ignored outright rather than acted on.
+        self._awaiting_restart_seek = False
         # Live playback preview is bounded to the current UNSAVED trim
         # selection -- Play always starts from the trim start, and
         # playback auto-pauses at the trim end, so scrubbing through a
@@ -320,9 +343,32 @@ class EditorPage(QWidget):
             # rather than resuming from wherever the playhead happened
             # to be left -- otherwise "Play" after scrubbing past the end
             # bound would just immediately hit it again and stop.
+            #
+            # A small epsilon tolerance on the preview_end comparison
+            # matters here specifically for an UNTRIMMED video (preview_
+            # end == the exact media duration): the actual last decoded
+            # frame's timestamp is very often a hair less than the
+            # nominal duration (frame timing/rounding), so a strict
+            # position >= self._preview_end could stay permanently false
+            # even once mpv itself has reached end-of-file and paused
+            # there (via keep_open) -- which meant Play/Space at the
+            # true end of an untrimmed video did nothing at all, since
+            # neither branch below ever triggered.
             position = self._current_position()
-            if position < self._preview_start or position >= self._preview_end:
+            at_or_past_end = position >= self._preview_end - _EOF_EPSILON_SEC
+            if position < self._preview_start or at_or_past_end:
                 self.video_widget.seek(self._preview_start)
+                # Optimistic update, and suppress the clamp in
+                # _on_position_changed until a report consistent with
+                # this seek is actually seen -- seek() is async, so a
+                # stale report of the OLD (pre-seek, near/at the end)
+                # position can still arrive right after this and would
+                # otherwise immediately re-trigger the end-of-preview
+                # clamp, making it look like restarting "did nothing" or
+                # "played for only a moment." See the attribute's own
+                # comment in __init__ for the full explanation.
+                self._current_pos = self._preview_start
+                self._awaiting_restart_seek = True
             self.video_widget.play()
         else:
             self.video_widget.pause()
@@ -334,11 +380,24 @@ class EditorPage(QWidget):
         return self._current_pos
 
     def _on_position_changed(self, position: float) -> None:
+        if self._awaiting_restart_seek:
+            if position > self._preview_start + _EOF_EPSILON_SEC:
+                # Not yet a report reflecting the restart seek having
+                # taken effect -- still the stale pre-seek echo (or a
+                # transient mid-seek value). Checked against
+                # preview_start directly (not "how far from preview_end")
+                # so this works correctly even for a very short trim
+                # selection, where "near the start" and "near the end"
+                # could otherwise be within the same epsilon of each
+                # other.
+                return
+            self._awaiting_restart_seek = False
+
         self._current_pos = position
         if (
             not self.video_widget.is_paused
             and self._preview_end > 0
-            and position >= self._preview_end
+            and position >= self._preview_end - _EOF_EPSILON_SEC
         ):
             # Live preview is bounded to the unsaved trim selection --
             # stop right at the trim end instead of playing on into

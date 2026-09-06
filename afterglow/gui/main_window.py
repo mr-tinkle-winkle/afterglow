@@ -21,6 +21,7 @@ looked proportionally too small once the window was large/fullscreen.
 from __future__ import annotations
 
 from PySide6.QtCore import QSize
+from PySide6.QtGui import QPainter, QRegion
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QToolButton,
     QButtonGroup, QStackedWidget, QSizePolicy,
@@ -29,8 +30,7 @@ from PySide6.QtWidgets import (
 from .settings_page import SettingsPage
 from .library_page import LibraryPage
 from .editor_page import EditorPage
-from .resources import resource_qicon
-from .gradient_backdrop import GradientBackdrop
+from .resources import resource_qicon, resource_qpixmap
 from .scaling import compute_scale
 
 # Indices into self.stack -- fixed at construction time (see __init__).
@@ -50,8 +50,10 @@ class _ScalingIconButton(QToolButton):
 
     ICON_PADDING = 14
     SCALE = 0.85  # was 100% ("as large as they are right now"), scaled down 15%
+    GRADIENT_BORDER_WIDTH = 4
 
-    def __init__(self, icon_name: str, tooltip: str, parent=None, size_basis: str = "min"):
+    def __init__(self, icon_name: str, tooltip: str, parent=None, size_basis: str = "min",
+                 gradient_image_name: str | None = None):
         super().__init__(parent)
         self.setIcon(resource_qicon(icon_name))
         self.setToolTip(tooltip)
@@ -66,7 +68,35 @@ class _ScalingIconButton(QToolButton):
         # min() would size its icon off that instead of matching the
         # other two buttons' actual (width-driven) icon size.
         self._size_basis = size_basis
+        self._gradient_pixmap = resource_qpixmap(gradient_image_name) if gradient_image_name else None
         self._update_icon_size()
+
+    def paintEvent(self, event) -> None:
+        if self._gradient_pixmap is not None:
+            # Same effect as VideoCard's unedited-clip highlight (a
+            # gradient image behind the content, only visible as a
+            # border ring around it) but via a CLIP REGION instead of
+            # painting a solid inset fill on top to mask the center --
+            # a QToolButton's normal resting appearance is flat/
+            # transparent (no opaque background of its own the way a
+            # VideoCard has), so filling the center with a guessed
+            # "normal" background color would show as a mismatched solid
+            # box rather than blending in. Clipping the gradient draw to
+            # just the border ring sidesteps needing to know or replicate
+            # what the button's own background actually looks like --
+            # its real paintEvent (called normally afterward, unclipped)
+            # draws the icon/hover/checked state exactly as it always
+            # would, just with the gradient sitting behind it in the
+            # margin.
+            painter = QPainter(self)
+            painter.setRenderHint(QPainter.SmoothPixmapTransform)
+            border = self.GRADIENT_BORDER_WIDTH
+            inner_rect = self.rect().adjusted(border, border, -border, -border)
+            clip_region = QRegion(self.rect()) - QRegion(inner_rect)
+            painter.setClipRegion(clip_region)
+            painter.drawPixmap(self.rect(), self._gradient_pixmap)
+            painter.end()
+        super().paintEvent(event)
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
@@ -113,8 +143,12 @@ class MainWindow(QMainWindow):
         self.nav_group = QButtonGroup(self)
         self.nav_group.setExclusive(True)
 
-        self.library_nav_btn = _ScalingIconButton("library.png", "Library")
-        self.editor_nav_btn = _ScalingIconButton("editor.png", "Editor")
+        self.library_nav_btn = _ScalingIconButton(
+            "library.png", "Library", gradient_image_name="library_bg_gradient.png"
+        )
+        self.editor_nav_btn = _ScalingIconButton(
+            "editor.png", "Editor", gradient_image_name="editor_bg_gradient.png"
+        )
         # size_basis="width": Settings has a small FIXED height (below),
         # so sizing its icon off min(width, height) like the other two
         # would size it off that small height instead, making it much
@@ -146,22 +180,11 @@ class MainWindow(QMainWindow):
         self.library_page = LibraryPage()
         self.editor_page = EditorPage()
 
-        # Library/Editor otherwise sat directly against the stack's own
-        # background, which felt a little empty in between them --
-        # wrapped in GradientBackdrop so a border of gradient shows
-        # around each page's edges, while self.library_page/editor_page
-        # still refer to the actual page objects themselves (everything
-        # elsewhere -- refresh(), load_video(), etc -- keeps working
-        # unchanged). Settings isn't wrapped; only Library and Editor
-        # were asked for.
-        library_backdrop = GradientBackdrop(self.library_page, "library_bg_gradient.png")
-        editor_backdrop = GradientBackdrop(self.editor_page, "editor_bg_gradient.png")
-
         # Insertion order must match _SETTINGS_INDEX / _LIBRARY_INDEX /
         # _EDITOR_INDEX above.
         self.stack.addWidget(self.settings_page)
-        self.stack.addWidget(library_backdrop)
-        self.stack.addWidget(editor_backdrop)
+        self.stack.addWidget(self.library_page)
+        self.stack.addWidget(self.editor_page)
 
         # Double-click / context-menu "Edit" in the Library routes here to
         # the Editor page (and loads that video into it).

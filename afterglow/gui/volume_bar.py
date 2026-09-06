@@ -40,7 +40,7 @@ class VolumeBar(QWidget):
         self._track_height = BASE_TRACK_HEIGHT
         self._marker_size = BASE_MARKER_SIZE
         self._speaker_icon_size = BASE_SPEAKER_ICON_SIZE
-        self.setFixedHeight(BASE_HEIGHT)
+        self.setFixedHeight(_round_to_even(BASE_HEIGHT))
         self._value = 100
 
         self._speaker_pixmap = resource_qpixmap("volume_speaker_icon.png")
@@ -59,7 +59,16 @@ class VolumeBar(QWidget):
         return self._value
 
     def set_scale(self, factor: float) -> None:
-        self.setFixedHeight(max(round(BASE_HEIGHT * factor), 8))
+        # The WIDGET'S OWN height must also stay even, not just
+        # self._track_height -- confirmed this matters: round(BASE_HEIGHT
+        # * factor) lands on an odd number at several perfectly plausible
+        # scale factors (e.g. 1.05 -> 17, 1.3 -> 21), and an odd WIDGET
+        # height reintroduces the exact same top//2-truncation asymmetry
+        # the even-track_height fix was for, just via a different
+        # variable -- this was the actual remaining cause of the marker
+        # still looking "slightly lower than it needs to be" after that
+        # first fix.
+        self.setFixedHeight(_round_to_even(max(BASE_HEIGHT * factor, 8)))
         # Stays even at every scale, not just at 1.0x -- an odd value
         # here is exactly what caused the marker-vs-track vertical
         # misalignment bug fixed earlier (see the centering note below).
@@ -174,6 +183,23 @@ class VolumeBar(QWidget):
         marker_x = self._x_at_value(self._value)
         marker_rect = QRect(0, 0, self._marker_size.width(), self._marker_size.height())
         marker_rect.moveCenter(QPointF(marker_x, self.height() / 2).toPoint())
+        # Unconditional final clamp, on top of the inset-based travel-
+        # range math in _x_at_value above -- reported as still clipping
+        # a little on the bottom and at the ends even after that fix,
+        # which points to residual 1px overflow from moveCenter's own
+        # integer rounding (QPointF.toPoint() rounds the float center to
+        # the nearest int before moveCenter positions the rect from it) --
+        # rather than trying to chase that precisely, this guarantees the
+        # drawn rect never exceeds the widget's bounds regardless of any
+        # upstream rounding.
+        if marker_rect.right() >= self.width():
+            marker_rect.moveRight(self.width() - 1)
+        if marker_rect.left() < 0:
+            marker_rect.moveLeft(0)
+        if marker_rect.bottom() >= self.height():
+            marker_rect.moveBottom(self.height() - 1)
+        if marker_rect.top() < 0:
+            marker_rect.moveTop(0)
         painter.drawPixmap(marker_rect, self._marker_pixmap)
 
         painter.end()

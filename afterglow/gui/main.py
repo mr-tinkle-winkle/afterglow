@@ -2,7 +2,7 @@ import locale
 import sys
 from pathlib import Path
 
-from PySide6.QtGui import QIcon
+from PySide6.QtGui import QIcon, QSurfaceFormat
 from PySide6.QtWidgets import QApplication
 
 from .. import db
@@ -11,6 +11,25 @@ from .main_window import MainWindow
 
 def main() -> None:
     db.init_db()
+
+    # Must be set before QApplication is constructed -- Qt reads the
+    # default surface format when the platform's window system
+    # integration initializes, which happens as part of constructing
+    # QApplication itself. Without an explicit format, Qt uses its own
+    # default, which isn't guaranteed to match what mpv's OpenGL render
+    # API expects to draw into via QOpenGLWidget -- this is standard
+    # practice for exactly this combination (an external renderer driving
+    # a QOpenGLWidget) and is an additional, more foundational mitigation
+    # for the reported first-frame black screen, alongside the double-
+    # load workaround in mpv_widget.py's load(). Still unverified in this
+    # sandbox (no GL context at all) -- if the black screen is STILL
+    # happening after both of these, the next thing worth trying is a
+    # different vo/render backend (e.g. "gpu-next" instead of "libmpv").
+    surface_format = QSurfaceFormat()
+    surface_format.setSwapInterval(1)
+    surface_format.setProfile(QSurfaceFormat.CompatibilityProfile)
+    QSurfaceFormat.setDefaultFormat(surface_format)
+
     app = QApplication(sys.argv)
 
     # QApplication.setWindowIcon() only covers the title bar. The tray,
