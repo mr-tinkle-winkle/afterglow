@@ -26,7 +26,7 @@ from .resources import resource_qpixmap
 # actual fix though (see the handle-drawing code below) -- it's paired
 # with a solid base fill so there's still a clearly visible handle body
 # even where the texture itself is transparent.
-HANDLE_WIDTH = 16
+BASE_HANDLE_WIDTH = 16
 MIN_GAP_SEC = 0.05  # smallest allowed distance between start and end handles
 
 # The playhead/volume marker asset (bar_marker.png) is a roughly square
@@ -34,7 +34,8 @@ MIN_GAP_SEC = 0.05  # smallest allowed distance between start and end handles
 # texture, it's drawn at a fixed icon size centered on its position
 # rather than stretched to fill a tall thin rect (which would smear a
 # round badge into an unrecognizable vertical streak).
-MARKER_SIZE = QSize(20, 20)
+BASE_MARKER_SIZE = QSize(20, 20)
+BASE_MIN_HEIGHT = 48
 
 
 class TrimTimeline(QWidget):
@@ -45,7 +46,9 @@ class TrimTimeline(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setMinimumHeight(48)
+        self._handle_width = BASE_HANDLE_WIDTH
+        self._marker_size = BASE_MARKER_SIZE
+        self.setMinimumHeight(BASE_MIN_HEIGHT)
         self._duration = 0.0
         self._start = 0.0
         self._end = 0.0
@@ -78,6 +81,15 @@ class TrimTimeline(QWidget):
         self._playhead = position
         self.update()
 
+    def set_scale(self, factor: float) -> None:
+        self._handle_width = max(round(BASE_HANDLE_WIDTH * factor), 4)
+        self._marker_size = QSize(
+            max(round(BASE_MARKER_SIZE.width() * factor), 8),
+            max(round(BASE_MARKER_SIZE.height() * factor), 8),
+        )
+        self.setMinimumHeight(max(round(BASE_MIN_HEIGHT * factor), 24))
+        self.update()
+
     @property
     def start(self) -> float:
         return self._start
@@ -89,17 +101,17 @@ class TrimTimeline(QWidget):
     # ------------------------------------------------------------ pure coordinate math
 
     def _usable_width(self) -> float:
-        return max(self.width() - 2 * HANDLE_WIDTH, 1)
+        return max(self.width() - 2 * self._handle_width, 1)
 
     def _time_to_x(self, t: float) -> float:
         if self._duration <= 0:
-            return float(HANDLE_WIDTH)
-        return HANDLE_WIDTH + (t / self._duration) * self._usable_width()
+            return float(self._handle_width)
+        return self._handle_width + (t / self._duration) * self._usable_width()
 
     def _x_to_time(self, x: float) -> float:
         if self._duration <= 0:
             return 0.0
-        t = (x - HANDLE_WIDTH) / self._usable_width() * self._duration
+        t = (x - self._handle_width) / self._usable_width() * self._duration
         return min(max(t, 0.0), self._duration)
 
     # ------------------------------------------------------------ drag state (testable directly)
@@ -112,10 +124,10 @@ class TrimTimeline(QWidget):
         by _seek_at below -- it never touches the trim range at all."""
         start_x = self._time_to_x(self._start)
         end_x = self._time_to_x(self._end)
-        if abs(x - start_x) <= HANDLE_WIDTH * 1.5:
+        if abs(x - start_x) <= self._handle_width * 1.5:
             self._dragging = "start"
             self.drag_started.emit()
-        elif abs(x - end_x) <= HANDLE_WIDTH * 1.5:
+        elif abs(x - end_x) <= self._handle_width * 1.5:
             self._dragging = "end"
             self.drag_started.emit()
         else:
@@ -188,7 +200,7 @@ class TrimTimeline(QWidget):
 
         bar_y = self.height() // 2 - 4
         bar_height = 8
-        bar_rect_left = HANDLE_WIDTH
+        bar_rect_left = self._handle_width
         bar_rect_width = self._usable_width()
 
         # Full-duration background track
@@ -205,7 +217,7 @@ class TrimTimeline(QWidget):
         # Playhead -- a fixed-size marker icon centered on the position,
         # rather than a full-height line (see MARKER_SIZE's comment).
         playhead_x = self._time_to_x(self._playhead)
-        marker_rect = QRect(0, 0, MARKER_SIZE.width(), MARKER_SIZE.height())
+        marker_rect = QRect(0, 0, self._marker_size.width(), self._marker_size.height())
         marker_rect.moveCenter(QPointF(playhead_x, self.height() / 2).toPoint())
         painter.drawPixmap(marker_rect, self._marker_pixmap)
 
@@ -215,7 +227,7 @@ class TrimTimeline(QWidget):
         # this base fill there was no visible handle at all -- just a
         # faint scatter of texture detail with nothing solid behind it.
         for x in (start_x, end_x):
-            handle_rect = QRect(int(x - HANDLE_WIDTH / 2), 2, HANDLE_WIDTH, self.height() - 4)
+            handle_rect = QRect(int(x - self._handle_width / 2), 2, self._handle_width, self.height() - 4)
             painter.setPen(QPen(QColor("#000000"), 1))
             painter.setBrush(QColor("#e0e0e0"))
             painter.drawRect(handle_rect)

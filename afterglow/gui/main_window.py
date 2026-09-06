@@ -30,6 +30,8 @@ from .settings_page import SettingsPage
 from .library_page import LibraryPage
 from .editor_page import EditorPage
 from .resources import resource_qicon
+from .gradient_backdrop import GradientBackdrop
+from .scaling import compute_scale
 
 # Indices into self.stack -- fixed at construction time (see __init__).
 _SETTINGS_INDEX = 0
@@ -47,25 +49,45 @@ class _ScalingIconButton(QToolButton):
     pixel size regardless of how big the button itself gets."""
 
     ICON_PADDING = 14
+    SCALE = 0.85  # was 100% ("as large as they are right now"), scaled down 15%
 
-    def __init__(self, icon_name: str, tooltip: str, parent=None):
+    def __init__(self, icon_name: str, tooltip: str, parent=None, size_basis: str = "min"):
         super().__init__(parent)
         self.setIcon(resource_qicon(icon_name))
         self.setToolTip(tooltip)
         self.setCheckable(True)
         self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
         self.setAutoRaise(True)
+        # "min": size to whichever of width/height is smaller (used by
+        # Library/Editor, which are tall and narrow -- width is always
+        # the limiting dimension there). "width": size purely off width,
+        # ignoring this button's own height -- used by Settings, whose
+        # height is a small fixed value by design (see MainWindow), so
+        # min() would size its icon off that instead of matching the
+        # other two buttons' actual (width-driven) icon size.
+        self._size_basis = size_basis
         self._update_icon_size()
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
         self._update_icon_size()
 
+    def icon_size_for_width(self, width: int) -> int:
+        """The icon pixel size this button would use at the given width,
+        with no dependency on its actual current height -- exposed so
+        MainWindow can compute Settings' target height (icon size +
+        padding) from the sidebar width alone, without a circular
+        dependency on this button's own not-yet-updated height."""
+        return max(round((width - self.ICON_PADDING) * self.SCALE), 8)
+
     def _update_icon_size(self) -> None:
         # min(width, height) rather than stretching to each dimension
         # independently -- these are square source icons, and stretching
         # them non-uniformly would distort them.
-        size = max(min(self.width(), self.height()) - self.ICON_PADDING, 8)
+        if self._size_basis == "width":
+            size = self.icon_size_for_width(self.width())
+        else:
+            size = max(round((min(self.width(), self.height()) - self.ICON_PADDING) * self.SCALE), 8)
         self.setIconSize(QSize(size, size))
 
 
@@ -93,15 +115,23 @@ class MainWindow(QMainWindow):
 
         self.library_nav_btn = _ScalingIconButton("library.png", "Library")
         self.editor_nav_btn = _ScalingIconButton("editor.png", "Editor")
-        self.settings_nav_btn = _ScalingIconButton("settings.png", "Settings")
+        # size_basis="width": Settings has a small FIXED height (below),
+        # so sizing its icon off min(width, height) like the other two
+        # would size it off that small height instead, making it much
+        # smaller than Library/Editor's icons even at the same SCALE --
+        # basing it on width alone (matching the sidebar's own width,
+        # same as the other two effectively use) keeps all three the
+        # same size.
+        self.settings_nav_btn = _ScalingIconButton("settings.png", "Settings", size_basis="width")
 
         # Library and Editor stretch to fill most of the sidebar's
-        # vertical space; the gear stays a fixed small size at the bottom.
+        # vertical space; the gear stays a fixed small size at the bottom
+        # -- just tall enough for its icon (same size as the other two)
+        # plus a little padding, set alongside the sidebar width below.
         sidebar_layout.addWidget(self.library_nav_btn, stretch=1)
         sidebar_layout.addWidget(self.editor_nav_btn, stretch=1)
         sidebar_layout.addStretch(0)
         self.settings_nav_btn.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
-        self.settings_nav_btn.setFixedHeight(48)
         sidebar_layout.addWidget(self.settings_nav_btn)
 
         self.nav_group.addButton(self.library_nav_btn, _LIBRARY_INDEX)
@@ -116,11 +146,22 @@ class MainWindow(QMainWindow):
         self.library_page = LibraryPage()
         self.editor_page = EditorPage()
 
+        # Library/Editor otherwise sat directly against the stack's own
+        # background, which felt a little empty in between them --
+        # wrapped in GradientBackdrop so a border of gradient shows
+        # around each page's edges, while self.library_page/editor_page
+        # still refer to the actual page objects themselves (everything
+        # elsewhere -- refresh(), load_video(), etc -- keeps working
+        # unchanged). Settings isn't wrapped; only Library and Editor
+        # were asked for.
+        library_backdrop = GradientBackdrop(self.library_page, "library_bg_gradient.png")
+        editor_backdrop = GradientBackdrop(self.editor_page, "editor_bg_gradient.png")
+
         # Insertion order must match _SETTINGS_INDEX / _LIBRARY_INDEX /
         # _EDITOR_INDEX above.
         self.stack.addWidget(self.settings_page)
-        self.stack.addWidget(self.library_page)
-        self.stack.addWidget(self.editor_page)
+        self.stack.addWidget(library_backdrop)
+        self.stack.addWidget(editor_backdrop)
 
         # Double-click / context-menu "Edit" in the Library routes here to
         # the Editor page (and loads that video into it).
@@ -134,6 +175,26 @@ class MainWindow(QMainWindow):
         width = round(self.width() * SIDEBAR_WIDTH_FRACTION)
         width = max(SIDEBAR_MIN_WIDTH, min(SIDEBAR_MAX_WIDTH, width))
         self.sidebar.setFixedWidth(width)
+
+        # Settings' fixed height is derived from the SAME width the icon
+        # itself will be sized from (icon_size_for_width uses only
+        # width, not this button's actual current height -- see its
+        # docstring), plus a little padding -- "just enough padding"
+        # rather than the fixed 48px box it used to sit in regardless of
+        # how big its icon actually was.
+        settings_icon_size = self.settings_nav_btn.icon_size_for_width(width)
+        self.settings_nav_btn.setFixedHeight(settings_icon_size + 12)
+
+        # "The current scale is great for fullscreen -- scale everything
+        # based on the window size." 1920x1080 is treated as the 1.0x
+        # baseline (see scaling.py) that the various hardcoded sizes
+        # above were tuned against, so this scales the Editor's
+        # trim-timeline/volume-bar sizing and the Library cards' title
+        # font up or down together as the window resizes, rather than
+        # them staying fixed while just the sidebar/its icons scaled.
+        scale = compute_scale(self.width(), self.height())
+        self.editor_page.apply_scale(scale)
+        self.library_page.apply_scale(scale)
 
     def _on_nav_clicked(self, index: int) -> None:
         if index == _EDITOR_INDEX and self.editor_page.current_video_id is None:

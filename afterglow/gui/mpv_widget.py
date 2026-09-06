@@ -76,7 +76,20 @@ class MpvVideoWidget(QOpenGLWidget):
         # or anything else the rest of the app relies on.
         locale.setlocale(locale.LC_NUMERIC, "C")
 
-        self._mpv = mpv.MPV(vo="libmpv", loglevel="error")
+        self._mpv = mpv.MPV(
+            vo="libmpv", loglevel="error",
+            # Without this, mpv's default at end-of-file is to stop and
+            # effectively unload the file rather than just pausing on the
+            # last frame -- which is why playback became impossible once
+            # you reached the end: is_paused would still read False (mpv
+            # never actually set pause=True, it just stopped), so Space/
+            # click would toggle it INTO pause instead of starting
+            # playback, and even a subsequent seek()+play() had nothing
+            # loaded to act on. keep_open pauses at the last frame
+            # instead, leaving the file loaded so seek+play afterward
+            # behaves the same as it would from any other paused state.
+            keep_open="yes",
+        )
         self._render_ctx: "mpv.MpvRenderContext | None" = None
         self._duration_reported = False
 
@@ -185,7 +198,27 @@ class MpvVideoWidget(QOpenGLWidget):
         # QTimer.singleShot directly (unlike the mpv-callback-thread case
         # documented on observe_property above) -- load() always runs on
         # the main/Qt thread, which has a running event loop.
-        QTimer.singleShot(150, self.update)
+        #
+        # Reported as still happening after the self.update()-only
+        # version of this fix, so a second, more forceful mitigation is
+        # added here too: an explicit re-seek to the current position.
+        # This can't be verified in this sandbox (no GL context at all),
+        # so it's still a best-effort mitigation rather than a confirmed
+        # fix -- if it's STILL not enough, that would point toward the
+        # actual mpv render() call itself failing at the GL level on the
+        # first draw (e.g. an invalid/not-yet-valid framebuffer object on
+        # QOpenGLWidget's very first paintGL()), which isn't something
+        # more repaint/seek nudges from the Python side can work around --
+        # at that point the next thing worth trying is swapping vo/render
+        # backends (e.g. "gpu-next") to see if it's specific to this one.
+        QTimer.singleShot(150, self._nudge_first_frame)
+
+    def _nudge_first_frame(self) -> None:
+        try:
+            self._mpv.seek(0, reference="absolute", precision="exact")
+        except Exception:
+            pass  # best-effort -- nothing to load yet, or mpv already moved on
+        self.update()
 
     def play(self) -> None:
         self._mpv.pause = False

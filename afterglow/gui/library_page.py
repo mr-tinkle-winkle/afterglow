@@ -39,6 +39,8 @@ class _VideoGridTab(QWidget):
         self._local_only = local_only
         self._active_tags: set[str] = set()
         self._sort_by: str = library.DEFAULT_SORT
+        self._highlight_unedited: bool = True
+        self._font_scale: float = 1.0
         # Persisted across resizes so a window resize can just re-flow
         # the existing cards into a new column count instead of
         # re-querying the DB and rebuilding every VideoCard from scratch
@@ -55,6 +57,12 @@ class _VideoGridTab(QWidget):
         self.search_edit.setPlaceholderText("Search title or description...")
         self.search_edit.textChanged.connect(self.refresh)
         top_row.addWidget(self.search_edit, stretch=1)
+
+        self.refresh_btn = QToolButton()
+        self.refresh_btn.setIcon(self.style().standardIcon(QStyle.SP_BrowserReload))
+        self.refresh_btn.setToolTip("Refresh")
+        self.refresh_btn.clicked.connect(self.refresh)
+        top_row.addWidget(self.refresh_btn)
 
         self.filters_btn = QToolButton()
         self.filters_btn.setText("Filters")
@@ -103,7 +111,31 @@ class _VideoGridTab(QWidget):
             action = QWidgetAction(menu)
             action.setDefaultWidget(checkbox)
             menu.addAction(action)
+
+        menu.addSeparator()
+        highlight_checkbox = QCheckBox("Highlight Unedited", menu)
+        highlight_checkbox.setChecked(self._highlight_unedited)
+        highlight_checkbox.toggled.connect(self._toggle_highlight_unedited)
+        highlight_action = QWidgetAction(menu)
+        highlight_action.setDefaultWidget(highlight_checkbox)
+        menu.addAction(highlight_action)
+
         self.filters_btn.setMenu(menu)
+
+    def _toggle_highlight_unedited(self, checked: bool) -> None:
+        self._highlight_unedited = checked
+        # Live-updates existing cards in place rather than rebuilding the
+        # grid -- there's nothing else that needs to change.
+        for card in self._cards:
+            card.set_highlight_enabled(checked)
+
+    def apply_scale(self, factor: float) -> None:
+        # Cheap live update (font-only, no thumbnail regen/DB requery) --
+        # thumbnails stay a fixed size for now to avoid touching the
+        # thumbnail cache's own sizing assumptions.
+        self._font_scale = factor
+        for card in self._cards:
+            card.set_font_scale(factor)
 
     def _toggle_tag(self, tag: str, checked: bool) -> None:
         if checked:
@@ -175,7 +207,7 @@ class _VideoGridTab(QWidget):
         self.scroll.setVisible(len(videos) > 0)
 
         for video in videos:
-            card = VideoCard(video)
+            card = VideoCard(video, highlight_enabled=self._highlight_unedited, font_scale=self._font_scale)
             card.edit_requested.connect(self.edit_requested.emit)
             card.deleted.connect(lambda _vid: self.refresh())
             card.tags_changed.connect(self.refresh)
@@ -303,3 +335,7 @@ class LibraryPage(QWidget):
                   f"that had been mistakenly listed as library entries.")
         self.local_tab.refresh()
         self.uploaded_tab.refresh()
+
+    def apply_scale(self, factor: float) -> None:
+        self.local_tab.apply_scale(factor)
+        self.uploaded_tab.apply_scale(factor)

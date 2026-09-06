@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
 )
 
 from .. import library, thumbnails
+from .resources import resource_qpixmap
 
 THUMB_SIZE = QSize(400, 224)  # 16:9, doubled from the original 200x112
 
@@ -69,16 +70,13 @@ class VideoCard(QWidget):
     tags_changed = Signal()           # tag added/removed -- parent should refresh filter list
     renamed = Signal()                # title changed -- parent should refresh (search may no longer match)
 
-    def __init__(self, video: "library.Video", parent=None):
+    def __init__(self, video: "library.Video", parent=None, highlight_enabled: bool = True,
+                 font_scale: float = 1.0):
         super().__init__(parent)
         self.video_id = video.id
         self._video = video
-
-        # QWidget doesn't paint a stylesheet border by default -- needs
-        # this attribute set explicitly, or setStyleSheet below is a
-        # silent no-op.
-        self.setAttribute(Qt.WA_StyledBackground, True)
-        self._apply_edit_border(video)
+        self._highlight_enabled = highlight_enabled
+        self._highlight_pixmap = resource_qpixmap("unedited_highlight_gradient.png")
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
@@ -95,12 +93,16 @@ class VideoCard(QWidget):
         self.title_label.setFixedWidth(THUMB_SIZE.width())
         # 1.875x the app's actual default label size -- was 2.5x, then
         # asked to be brought down to 75% of that (2.5 * 0.75 = 1.875).
-        title_font = self.title_label.font()
-        base_pt = title_font.pointSizeF()
-        if base_pt <= 0:  # some platforms report pixel-based fonts instead
-            base_pt = 9.0
-        title_font.setPointSizeF(base_pt * 1.875)
-        self.title_label.setFont(title_font)
+        # Additionally scaled by font_scale to track the window's overall
+        # size (see MainWindow.resizeEvent / LibraryPage.apply_scale) --
+        # base_pt is cached so later font_scale changes (via
+        # set_font_scale) don't compound on top of an already-scaled
+        # value.
+        self._base_title_pt = self.title_label.font().pointSizeF()
+        if self._base_title_pt <= 0:  # some platforms report pixel-based fonts instead
+            self._base_title_pt = 9.0
+        self._base_title_pt *= 1.875
+        self.set_font_scale(font_scale)
         layout.addWidget(self.title_label)
 
         if video.tags:
@@ -122,27 +124,48 @@ class VideoCard(QWidget):
         self.setContextMenuPolicy(Qt.CustomContextMenu)
         self.customContextMenuRequested.connect(self._show_context_menu)
 
-    def _apply_edit_border(self, video: "library.Video") -> None:
+    def set_font_scale(self, factor: float) -> None:
+        """Live-updatable independent of set_highlight_enabled -- called
+        by the Library's window-size-based scaling (see
+        LibraryPage.apply_scale) without needing to rebuild the card."""
+        font = self.title_label.font()
+        font.setPointSizeF(self._base_title_pt * factor)
+        self.title_label.setFont(font)
+
+    def set_highlight_enabled(self, enabled: bool) -> None:
+        """Called live by the Library's "Highlight Unedited" toggle --
+        no need to rebuild/recreate cards, just repaint them."""
+        self._highlight_enabled = enabled
+        self.update()
+
+    def _should_show_highlight(self) -> bool:
         # video.has_edit already IS a per-video "has this been trimmed
         # yet" flag, tracked in the DB and kept correct automatically by
         # the existing edit/undo/prune/rescan logic -- a separate
-        # tracked list of "unedited" clip paths (built up as new clips
-        # arrive, reconciled against the clips folder on startup) would
-        # just be a second, independently-maintainable copy of the exact
-        # same fact, with its own chance to drift out of sync. Using the
-        # field that already exists gets identical visible behavior for
-        # free -- new clips start with has_edit=False (bordered),
-        # trimming sets it True (border gone), and deleted files are
-        # already removed from the DB entirely by prune_missing_videos.
-        #
-        # Thinner (1px, was 3px) and semi-transparent (rgba alpha 130/255)
-        # -- the original solid 3px was reported as too visually loud.
-        if video.has_edit:
-            self.setStyleSheet("")
-        else:
-            self.setStyleSheet(
-                "VideoCard { border: 1px solid rgba(255, 165, 0, 130); border-radius: 4px; }"
-            )
+        # tracked list of "unedited" clip paths would just be a second,
+        # independently-maintainable copy of the exact same fact, with
+        # its own chance to drift out of sync. Using the field that
+        # already exists gets identical visible behavior for free.
+        return self._highlight_enabled and not self._video.has_edit
+
+    def paintEvent(self, event) -> None:
+        if self._should_show_highlight():
+            painter = QPainter(self)
+            painter.setRenderHint(QPainter.SmoothPixmapTransform)
+            # Full-widget gradient first, then an inset fill in the
+            # normal background color on top -- only the outer rim (not
+            # covered by the inset) ends up showing the gradient, which
+            # is what reads as a "border" rather than a solid highlight
+            # fill. The 3px inset here is independent of the layout's
+            # own 4px content margin (children never fully reach the
+            # widget's edge either way), so it works regardless of
+            # whatever's between the thumbnail/title internally.
+            painter.drawPixmap(self.rect(), self._highlight_pixmap)
+            border_width = 3
+            inner_rect = self.rect().adjusted(border_width, border_width, -border_width, -border_width)
+            painter.fillRect(inner_rect, self.palette().window())
+            painter.end()
+        super().paintEvent(event)
 
     def _load_pixmap(self, video: "library.Video") -> QPixmap:
         thumb_path = thumbnails.get_thumbnail(video.id, Path(video.path))

@@ -18,13 +18,18 @@ from PySide6.QtWidgets import QWidget
 
 from .resources import resource_qpixmap
 
+BASE_HEIGHT = 16      # 40% of the original 40px
 ICON_MARGIN = 6      # gap between the speaker icon and the track
-TRACK_HEIGHT = 8      # even (not 9) so it centers exactly on an integer
+BASE_TRACK_HEIGHT = 8      # even (not 9) so it centers exactly on an integer
                        # pixel -- see the marker-centering note below
-MARKER_SIZE = QSize(15, 15)  # 1.25x the previous 12px
-SPEAKER_ICON_SIZE = 16       # 2x the previous EFFECTIVE drawn size (was a
+BASE_MARKER_SIZE = QSize(15, 15)  # 1.25x the previous 12px
+BASE_SPEAKER_ICON_SIZE = 16       # 2x the previous EFFECTIVE drawn size (was a
                               # 16px box shrunk by a 4px margin on each
                               # side down to 8px actually drawn)
+
+
+def _round_to_even(x: float) -> int:
+    return max(2 * round(x / 2), 2)
 
 
 class VolumeBar(QWidget):
@@ -32,8 +37,10 @@ class VolumeBar(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        # 40% of the original 40px.
-        self.setFixedHeight(16)
+        self._track_height = BASE_TRACK_HEIGHT
+        self._marker_size = BASE_MARKER_SIZE
+        self._speaker_icon_size = BASE_SPEAKER_ICON_SIZE
+        self.setFixedHeight(BASE_HEIGHT)
         self._value = 100
 
         self._speaker_pixmap = resource_qpixmap("volume_speaker_icon.png")
@@ -51,32 +58,60 @@ class VolumeBar(QWidget):
     def value(self) -> int:
         return self._value
 
+    def set_scale(self, factor: float) -> None:
+        self.setFixedHeight(max(round(BASE_HEIGHT * factor), 8))
+        # Stays even at every scale, not just at 1.0x -- an odd value
+        # here is exactly what caused the marker-vs-track vertical
+        # misalignment bug fixed earlier (see the centering note below).
+        self._track_height = _round_to_even(BASE_TRACK_HEIGHT * factor)
+        self._marker_size = QSize(
+            max(round(BASE_MARKER_SIZE.width() * factor), 6),
+            max(round(BASE_MARKER_SIZE.height() * factor), 6),
+        )
+        self._speaker_icon_size = max(round(BASE_SPEAKER_ICON_SIZE * factor), 8)
+        self.update()
+
     # ------------------------------------------------------------ pure coordinate math
 
     def _icon_size(self) -> int:
-        return SPEAKER_ICON_SIZE
+        return self._speaker_icon_size
 
     def _track_rect(self) -> QRect:
         icon_size = self._icon_size()
         left = icon_size + ICON_MARGIN
         width = max(self.width() - left, 1)
-        # TRACK_HEIGHT is even specifically so this divides with no
-        # remainder -- see the marker vertical-centering note in
+        # self._track_height is kept even specifically so this divides
+        # with no remainder -- see the marker vertical-centering note in
         # paintEvent below for why an odd track height was the actual
         # cause of the marker looking off-center.
-        top = (self.height() - TRACK_HEIGHT) // 2
-        return QRect(left, top, width, TRACK_HEIGHT)
+        top = (self.height() - self._track_height) // 2
+        return QRect(left, top, width, self._track_height)
 
     def _value_at_x(self, x: float) -> int:
         track = self._track_rect()
-        if track.width() <= 0:
+        half_marker = self._marker_size.width() / 2
+        usable_left = track.left() + half_marker
+        usable_right = track.left() + track.width() - half_marker
+        if usable_right <= usable_left:
             return self._value
-        fraction = (x - track.left()) / track.width()
+        fraction = (x - usable_left) / (usable_right - usable_left)
         return max(0, min(100, round(fraction * 100)))
 
     def _x_at_value(self, value: int) -> float:
+        # The marker's CENTER travel range is inset by half its own width
+        # on each side, so the marker's full rect always stays within the
+        # track -- without this, at value=100 the center would land at
+        # the track's far edge and roughly half the marker would extend
+        # past the widget's right boundary, which Qt simply doesn't draw
+        # (this was the "marker gets cut off / doesn't render at all at
+        # the end" bug -- clipped geometry, not a missing-render issue).
         track = self._track_rect()
-        return track.left() + (value / 100) * track.width()
+        half_marker = self._marker_size.width() / 2
+        usable_left = track.left() + half_marker
+        usable_right = track.left() + track.width() - half_marker
+        if usable_right <= usable_left:
+            return track.left() + track.width() / 2
+        return usable_left + (value / 100) * (usable_right - usable_left)
 
     # ------------------------------------------------------------ Qt event wrappers
 
@@ -100,7 +135,7 @@ class VolumeBar(QWidget):
         painter.setRenderHint(QPainter.SmoothPixmapTransform)
 
         icon_size = self._icon_size()
-        # No shrinking margin here (unlike before) -- SPEAKER_ICON_SIZE
+        # No shrinking margin here (unlike before) -- self._speaker_icon_size
         # already IS the target drawn size, doubled from the old
         # icon_size-minus-4px-margin-on-each-side result.
         icon_rect = QRect(0, (self.height() - icon_size) // 2, icon_size, icon_size)
@@ -130,14 +165,14 @@ class VolumeBar(QWidget):
 
         # Marker at the current value's position. Vertically centered on
         # self.height()/2 exactly -- the marker looking "slightly below"
-        # center was actually TRACK_HEIGHT being odd (9): (16-9)//2 == 3
+        # center was actually track_height being odd (9): (16-9)//2 == 3
         # (integer division truncates down), so the track's own visual
         # center sat at 3+9/2=7.5 while the marker centered on the
         # widget's true center of 8.0 -- correct on its own, but visibly
-        # lower than the track it sits on. TRACK_HEIGHT is now even (8),
-        # so its center lands on exactly 8.0 too.
+        # lower than the track it sits on. track_height is kept even at
+        # every scale, so its center always lands on the same point too.
         marker_x = self._x_at_value(self._value)
-        marker_rect = QRect(0, 0, MARKER_SIZE.width(), MARKER_SIZE.height())
+        marker_rect = QRect(0, 0, self._marker_size.width(), self._marker_size.height())
         marker_rect.moveCenter(QPointF(marker_x, self.height() / 2).toPoint())
         painter.drawPixmap(marker_rect, self._marker_pixmap)
 

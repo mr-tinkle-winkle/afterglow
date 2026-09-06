@@ -218,6 +218,10 @@ class EditorPage(QWidget):
         self._duration = 0.0
         self._refresh_display()
 
+    def apply_scale(self, factor: float) -> None:
+        self.trim_timeline.set_scale(factor)
+        self.volume_bar.set_scale(factor)
+
     def _refresh_display(self) -> None:
         if self.current_video_id is None:
             self.title_edit.clear()
