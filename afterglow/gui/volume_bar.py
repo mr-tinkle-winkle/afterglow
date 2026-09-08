@@ -23,9 +23,8 @@ ICON_MARGIN = 6      # gap between the speaker icon and the track
 BASE_TRACK_HEIGHT = 8      # even (not 9) so it centers exactly on an integer
                        # pixel -- see the marker-centering note below
 BASE_MARKER_SIZE = QSize(15, 15)  # 1.25x the previous 12px
-BASE_SPEAKER_ICON_SIZE = 16       # 2x the previous EFFECTIVE drawn size (was a
-                              # 16px box shrunk by a 4px margin on each
-                              # side down to 8px actually drawn)
+BASE_SPEAKER_ICON_SIZE = 24       # 1.5x the previous 16px (itself already
+                              # 2x an even earlier version)
 
 
 def _round_to_even(x: float) -> int:
@@ -87,40 +86,43 @@ class VolumeBar(QWidget):
 
     def _track_rect(self) -> QRect:
         icon_size = self._icon_size()
-        left = icon_size + ICON_MARGIN
-        width = max(self.width() - left, 1)
+        half_marker = self._marker_size.width() / 2
+        # The track's usable extent is inset by half the marker's own
+        # width on BOTH ends -- reserving room for the marker to overhang
+        # past the track's colored fill while its CENTER still sits
+        # exactly at the track's true endpoints (0%/100%) rather than the
+        # marker's edge landing there instead. Without this, centering
+        # the marker exactly at value=0/100 would put roughly half of it
+        # past the widget's actual edge, which the earlier version
+        # avoided by insetting the marker's TRAVEL range instead -- that
+        # kept it fully on-widget, but then the marker never quite
+        # reached the true 0%/100% endpoints, sitting visibly short of
+        # them at each end.
+        left = icon_size + ICON_MARGIN + half_marker
+        width = max(self.width() - left - half_marker, 1)
         # self._track_height is kept even specifically so this divides
         # with no remainder -- see the marker vertical-centering note in
         # paintEvent below for why an odd track height was the actual
         # cause of the marker looking off-center.
         top = (self.height() - self._track_height) // 2
-        return QRect(left, top, width, self._track_height)
+        return QRect(round(left), top, round(width), self._track_height)
 
     def _value_at_x(self, x: float) -> int:
         track = self._track_rect()
-        half_marker = self._marker_size.width() / 2
-        usable_left = track.left() + half_marker
-        usable_right = track.left() + track.width() - half_marker
-        if usable_right <= usable_left:
+        if track.width() <= 0:
             return self._value
-        fraction = (x - usable_left) / (usable_right - usable_left)
+        fraction = (x - track.left()) / track.width()
         return max(0, min(100, round(fraction * 100)))
 
     def _x_at_value(self, value: int) -> float:
-        # The marker's CENTER travel range is inset by half its own width
-        # on each side, so the marker's full rect always stays within the
-        # track -- without this, at value=100 the center would land at
-        # the track's far edge and roughly half the marker would extend
-        # past the widget's right boundary, which Qt simply doesn't draw
-        # (this was the "marker gets cut off / doesn't render at all at
-        # the end" bug -- clipped geometry, not a missing-render issue).
+        # Plain proportional mapping across the track's own endpoints --
+        # the half-marker inset now lives in _track_rect() itself (see
+        # its docstring above), so the marker's center correctly lands
+        # exactly AT track.left() (0%) and track.left()+track.width()
+        # (100%), with the marker allowed to overhang past the track's
+        # colored fill into the margin reserved for exactly that.
         track = self._track_rect()
-        half_marker = self._marker_size.width() / 2
-        usable_left = track.left() + half_marker
-        usable_right = track.left() + track.width() - half_marker
-        if usable_right <= usable_left:
-            return track.left() + track.width() / 2
-        return usable_left + (value / 100) * (usable_right - usable_left)
+        return track.left() + (value / 100) * track.width()
 
     # ------------------------------------------------------------ Qt event wrappers
 

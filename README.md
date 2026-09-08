@@ -19,6 +19,19 @@ Build order, in progress:
 3. YouTube OAuth/upload — after that (Save & Upload currently shows a
    "not implemented yet" message, same as the Library's Upload action).
 
+## Planned: YouTube unlisted library behavior
+
+The Uploaded tab's local cache and playback behave as follows once
+upload is implemented:
+
+- Each uploaded video's thumbnail, title, and filters are cached
+  locally and shown directly in the uploaded-library grid, so browsing
+  the uploaded library does not require an API call per video.
+- Double-clicking an uploaded video calls it and embeds playback
+  in-app, falling back to the default system YouTube viewer if
+  in-app embedding isn't available. Playback itself is not served
+  from the local cache -- only the thumbnail/title/filter metadata is.
+
 ## This delivery: the trim UI
 
 Built on top of the video playback from the last phase:

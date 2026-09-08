@@ -45,6 +45,7 @@ class Video:
     youtube_video_id: str | None
     youtube_privacy: str | None
     tags: list[str]
+    favorite: bool = False
 
     @property
     def path_obj(self) -> Path:
@@ -59,6 +60,7 @@ def _row_to_video(row: sqlite3.Row, tags: list[str]) -> Video:
         clip_config_id=row["clip_config_id"], has_edit=bool(row["has_edit"]),
         backup_path=row["backup_path"], youtube_video_id=row["youtube_video_id"],
         youtube_privacy=row["youtube_privacy"], tags=tags,
+        favorite=bool(row["favorite"]),
     )
 
 
@@ -152,11 +154,16 @@ def _sort_videos(videos: list["Video"], sort_by: str) -> list["Video"]:
 
 def list_videos(tag_filter: list[str] | None = None, uploaded_only: bool = False,
                  local_only: bool = False, search: str | None = None,
-                 sort_by: str = DEFAULT_SORT) -> list[Video]:
+                 sort_by: str = DEFAULT_SORT, tag_exclude: list[str] | None = None,
+                 favorite_only: bool = False) -> list[Video]:
     """
     tag_filter: list of tag names, ANDed together (a video must have ALL of
     them) -- this matches "multiple filters can be applied at once" as an
     intersection, which is the more useful reading for finding a specific clip.
+    tag_exclude: list of tag names, any of which BLOCK a video from
+    appearing at all (an OR-of-NOT -- a single blocked tag is enough to
+    hide it), applied independently of tag_filter.
+    favorite_only: only videos starred as a favorite.
     search: case-insensitive substring match against title OR description.
     """
     with db.get_conn() as conn:
@@ -173,6 +180,18 @@ def list_videos(tag_filter: list[str] | None = None, uploaded_only: bool = False
             """
             params.extend(tag_filter)
 
+        if tag_exclude:
+            exclude_placeholders = ",".join("?" for _ in tag_exclude)
+            conditions.append(f"""
+                v.id NOT IN (
+                    SELECT vt2.video_id FROM video_tags vt2
+                    JOIN tags t2 ON t2.id = vt2.tag_id AND t2.name IN ({exclude_placeholders})
+                )
+            """)
+            params.extend(tag_exclude)
+
+        if favorite_only:
+            conditions.append("v.favorite = 1")
         if uploaded_only:
             conditions.append("v.youtube_video_id IS NOT NULL")
         if local_only:
@@ -199,10 +218,58 @@ def list_videos(tag_filter: list[str] | None = None, uploaded_only: bool = False
         return _sort_videos(videos, sort_by)
 
 
+def set_favorite(video_id: int, favorite: bool) -> Video:
+    with db.get_conn() as conn:
+        conn.execute("UPDATE videos SET favorite = ? WHERE id = ?", (1 if favorite else 0, video_id))
+    return get_video(video_id)
+
+
 def all_known_tags() -> list[str]:
     with db.get_conn() as conn:
         rows = conn.execute("SELECT name FROM tags ORDER BY name").fetchall()
         return [r["name"] for r in rows]
+
+
+def all_tags_with_ids() -> list[tuple[int, str]]:
+    """(id, name) pairs -- a tag's `id` is its stable identity (see
+    db.py's schema comment on video_tags referencing tags by id, not
+    name), so renaming never needs a migration; this is the read side
+    other callers (e.g. the rename UI, per-tag icon assignment) need
+    that all_known_tags() above doesn't provide, without changing that
+    function's existing plain-names-only return type."""
+    with db.get_conn() as conn:
+        rows = conn.execute("SELECT id, name FROM tags ORDER BY name").fetchall()
+        return [(r["id"], r["name"]) for r in rows]
+
+
+def rename_tag(tag_id: int, new_name: str) -> None:
+    new_name = new_name.strip()
+    if not new_name:
+        raise LibraryError("Tag name can't be empty.")
+    with db.get_conn() as conn:
+        existing = conn.execute(
+            "SELECT id FROM tags WHERE name = ? COLLATE NOCASE AND id != ?",
+            (new_name, tag_id),
+        ).fetchone()
+        if existing is not None:
+            raise LibraryError(f"A tag named '{new_name}' already exists.")
+        conn.execute("UPDATE tags SET name = ? WHERE id = ?", (new_name, tag_id))
+
+
+def set_tag_icon(tag_id: int, icon_path: str | None) -> None:
+    with db.get_conn() as conn:
+        conn.execute("UPDATE tags SET icon_path = ? WHERE id = ?", (icon_path, tag_id))
+
+
+def tag_icons() -> dict[str, str]:
+    """{tag_name: icon_path} for every tag that has one assigned --
+    used to auto-show icons above/below clip thumbnails per the
+    Settings > Filters display options."""
+    with db.get_conn() as conn:
+        rows = conn.execute(
+            "SELECT name, icon_path FROM tags WHERE icon_path IS NOT NULL AND icon_path != ''"
+        ).fetchall()
+        return {r["name"]: r["icon_path"] for r in rows}
 
 
 def create_tag(tag_name: str) -> None:

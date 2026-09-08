@@ -38,12 +38,14 @@ CREATE TABLE IF NOT EXISTS videos (
     backup_path     TEXT,                   -- pre-edit copy, for undo. NULL if no pending undo.
     youtube_video_id TEXT,                  -- NULL until uploaded
     youtube_privacy TEXT,                   -- 'unlisted' | 'public' | 'private', NULL if not uploaded
+    favorite        INTEGER NOT NULL DEFAULT 0,   -- 1 if starred as a favorite clip
     FOREIGN KEY (clip_config_id) REFERENCES clip_configs(id) ON DELETE SET NULL
 );
 
 CREATE TABLE IF NOT EXISTS tags (
-    id      INTEGER PRIMARY KEY AUTOINCREMENT,
-    name    TEXT NOT NULL UNIQUE COLLATE NOCASE
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    name        TEXT NOT NULL UNIQUE COLLATE NOCASE,
+    icon_path   TEXT                     -- optional icon shown above/below clip thumbnails
 );
 
 CREATE TABLE IF NOT EXISTS video_tags (
@@ -71,10 +73,27 @@ UNIQUE_NAME_INDEX = (
 )
 
 
+def _has_column(conn: sqlite3.Connection, table: str, column: str) -> bool:
+    rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+    return any(r["name"] == column for r in rows)
+
+
+def _migrate_columns(conn: sqlite3.Connection) -> None:
+    """Add columns introduced after the initial schema to a pre-existing
+    DB file. CREATE TABLE IF NOT EXISTS (above) only affects DBs that
+    don't have the table at all yet -- an already-existing table needs
+    an explicit ALTER TABLE to pick up new columns."""
+    if not _has_column(conn, "videos", "favorite"):
+        conn.execute("ALTER TABLE videos ADD COLUMN favorite INTEGER NOT NULL DEFAULT 0")
+    if not _has_column(conn, "tags", "icon_path"):
+        conn.execute("ALTER TABLE tags ADD COLUMN icon_path TEXT")
+
+
 def init_db() -> None:
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     with get_conn() as conn:
         conn.executescript(SCHEMA)
+        _migrate_columns(conn)
         try:
             conn.execute(UNIQUE_NAME_INDEX)
         except sqlite3.IntegrityError:

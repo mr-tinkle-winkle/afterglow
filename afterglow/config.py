@@ -48,11 +48,34 @@ class YouTubeSettings:
 
 
 @dataclass
+class FilterDisplaySettings:
+    show_filter_names: bool = True
+    show_filter_icons: bool = True
+    # "above" | "below" | "vtile_left" | "vtile_right"
+    filter_icon_location: str = "above"
+
+
+@dataclass
+class AutoFilterRule:
+    tag_name: str = ""
+    # Substring matched (case-insensitive) against a running process's
+    # name/cmdline (mode="open") or the focused window's title/process
+    # name (mode="focused").
+    app_match: str = ""
+    # "open" = apply whenever a matching process is running at all;
+    # "focused" = apply only while a matching window currently has focus.
+    mode: str = "open"
+
+
+@dataclass
 class AppSettings:
     clips_dir: str = str(DEFAULT_CLIPS_DIR)
     default_sound_path: str = ""
+    default_to_fullscreen: bool = False
     obs: OBSSettings = field(default_factory=OBSSettings)
     youtube: YouTubeSettings = field(default_factory=YouTubeSettings)
+    filter_display: FilterDisplaySettings = field(default_factory=FilterDisplaySettings)
+    auto_filters: list[AutoFilterRule] = field(default_factory=list)
 
     def clips_path(self) -> Path:
         return Path(self.clips_dir).expanduser()
@@ -76,8 +99,16 @@ def load() -> AppSettings:
 
     obs = OBSSettings(**raw.get("obs", {}))
     youtube = YouTubeSettings(**raw.get("youtube", {}))
-    top_level = {k: v for k, v in raw.items() if k not in ("obs", "youtube")}
-    settings = AppSettings(obs=obs, youtube=youtube, **top_level)
+    filter_display = FilterDisplaySettings(**raw.get("filter_display", {}))
+    auto_filters = [AutoFilterRule(**rule) for rule in raw.get("auto_filters", [])]
+    top_level = {
+        k: v for k, v in raw.items()
+        if k not in ("obs", "youtube", "filter_display", "auto_filters")
+    }
+    settings = AppSettings(
+        obs=obs, youtube=youtube, filter_display=filter_display,
+        auto_filters=auto_filters, **top_level,
+    )
     _ensure_dirs(settings)
     return settings
 

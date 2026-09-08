@@ -33,9 +33,10 @@ from pathlib import Path
 
 from . import db
 from . import config as config_module
+from . import autofilter
 from .editor import TrimRequest, commit_trim, probe_duration, EditorError
 from .obs_client import OBSClient, OBSError
-from .library import add_video, Video
+from .library import add_video, add_tag_to_video, get_video, Video
 
 # How long to wait after the raw replay file's size has stabilized before
 # starting the trim. This is a defensive buffer for OBS's own internal
@@ -210,6 +211,13 @@ def trigger_clip(clip_config_id: int) -> Video:
     clip_cfg = get_clip_config(clip_config_id)
     settings = config_module.load()
 
+    # Snapshot which Auto Add Filter rules currently match right away --
+    # what's open/focused at the moment the hotkey was actually pressed
+    # is what matters, not several seconds later once the OBS save/trim
+    # pipeline below has finished (the user may well have already
+    # alt-tabbed away by then).
+    auto_tag_names = autofilter.compute_active_auto_tags(settings)
+
     with OBSClient(settings.obs) as obs_client:
         raw_path = obs_client.save_replay_buffer()  # already waits for exists + size-stable
 
@@ -296,6 +304,10 @@ def trigger_clip(clip_config_id: int) -> Video:
         description="",
         clip_config_id=clip_cfg.id,
     )
+    if auto_tag_names:
+        for tag_name in auto_tag_names:
+            add_tag_to_video(video.id, tag_name)
+        video = get_video(video.id)
     return video
 
 

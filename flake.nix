@@ -173,11 +173,17 @@
           # auto-wrap. wrapProgram is layered on top afterward for the
           # ffmpeg/audio PATH additions; wrapProgram is safe to call on an
           # already-wrapped script, it just extends the existing wrapper.
+          # kdotool: used at runtime (subprocess, not a build dependency)
+          # by autofilter.py to query KWin for the currently focused
+          # window, for Auto Add Filter's "only while app is focused"
+          # rules. Optional in the sense that its absence degrades
+          # gracefully (those rules just never match, logged once) rather
+          # than crashing, but needed for that feature to actually work.
           postFixup = ''
             for prog in afterglow afterglow-daemon afterglow-cli; do
               wrapQtApp "$out/bin/$prog"
               wrapProgram "$out/bin/$prog" \
-                --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.ffmpeg pkgs.pipewire pkgs.pulseaudio ]} \
+                --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.ffmpeg pkgs.pipewire pkgs.pulseaudio pkgs.kdotool ]} \
                 --prefix LD_LIBRARY_PATH : ${pkgs.lib.makeLibraryPath [ pkgs.mpv-unwrapped ]}
             done
           '';
@@ -225,6 +231,7 @@
               pkgs.qt6.qtbase
               pkgs.qt6.qtwayland
               pkgs.mpv-unwrapped
+              pkgs.kdotool
             ];
             # Same runtime-linking issue as the packaged app -- a plain
             # `nix develop` shell doesn't get automatic Qt wrapping the

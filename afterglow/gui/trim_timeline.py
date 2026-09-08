@@ -118,10 +118,24 @@ class TrimTimeline(QWidget):
 
     def _press_at(self, x: float) -> None:
         """A right-click (or a direct call, for tests): grabs the nearer
-        handle if the click is close to one, otherwise jumps whichever
-        handle is on the same side of the playhead as the click and
-        starts dragging it from there. Left-click is handled separately
-        by _seek_at below -- it never touches the trim range at all."""
+        handle if the click is close to one. Otherwise, a click outside
+        the current [start, end] selection unambiguously means "move the
+        boundary it's outside of" (there's no sensible reading of
+        clicking left of start as wanting to move end instead), and a
+        click genuinely inside the selection falls back to "which side
+        of the playhead" to decide which edge to pull in. Left-click is
+        handled separately by _seek_at below -- it never touches the
+        trim range at all.
+
+        The boundary-first check matters specifically when the playhead
+        itself sits outside [start, end] (e.g. after scrubbing past an
+        edge): using playhead-side alone in that case could assign a
+        click that's clearly on the start side (but happens to be on the
+        far side of an out-of-range playhead) to the END handle instead,
+        which then immediately clamps end down to just above start --
+        collapsing the whole selection to ~0 length. Confirmed this
+        happens with the pure playhead-side version before this fix.
+        """
         start_x = self._time_to_x(self._start)
         end_x = self._time_to_x(self._end)
         if abs(x - start_x) <= self._handle_width * 1.5:
@@ -130,13 +144,18 @@ class TrimTimeline(QWidget):
         elif abs(x - end_x) <= self._handle_width * 1.5:
             self._dragging = "end"
             self.drag_started.emit()
+        elif x < start_x:
+            self._dragging = "start"
+            self.drag_started.emit()
+            self._drag_to(self._x_to_time(x))
+        elif x > end_x:
+            self._dragging = "end"
+            self.drag_started.emit()
+            self._drag_to(self._x_to_time(x))
         else:
-            # Clicked on the bar itself, not on a handle. Move whichever
-            # handle is on the same side of the current playback marker
-            # as the click -- left of the playhead always moves the
-            # start handle, right of it always moves the end handle --
-            # and start dragging it from there immediately, rather than
-            # requiring the handle to be grabbed precisely first.
+            # Genuinely inside the current selection -- fall back to
+            # which side of the playback marker the click is on, as
+            # before.
             playhead_x = self._time_to_x(self._playhead)
             self._dragging = "start" if x < playhead_x else "end"
             self.drag_started.emit()
@@ -151,7 +170,10 @@ class TrimTimeline(QWidget):
             self._end = min(self._duration, max(t, self._start + MIN_GAP_SEC))
         self.update()
         self.range_changed.emit(self._start, self._end)
-        self.seek_requested.emit(t)
+        # No seek_requested here (unlike _seek_at/left-click) -- dragging
+        # a handle with the right mouse button only adjusts the trim
+        # boundary now, without also scrubbing live playback. Right-click
+        # (handles) and left-click (seek) are fully independent actions.
 
     def _release(self) -> None:
         was_dragging = self._dragging is not None

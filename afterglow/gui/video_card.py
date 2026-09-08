@@ -7,16 +7,18 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import Qt, Signal, QSize
-from PySide6.QtGui import QPixmap, QPainter, QColor
+from PySide6.QtGui import QPixmap, QPainter, QColor, QIcon
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QMenu, QMessageBox, QLineEdit,
-    QCompleter, QPushButton, QDialog, QHBoxLayout, QInputDialog,
+    QPushButton, QDialog, QHBoxLayout, QInputDialog, QComboBox,
+    QDialogButtonBox,
 )
 
-from .. import library, thumbnails
+from .. import library, thumbnails, config as config_module
 from .resources import resource_qpixmap
 
 THUMB_SIZE = QSize(400, 224)  # 16:9, doubled from the original 200x112
+FAVORITE_STAR = "\u2605"  # "★"
 
 
 def _placeholder_pixmap() -> QPixmap:
@@ -30,8 +32,11 @@ def _placeholder_pixmap() -> QPixmap:
 
 
 class AddTagDialog(QDialog):
-    """Text box (filters a dropdown of existing tags as you type) + a '+'
-    button to add the typed text as a brand new tag, per spec."""
+    """A dropdown of every existing tag, plus a '+' button that prompts
+    for a brand new tag name and adds/selects it in the dropdown --
+    replaces the earlier free-text-with-autocomplete version, which read
+    as more error-prone (a typo silently creates a new near-duplicate
+    tag rather than picking the existing one)."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -40,24 +45,33 @@ class AddTagDialog(QDialog):
 
         layout = QVBoxLayout(self)
         row = QHBoxLayout()
-        self.tag_edit = QLineEdit()
-        self.tag_edit.setPlaceholderText("Type a tag name...")
-        completer = QCompleter(library.all_known_tags(), self)
-        completer.setCaseSensitivity(Qt.CaseInsensitive)
-        completer.setFilterMode(Qt.MatchContains)
-        self.tag_edit.setCompleter(completer)
-        row.addWidget(self.tag_edit)
+        self.tag_combo = QComboBox()
+        self.tag_combo.addItems(library.all_known_tags())
+        row.addWidget(self.tag_combo, stretch=1)
 
         add_btn = QPushButton("+")
         add_btn.setFixedWidth(30)
-        add_btn.clicked.connect(self._accept_new)
+        add_btn.setToolTip("Create a new tag")
+        add_btn.clicked.connect(self._create_new_tag)
         row.addWidget(add_btn)
         layout.addLayout(row)
 
-        self.tag_edit.returnPressed.connect(self._accept_new)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self._accept_selected)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
 
-    def _accept_new(self) -> None:
-        text = self.tag_edit.text().strip()
+    def _create_new_tag(self) -> None:
+        name, ok = QInputDialog.getText(self, "New Tag", "Tag name:")
+        name = name.strip()
+        if not ok or not name:
+            return
+        if self.tag_combo.findText(name, Qt.MatchFixedString) < 0:
+            self.tag_combo.addItem(name)
+        self.tag_combo.setCurrentText(name)
+
+    def _accept_selected(self) -> None:
+        text = self.tag_combo.currentText().strip()
         if text:
             self.chosen_tag = text
             self.accept()
@@ -81,13 +95,37 @@ class VideoCard(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
 
+        display_settings = config_module.load().filter_display
+        icons = library.tag_icons()
+        matching_icons = [icons[t] for t in video.tags if t in icons]
+
+        icon_row_above = None
+        if display_settings.show_filter_icons and matching_icons and \
+                display_settings.filter_icon_location == "above":
+            icon_row_above = self._build_icon_row(matching_icons, vertical=False)
+            layout.addWidget(icon_row_above)
+
+        thumb_row = QHBoxLayout()
+        if display_settings.show_filter_icons and matching_icons and \
+                display_settings.filter_icon_location == "vtile_left":
+            thumb_row.addWidget(self._build_icon_row(matching_icons, vertical=True))
+
         self.thumb_label = QLabel()
         self.thumb_label.setFixedSize(THUMB_SIZE)
         self.thumb_label.setAlignment(Qt.AlignCenter)
         self.thumb_label.setPixmap(self._load_pixmap(video))
-        layout.addWidget(self.thumb_label)
+        thumb_row.addWidget(self.thumb_label)
 
-        self.title_label = QLabel(video.title)
+        if display_settings.show_filter_icons and matching_icons and \
+                display_settings.filter_icon_location == "vtile_right":
+            thumb_row.addWidget(self._build_icon_row(matching_icons, vertical=True))
+        layout.addLayout(thumb_row)
+
+        if display_settings.show_filter_icons and matching_icons and \
+                display_settings.filter_icon_location == "below":
+            layout.addWidget(self._build_icon_row(matching_icons, vertical=False))
+
+        self.title_label = QLabel(self._title_text(video))
         self.title_label.setWordWrap(True)
         self.title_label.setAlignment(Qt.AlignCenter)
         self.title_label.setFixedWidth(THUMB_SIZE.width())
@@ -105,7 +143,7 @@ class VideoCard(QWidget):
         self.set_font_scale(font_scale)
         layout.addWidget(self.title_label)
 
-        if video.tags:
+        if video.tags and display_settings.show_filter_names:
             tag_label = QLabel(", ".join(video.tags))
             tag_label.setStyleSheet("color: gray; font-size: 10px;")
             tag_label.setAlignment(Qt.AlignCenter)
@@ -123,6 +161,26 @@ class VideoCard(QWidget):
 
         self.setContextMenuPolicy(Qt.CustomContextMenu)
         self.customContextMenuRequested.connect(self._show_context_menu)
+
+    def _title_text(self, video: "library.Video") -> str:
+        return f"{FAVORITE_STAR} {video.title}" if video.favorite else video.title
+
+    def _build_icon_row(self, icon_paths: list[str], vertical: bool) -> QWidget:
+        container = QWidget()
+        row_layout = QVBoxLayout(container) if vertical else QHBoxLayout(container)
+        row_layout.setContentsMargins(0, 0, 0, 0)
+        row_layout.setSpacing(2)
+        for path in icon_paths:
+            icon_label = QLabel()
+            pixmap = QPixmap(path)
+            if not pixmap.isNull():
+                icon_label.setPixmap(
+                    pixmap.scaled(QSize(18, 18), Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                )
+            row_layout.addWidget(icon_label)
+        if vertical:
+            row_layout.addStretch(1)
+        return container
 
     def set_font_scale(self, factor: float) -> None:
         """Live-updatable independent of set_highlight_enabled -- called
@@ -183,6 +241,9 @@ class VideoCard(QWidget):
         menu = QMenu(self)
         edit_action = menu.addAction("Edit")
         rename_action = menu.addAction("Rename")
+        favorite_action = menu.addAction(
+            "Unfavorite" if self._video.favorite else "Favorite"
+        )
         upload_action = menu.addAction("Upload")
         add_filter_action = menu.addAction("Add Filter")
         delete_action = menu.addAction("Delete")
@@ -192,6 +253,8 @@ class VideoCard(QWidget):
             self.edit_requested.emit(self.video_id)
         elif chosen == rename_action:
             self._rename()
+        elif chosen == favorite_action:
+            self._toggle_favorite()
         elif chosen == upload_action:
             self.upload_requested.emit(self.video_id)
         elif chosen == add_filter_action:
@@ -209,8 +272,13 @@ class VideoCard(QWidget):
         if not new_title or new_title == self._video.title:
             return
         self._video = library.rename_video(self.video_id, title=new_title)
-        self.title_label.setText(self._video.title)
+        self.title_label.setText(self._title_text(self._video))
         self.renamed.emit()
+
+    def _toggle_favorite(self) -> None:
+        self._video = library.set_favorite(self.video_id, not self._video.favorite)
+        self.title_label.setText(self._title_text(self._video))
+        self.tags_changed.emit()
 
     def _add_filter(self) -> None:
         dialog = AddTagDialog(self)

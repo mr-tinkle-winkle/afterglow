@@ -50,7 +50,16 @@ class _ScalingIconButton(QToolButton):
 
     ICON_PADDING = 14
     SCALE = 0.85  # was 100% ("as large as they are right now"), scaled down 15%
-    GRADIENT_BORDER_WIDTH = 4
+    # Explicit, deterministic border widths by checked state -- Qt's
+    # native "checked" styling for a flat/autoRaise button can itself
+    # visually encroach into the border area (a fill/inset that varies
+    # by theme), which was making the ACTIVE (checked/current-page)
+    # button's gradient border look smaller than the inactive one even
+    # though the same clip width was being drawn underneath for both.
+    # Making both widths explicit and swapping which is larger fixes
+    # that regardless of whatever the native style happens to do.
+    ACTIVE_BORDER_WIDTH = 9
+    INACTIVE_BORDER_WIDTH = 5  # was effectively ~4, asked to be 1px more
 
     def __init__(self, icon_name: str, tooltip: str, parent=None, size_basis: str = "min",
                  gradient_image_name: str | None = None):
@@ -69,6 +78,11 @@ class _ScalingIconButton(QToolButton):
         # other two buttons' actual (width-driven) icon size.
         self._size_basis = size_basis
         self._gradient_pixmap = resource_qpixmap(gradient_image_name) if gradient_image_name else None
+        if self._gradient_pixmap is not None:
+            # Border width depends on checked state (see paintEvent) --
+            # repaint immediately when that changes, not just whenever
+            # something else happens to trigger one.
+            self.toggled.connect(lambda _checked: self.update())
         self._update_icon_size()
 
     def paintEvent(self, event) -> None:
@@ -90,7 +104,7 @@ class _ScalingIconButton(QToolButton):
             # margin.
             painter = QPainter(self)
             painter.setRenderHint(QPainter.SmoothPixmapTransform)
-            border = self.GRADIENT_BORDER_WIDTH
+            border = self.ACTIVE_BORDER_WIDTH if self.isChecked() else self.INACTIVE_BORDER_WIDTH
             inner_rect = self.rect().adjusted(border, border, -border, -border)
             clip_region = QRegion(self.rect()) - QRegion(inner_rect)
             painter.setClipRegion(clip_region)
@@ -125,7 +139,14 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("afterglow")
-        self.resize(1000, 700)
+        # 16:9-ish and reasonably large by default, matching the
+        # 1920x1080 reference-scale baseline in scaling.py -- the
+        # previous 1000x700 (a boxier ~10:7 ratio) was what read as
+        # "opens vertically maximized and horizontally somewhat slim"
+        # on a widescreen display, since a non-widescreen-ish window
+        # size looks comparatively narrow next to a fullscreen-shaped
+        # taskbar/monitor.
+        self.resize(1600, 900)
 
         central = QWidget()
         self.setCentralWidget(central)

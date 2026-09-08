@@ -14,6 +14,7 @@ Examples:
   python cli.py clipconfig delete 1
 
   python cli.py trigger 1            # fire clip config id 1 (needs OBS running)
+  python cli.py trigger --name Ace --filter clutch --filter 1v3
 
   python cli.py library list
   python cli.py library list --tag clutch --tag 1v3
@@ -158,6 +159,10 @@ def cmd_trigger(args):
     else:
         clip_config_id = args.clip_config_id
     video = clips.trigger_clip(clip_config_id)
+    for filter_name in args.filter:
+        library.add_tag_to_video(video.id, filter_name)
+    if args.filter:
+        video = library.get_video(video.id)
     print(f"Captured: {video.title} -> {video.path}")
 
 
@@ -267,6 +272,12 @@ def build_parser() -> argparse.ArgumentParser:
                             help="Clip config id (omit if using --name)")
     p_trigger.add_argument("--name", default=None,
                             help="Clip config name (case-insensitive), e.g. 'Ace'")
+    p_trigger.add_argument(
+        "--filter", action="append", default=[],
+        help="Manually apply a filter/tag to the captured clip, in addition to "
+             "any Auto Add Filter rules that already matched. Repeatable, e.g. "
+             "--filter clutch --filter 1v3.",
+    )
     p_trigger.set_defaults(func=cmd_trigger)
 
     p_lib = sub.add_parser("library")

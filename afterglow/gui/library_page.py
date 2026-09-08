@@ -17,17 +17,71 @@ from PySide6.QtGui import QActionGroup
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLineEdit, QToolButton,
     QMenu, QScrollArea, QLabel, QTabWidget, QMessageBox, QWidgetAction,
-    QCheckBox, QStyle,
+    QCheckBox, QStyle, QInputDialog, QPushButton,
 )
 
 from .. import library
-from .video_card import VideoCard, THUMB_SIZE
+from .video_card import VideoCard, THUMB_SIZE, FAVORITE_STAR
 from .resources import resource_qicon
 
 # Approximate on-screen width of one card (thumbnail + its own internal
 # margins + the grid's inter-column spacing) -- used only to decide how
 # many columns currently fit, not as an exact pixel layout.
 _APPROX_CARD_WIDTH = THUMB_SIZE.width() + 24
+
+FILTER_STATE_NONE = "none"
+FILTER_STATE_INCLUDE = "include"
+FILTER_STATE_EXCLUDE = "exclude"
+
+
+class FilterCheckBox(QCheckBox):
+    """A checkbox for one tag in the Filters dropdown that also supports
+    a third "block" state: right-clicking it (instead of left-clicking
+    to include) excludes any clip carrying that tag. Qt's QCheckBox has
+    no native tri-state visual for "blocked" (its own tristate mode is
+    for a hierarchical "some children checked" meaning, not this), so
+    the excluded state is shown via a crossed-out box glyph + red text
+    on the label rather than the checkbox's own indicator."""
+
+    state_changed = Signal(str, str)  # tag_name, new state
+
+    def __init__(self, tag_name: str, parent=None):
+        super().__init__(tag_name, parent)
+        self._tag_name = tag_name
+        self._state = FILTER_STATE_NONE
+        self.toggled.connect(self._on_toggled)
+        self.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.customContextMenuRequested.connect(self._on_right_click)
+
+    def set_state(self, state: str) -> None:
+        self._state = state
+        self.blockSignals(True)
+        self.setChecked(state == FILTER_STATE_INCLUDE)
+        self.blockSignals(False)
+        self._refresh_label()
+
+    def _refresh_label(self) -> None:
+        if self._state == FILTER_STATE_EXCLUDE:
+            self.setText(f"\u2612 {self._tag_name} (blocked)")
+            self.setStyleSheet("color: #d9534f;")
+        else:
+            self.setText(self._tag_name)
+            self.setStyleSheet("")
+
+    def _on_toggled(self, checked: bool) -> None:
+        self._state = FILTER_STATE_INCLUDE if checked else FILTER_STATE_NONE
+        self._refresh_label()
+        self.state_changed.emit(self._tag_name, self._state)
+
+    def _on_right_click(self, _pos) -> None:
+        self._state = (
+            FILTER_STATE_NONE if self._state == FILTER_STATE_EXCLUDE else FILTER_STATE_EXCLUDE
+        )
+        self.blockSignals(True)
+        self.setChecked(False)
+        self.blockSignals(False)
+        self._refresh_label()
+        self.state_changed.emit(self._tag_name, self._state)
 
 
 class _VideoGridTab(QWidget):
@@ -38,6 +92,8 @@ class _VideoGridTab(QWidget):
         self._uploaded_only = uploaded_only
         self._local_only = local_only
         self._active_tags: set[str] = set()
+        self._excluded_tags: set[str] = set()
+        self._favorite_only: bool = False
         self._sort_by: str = library.DEFAULT_SORT
         self._highlight_unedited: bool = True
         self._font_scale: float = 1.0
@@ -100,17 +156,38 @@ class _VideoGridTab(QWidget):
 
     def _rebuild_filters_menu(self) -> None:
         menu = QMenu(self.filters_btn)
+
+        # Built-in "Favorite" filter, pinned above every user tag.
+        favorite_checkbox = QCheckBox(f"{FAVORITE_STAR} Favorite", menu)
+        favorite_checkbox.setChecked(self._favorite_only)
+        favorite_checkbox.toggled.connect(self._toggle_favorite_filter)
+        favorite_action = QWidgetAction(menu)
+        favorite_action.setDefaultWidget(favorite_checkbox)
+        menu.addAction(favorite_action)
+        menu.addSeparator()
+
         all_tags = library.all_known_tags()
         if not all_tags:
             no_tags_action = menu.addAction("(no tags yet)")
             no_tags_action.setEnabled(False)
         for tag in all_tags:
-            checkbox = QCheckBox(tag, menu)
-            checkbox.setChecked(tag in self._active_tags)
-            checkbox.toggled.connect(lambda checked, t=tag: self._toggle_tag(t, checked))
+            checkbox = FilterCheckBox(tag, menu)
+            if tag in self._excluded_tags:
+                checkbox.set_state(FILTER_STATE_EXCLUDE)
+            elif tag in self._active_tags:
+                checkbox.set_state(FILTER_STATE_INCLUDE)
+            checkbox.state_changed.connect(self._on_filter_state_changed)
             action = QWidgetAction(menu)
             action.setDefaultWidget(checkbox)
             menu.addAction(action)
+
+        menu.addSeparator()
+        add_filter_btn = QPushButton("+ Add Filter")
+        add_filter_btn.setFlat(True)
+        add_filter_btn.clicked.connect(self._add_new_filter)
+        add_filter_action = QWidgetAction(menu)
+        add_filter_action.setDefaultWidget(add_filter_btn)
+        menu.addAction(add_filter_action)
 
         menu.addSeparator()
         highlight_checkbox = QCheckBox("Highlight Unedited", menu)
@@ -121,6 +198,26 @@ class _VideoGridTab(QWidget):
         menu.addAction(highlight_action)
 
         self.filters_btn.setMenu(menu)
+
+    def _toggle_favorite_filter(self, checked: bool) -> None:
+        self._favorite_only = checked
+        self.refresh()
+
+    def _on_filter_state_changed(self, tag: str, state: str) -> None:
+        self._active_tags.discard(tag)
+        self._excluded_tags.discard(tag)
+        if state == FILTER_STATE_INCLUDE:
+            self._active_tags.add(tag)
+        elif state == FILTER_STATE_EXCLUDE:
+            self._excluded_tags.add(tag)
+        self.refresh()
+
+    def _add_new_filter(self) -> None:
+        name, ok = QInputDialog.getText(self, "Add Filter", "Filter name:")
+        name = name.strip()
+        if ok and name:
+            library.create_tag(name)
+            self.refresh()
 
     def _toggle_highlight_unedited(self, checked: bool) -> None:
         self._highlight_unedited = checked
@@ -136,13 +233,6 @@ class _VideoGridTab(QWidget):
         self._font_scale = factor
         for card in self._cards:
             card.set_font_scale(factor)
-
-    def _toggle_tag(self, tag: str, checked: bool) -> None:
-        if checked:
-            self._active_tags.add(tag)
-        else:
-            self._active_tags.discard(tag)
-        self.refresh()
 
     # ------------------------------------------------------------ sort menu
 
@@ -197,6 +287,8 @@ class _VideoGridTab(QWidget):
 
         videos = library.list_videos(
             tag_filter=list(self._active_tags) or None,
+            tag_exclude=list(self._excluded_tags) or None,
+            favorite_only=self._favorite_only,
             uploaded_only=self._uploaded_only,
             local_only=self._local_only,
             search=self.search_edit.text().strip() or None,
@@ -286,9 +378,14 @@ class LibraryPage(QWidget):
         # size: originally set to 3x (default_icon_size * 3), then asked
         # to be 1.5x that current size on top -- 3 * 1.5 = 4.5x the
         # original style default, queried at runtime rather than assumed.
-        default_icon_size = self.tabs.style().pixelMetric(QStyle.PM_TabBarIconSize)
-        tab_icon_size = round(default_icon_size * 4.5)
-        self.tabs.setIconSize(QSize(tab_icon_size, tab_icon_size))
+        # Stored so apply_scale() below can rescale it later -- this
+        # wasn't being done at all before, so the tab icons stayed fixed
+        # regardless of window size while everything else around them
+        # scaled.
+        self._base_tab_icon_size = round(
+            self.tabs.style().pixelMetric(QStyle.PM_TabBarIconSize) * 4.5
+        )
+        self.tabs.setIconSize(QSize(self._base_tab_icon_size, self._base_tab_icon_size))
         self.tabs.addTab(self.local_tab, resource_qicon("local_videos.png"), "")
         self.tabs.addTab(self.uploaded_tab, resource_qicon("uploaded_videos.png"), "")
         self.tabs.setTabToolTip(0, "Local")
@@ -339,3 +436,8 @@ class LibraryPage(QWidget):
     def apply_scale(self, factor: float) -> None:
         self.local_tab.apply_scale(factor)
         self.uploaded_tab.apply_scale(factor)
+        # Was previously set once at construction and never touched
+        # again, so it stayed fixed regardless of window size while
+        # everything else scaled -- now rescaled live alongside them.
+        size = max(round(self._base_tab_icon_size * factor), 8)
+        self.tabs.setIconSize(QSize(size, size))

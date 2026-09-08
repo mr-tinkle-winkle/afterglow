@@ -6,6 +6,7 @@ from PySide6.QtGui import QIcon, QSurfaceFormat
 from PySide6.QtWidgets import QApplication
 
 from .. import db
+from .. import config as config_module
 from .main_window import MainWindow
 
 
@@ -69,7 +70,10 @@ def main() -> None:
             app.setWindowIcon(QIcon(str(dev_icon)))
 
     window = MainWindow()
-    window.show()
+    if config_module.load().default_to_fullscreen:
+        window.showFullScreen()
+    else:
+        window.show()
     sys.exit(app.exec())
 
 

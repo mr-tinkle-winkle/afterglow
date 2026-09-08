@@ -22,17 +22,22 @@ is still a separate, later phase.
 """
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QHBoxLayout, QPushButton,
     QCheckBox, QMessageBox, QLineEdit, QToolButton, QMenu, QWidgetAction,
     QDialog, QDialogButtonBox,
 )
+# QPushButton already imported above -- used for the toolbar Save/Undo
+# buttons and now also for the "+ Add Filter" item embedded in the
+# Filters dropdown (see _rebuild_editor_filters_menu).
 
 from .. import library
 from .mpv_widget import MpvVideoWidget
 from .trim_timeline import TrimTimeline
 from .volume_bar import VolumeBar
+
+FAVORITE_STAR = "\u2605"  # "★"
 
 
 class CreateFilterDialog(QDialog):
@@ -93,19 +98,29 @@ class EditorPage(QWidget):
         # right at the trim end look like it did nothing.
         self._current_pos: float = 0.0
         # Set right after an explicit restart-seek (Play/Space pressed
-        # while stopped at/past the end) and cleared once a position
-        # report consistent with that seek having actually taken effect
-        # is seen. Needed because mpv's seek() is async: a position
-        # report reflecting where playback was BEFORE the seek can still
-        # be "in flight" and arrive just after we call seek()+play(),
-        # which would otherwise immediately re-trigger the preview_end
-        # clamp below and look like either "does nothing" (untrimmed --
-        # the stale report is right at the old end, so is_paused flips
-        # true again almost instantly) or "plays for a moment then
-        # stops" (trimmed -- same mechanism, just with the seek target
-        # being preview_start instead of 0). While this is set, incoming
-        # position reports that still look like the OLD (pre-seek)
-        # position are ignored outright rather than acted on.
+        # while stopped at/past the end) and cleared by a short timer
+        # rather than by inspecting the next position report's value.
+        # Needed because mpv's seek() is async: a position report
+        # reflecting where playback was BEFORE the seek can still be "in
+        # flight" and arrive just after we call seek()+play(), which
+        # would otherwise immediately re-trigger the preview_end clamp
+        # below and look like either "does nothing" (untrimmed -- the
+        # stale report is right at the old end, so is_paused flips true
+        # again almost instantly) or "plays for a moment then stops"
+        # (trimmed -- same mechanism, just with the seek target being
+        # preview_start instead of 0).
+        #
+        # A first version tried to distinguish "stale" from "fresh"
+        # reports by checking whether the reported position was close to
+        # the seek target -- but that broke down for a short trim
+        # selection where the very first fresh post-seek report can
+        # legitimately already be close to preview_end (e.g. a short
+        # clip decoding faster than the position-update interval),
+        # getting misread as still-stale and leaving the guard stuck on
+        # indefinitely. A flat time-based debounce sidesteps that
+        # entirely: ignore ALL position reports for a short fixed window
+        # after a restart-seek, then resume normal processing
+        # unconditionally, regardless of what value shows up.
         self._awaiting_restart_seek = False
         # Live playback preview is bounded to the current UNSAVED trim
         # selection -- Play always starts from the trim start, and
@@ -129,18 +144,19 @@ class EditorPage(QWidget):
         self.title_edit.editingFinished.connect(self._on_title_edited)
         title_row.addWidget(self.title_edit, stretch=1)
 
+        self.favorite_btn = QToolButton()
+        self.favorite_btn.setText(FAVORITE_STAR)
+        self.favorite_btn.setCheckable(True)
+        self.favorite_btn.setToolTip("Favorite this clip")
+        self.favorite_btn.setEnabled(False)
+        self.favorite_btn.toggled.connect(self._on_favorite_toggled)
+        title_row.addWidget(self.favorite_btn)
+
         self.filters_btn = QToolButton()
         self.filters_btn.setText("Filters")
         self.filters_btn.setPopupMode(QToolButton.InstantPopup)
         self.filters_btn.setEnabled(False)
         title_row.addWidget(self.filters_btn)
-
-        self.create_filter_btn = QToolButton()
-        self.create_filter_btn.setText("+")
-        self.create_filter_btn.setToolTip("Create New Filter")
-        self.create_filter_btn.setEnabled(False)
-        self.create_filter_btn.clicked.connect(self._open_create_filter_dialog)
-        title_row.addWidget(self.create_filter_btn)
         layout.addLayout(title_row)
 
         self.video_widget = MpvVideoWidget()
@@ -245,13 +261,23 @@ class EditorPage(QWidget):
         self.trim_timeline.set_scale(factor)
         self.volume_bar.set_scale(factor)
 
+    def hideEvent(self, event) -> None:
+        # The loaded clip stays loaded when navigating to another page
+        # (see this file's module docstring -- the page itself is never
+        # destroyed), but playback shouldn't keep running unattended in
+        # the background -- pause it, same as any other "left the video
+        # paused, come back to it later" pause.
+        super().hideEvent(event)
+        if self.current_video_id is not None and not self.video_widget.is_paused:
+            self.video_widget.pause()
+
     def _refresh_display(self) -> None:
         if self.current_video_id is None:
             self.title_edit.clear()
             self.title_edit.setEnabled(False)
             self.filters_btn.setEnabled(False)
             self.filters_btn.setMenu(None)
-            self.create_filter_btn.setEnabled(False)
+            self.favorite_btn.setEnabled(False)
             self.undo_btn.setEnabled(False)
             self.clear_backup_btn.setEnabled(False)
             self.trim_timeline.setEnabled(False)
@@ -269,7 +295,10 @@ class EditorPage(QWidget):
         self.title_edit.setEnabled(True)
         self.title_edit.setText(video.title)
         self.filters_btn.setEnabled(True)
-        self.create_filter_btn.setEnabled(True)
+        self.favorite_btn.setEnabled(True)
+        self.favorite_btn.blockSignals(True)
+        self.favorite_btn.setChecked(video.favorite)
+        self.favorite_btn.blockSignals(False)
         self._rebuild_editor_filters_menu(video)
 
         # Both require an actual backup to act on -- once Clear Edit Backup
@@ -306,7 +335,21 @@ class EditorPage(QWidget):
             action = QWidgetAction(menu)
             action.setDefaultWidget(checkbox)
             menu.addAction(action)
+
+        menu.addSeparator()
+        add_filter_btn = QPushButton("+ Add Filter")
+        add_filter_btn.setFlat(True)
+        add_filter_btn.clicked.connect(self._open_create_filter_dialog)
+        add_filter_action = QWidgetAction(menu)
+        add_filter_action.setDefaultWidget(add_filter_btn)
+        menu.addAction(add_filter_action)
+
         self.filters_btn.setMenu(menu)
+
+    def _on_favorite_toggled(self, checked: bool) -> None:
+        if self.current_video_id is None:
+            return
+        library.set_favorite(self.current_video_id, checked)
 
     def _toggle_video_filter(self, tag: str, checked: bool) -> None:
         if self.current_video_id is None:
@@ -359,19 +402,25 @@ class EditorPage(QWidget):
             if position < self._preview_start or at_or_past_end:
                 self.video_widget.seek(self._preview_start)
                 # Optimistic update, and suppress the clamp in
-                # _on_position_changed until a report consistent with
-                # this seek is actually seen -- seek() is async, so a
-                # stale report of the OLD (pre-seek, near/at the end)
-                # position can still arrive right after this and would
-                # otherwise immediately re-trigger the end-of-preview
-                # clamp, making it look like restarting "did nothing" or
+                # _on_position_changed for a short window until any
+                # stale pre-seek report has had time to arrive and be
+                # ignored -- seek() is async, so a stale report of the
+                # OLD (pre-seek, near/at the end) position can still
+                # arrive right after this and would otherwise
+                # immediately re-trigger the end-of-preview clamp,
+                # making it look like restarting "did nothing" or
                 # "played for only a moment." See the attribute's own
-                # comment in __init__ for the full explanation.
+                # comment in __init__ for why this is a timer, not a
+                # position-value check.
                 self._current_pos = self._preview_start
                 self._awaiting_restart_seek = True
+                QTimer.singleShot(250, self._clear_restart_seek_guard)
             self.video_widget.play()
         else:
             self.video_widget.pause()
+
+    def _clear_restart_seek_guard(self) -> None:
+        self._awaiting_restart_seek = False
 
     def _on_volume_changed(self, value: int) -> None:
         self.video_widget.set_volume(value)
@@ -381,17 +430,11 @@ class EditorPage(QWidget):
 
     def _on_position_changed(self, position: float) -> None:
         if self._awaiting_restart_seek:
-            if position > self._preview_start + _EOF_EPSILON_SEC:
-                # Not yet a report reflecting the restart seek having
-                # taken effect -- still the stale pre-seek echo (or a
-                # transient mid-seek value). Checked against
-                # preview_start directly (not "how far from preview_end")
-                # so this works correctly even for a very short trim
-                # selection, where "near the start" and "near the end"
-                # could otherwise be within the same epsilon of each
-                # other.
-                return
-            self._awaiting_restart_seek = False
+            # Ignore every report during the debounce window
+            # unconditionally, rather than trying to tell a stale one
+            # apart from a fresh one by value -- see __init__'s comment
+            # on why the value-based version of this was fragile.
+            return
 
         self._current_pos = position
         if (

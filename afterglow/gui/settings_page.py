@@ -18,13 +18,14 @@ from __future__ import annotations
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QGroupBox, QLineEdit,
     QSpinBox, QDoubleSpinBox, QPushButton, QFileDialog, QLabel, QScrollArea,
-    QMessageBox,
+    QMessageBox, QTabWidget, QCheckBox,
 )
 
 from .. import config as config_module
 from .. import clips
 from ..clips import ClipError
 from .clip_config_row import ClipConfigRow
+from .filters_settings_page import FiltersSettingsPage
 
 
 class SettingsPage(QWidget):
@@ -36,9 +37,20 @@ class SettingsPage(QWidget):
 
         outer = QVBoxLayout(self)
 
-        outer.addWidget(self._build_obs_group())
-        outer.addWidget(self._build_general_group())
-        outer.addWidget(self._build_clip_options_group(), stretch=1)
+        # A tab per settings cluster -- General (everything that used to
+        # be the whole page) plus the new Filters page, rather than
+        # stacking the Filters controls underneath everything else.
+        tabs = QTabWidget()
+        general_page = QWidget()
+        general_layout = QVBoxLayout(general_page)
+        general_layout.addWidget(self._build_obs_group())
+        general_layout.addWidget(self._build_general_group())
+        general_layout.addWidget(self._build_clip_options_group(), stretch=1)
+        tabs.addTab(general_page, "General")
+
+        self.filters_settings_page = FiltersSettingsPage()
+        tabs.addTab(self.filters_settings_page, "Filters")
+        outer.addWidget(tabs, stretch=1)
 
         save_row = QHBoxLayout()
         self.status_label = QLabel("")
@@ -148,6 +160,10 @@ class SettingsPage(QWidget):
         sound_row.addWidget(sound_browse)
         form.addRow("Default sound:", sound_row)
 
+        self.fullscreen_check = QCheckBox()
+        self.fullscreen_check.setChecked(self._settings.default_to_fullscreen)
+        form.addRow("Default to Fullscreen:", self.fullscreen_check)
+
         return group
 
     def _browse_clips_dir(self) -> None:
@@ -230,7 +246,9 @@ class SettingsPage(QWidget):
         )
         self._settings.clips_dir = self.clips_dir_edit.text().strip()
         self._settings.default_sound_path = self.default_sound_edit.text().strip()
+        self._settings.default_to_fullscreen = self.fullscreen_check.isChecked()
         config_module.save(self._settings)
+        self.filters_settings_page.save()
 
         try:
             for clip_config_id in self._deleted_ids:
