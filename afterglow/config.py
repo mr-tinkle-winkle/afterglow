@@ -68,6 +68,19 @@ class AutoFilterRule:
 
 
 @dataclass
+class CardInfoSettings:
+    """What's shown on a Library card besides the thumbnail/title/
+    favorite-star, toggled from the Library's "Info" dropdown (next to
+    Sort By). Render order on the card is: title, then length + file
+    size on one line (size after length), then creation date, then
+    filters -- each independently toggleable here."""
+    show_filters: bool = True
+    show_length: bool = False
+    show_file_size: bool = False
+    show_creation_date: bool = False
+
+
+@dataclass
 class AppSettings:
     clips_dir: str = str(DEFAULT_CLIPS_DIR)
     default_sound_path: str = ""
@@ -76,6 +89,7 @@ class AppSettings:
     youtube: YouTubeSettings = field(default_factory=YouTubeSettings)
     filter_display: FilterDisplaySettings = field(default_factory=FilterDisplaySettings)
     auto_filters: list[AutoFilterRule] = field(default_factory=list)
+    card_info: CardInfoSettings = field(default_factory=CardInfoSettings)
 
     def clips_path(self) -> Path:
         return Path(self.clips_dir).expanduser()
@@ -101,13 +115,14 @@ def load() -> AppSettings:
     youtube = YouTubeSettings(**raw.get("youtube", {}))
     filter_display = FilterDisplaySettings(**raw.get("filter_display", {}))
     auto_filters = [AutoFilterRule(**rule) for rule in raw.get("auto_filters", [])]
+    card_info = CardInfoSettings(**raw.get("card_info", {}))
     top_level = {
         k: v for k, v in raw.items()
-        if k not in ("obs", "youtube", "filter_display", "auto_filters")
+        if k not in ("obs", "youtube", "filter_display", "auto_filters", "card_info")
     }
     settings = AppSettings(
         obs=obs, youtube=youtube, filter_display=filter_display,
-        auto_filters=auto_filters, **top_level,
+        auto_filters=auto_filters, card_info=card_info, **top_level,
     )
     _ensure_dirs(settings)
     return settings

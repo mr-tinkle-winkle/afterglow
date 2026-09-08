@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
 )
 
 from .. import library
+from .. import config as config_module
 from .video_card import VideoCard, THUMB_SIZE, FAVORITE_STAR
 from .resources import resource_qicon
 
@@ -130,6 +131,12 @@ class _VideoGridTab(QWidget):
         self.sort_btn.setPopupMode(QToolButton.InstantPopup)
         self._build_sort_menu()
         top_row.addWidget(self.sort_btn)
+
+        self.info_btn = QToolButton()
+        self.info_btn.setText("Info")
+        self.info_btn.setPopupMode(QToolButton.InstantPopup)
+        self._build_info_menu()
+        top_row.addWidget(self.info_btn)
         outer.addLayout(top_row)
 
         # ---- grid ----
@@ -167,19 +174,35 @@ class _VideoGridTab(QWidget):
         menu.addSeparator()
 
         all_tags = library.all_known_tags()
-        if not all_tags:
-            no_tags_action = menu.addAction("(no tags yet)")
-            no_tags_action.setEnabled(False)
-        for tag in all_tags:
-            checkbox = FilterCheckBox(tag, menu)
+        grouped, uncategorized = library.tags_grouped_by_category()
+
+        def _make_checkbox(tag: str, target_menu: QMenu) -> None:
+            checkbox = FilterCheckBox(tag, target_menu)
             if tag in self._excluded_tags:
                 checkbox.set_state(FILTER_STATE_EXCLUDE)
             elif tag in self._active_tags:
                 checkbox.set_state(FILTER_STATE_INCLUDE)
             checkbox.state_changed.connect(self._on_filter_state_changed)
-            action = QWidgetAction(menu)
+            action = QWidgetAction(target_menu)
             action.setDefaultWidget(checkbox)
-            menu.addAction(action)
+            target_menu.addAction(action)
+
+        if not all_tags:
+            no_tags_action = menu.addAction("(no tags yet)")
+            no_tags_action.setEnabled(False)
+
+        # Categories render as submenus that open to the side, like
+        # folders -- each one is its own QMenu added via addMenu(),
+        # which is what gives the side-opening-submenu behavior for
+        # free rather than needing to build that interaction by hand.
+        for category_name, tag_names in grouped.items():
+            category_menu = QMenu(category_name, menu)
+            for tag in tag_names:
+                _make_checkbox(tag, category_menu)
+            menu.addMenu(category_menu)
+
+        for tag in uncategorized:
+            _make_checkbox(tag, menu)
 
         menu.addSeparator()
         add_filter_btn = QPushButton("+ Add Filter")
@@ -212,6 +235,17 @@ class _VideoGridTab(QWidget):
             self._excluded_tags.add(tag)
         self.refresh()
 
+    def _on_icon_left_clicked(self, tag: str) -> None:
+        # Toggle: clicking a filter icon that's already an active
+        # include-filter clears it, same as unchecking it in the
+        # dropdown would.
+        new_state = FILTER_STATE_NONE if tag in self._active_tags else FILTER_STATE_INCLUDE
+        self._on_filter_state_changed(tag, new_state)
+
+    def _on_icon_right_clicked(self, tag: str) -> None:
+        new_state = FILTER_STATE_NONE if tag in self._excluded_tags else FILTER_STATE_EXCLUDE
+        self._on_filter_state_changed(tag, new_state)
+
     def _add_new_filter(self) -> None:
         name, ok = QInputDialog.getText(self, "Add Filter", "Filter name:")
         name = name.strip()
@@ -233,6 +267,38 @@ class _VideoGridTab(QWidget):
         self._font_scale = factor
         for card in self._cards:
             card.set_font_scale(factor)
+
+    # ------------------------------------------------------------ info menu
+
+    def _build_info_menu(self) -> None:
+        """What's shown on each card besides the thumbnail/title itself:
+        filters, video length, file size, creation date -- persisted to
+        config (see config.CardInfoSettings) since this is a display
+        preference, not a per-session filter selection."""
+        menu = QMenu(self.info_btn)
+        card_info = config_module.load().card_info
+
+        options = [
+            ("Show Filters", "show_filters", card_info.show_filters),
+            ("Show Video Length", "show_length", card_info.show_length),
+            ("Show File Size", "show_file_size", card_info.show_file_size),
+            ("Show Creation Date", "show_creation_date", card_info.show_creation_date),
+        ]
+        for label, field_name, checked in options:
+            checkbox = QCheckBox(label, menu)
+            checkbox.setChecked(checked)
+            checkbox.toggled.connect(lambda is_checked, f=field_name: self._set_card_info_field(f, is_checked))
+            action = QWidgetAction(menu)
+            action.setDefaultWidget(checkbox)
+            menu.addAction(action)
+
+        self.info_btn.setMenu(menu)
+
+    def _set_card_info_field(self, field_name: str, checked: bool) -> None:
+        settings = config_module.load()
+        setattr(settings.card_info, field_name, checked)
+        config_module.save(settings)
+        self.refresh()
 
     # ------------------------------------------------------------ sort menu
 
@@ -305,6 +371,8 @@ class _VideoGridTab(QWidget):
             card.tags_changed.connect(self.refresh)
             card.renamed.connect(self.refresh)
             card.upload_requested.connect(self._handle_upload_request)
+            card.filter_left_clicked.connect(self._on_icon_left_clicked)
+            card.filter_right_clicked.connect(self._on_icon_right_clicked)
             self._cards.append(card)
 
         self._relayout(self._columns_for_width(self.scroll.viewport().width()))

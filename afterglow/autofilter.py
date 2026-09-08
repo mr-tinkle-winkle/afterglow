@@ -61,6 +61,29 @@ def _running_process_names() -> set[str]:
     return names
 
 
+def list_running_process_display_names() -> list[str]:
+    """Sorted, deduped list of just the short comm name (e.g. "steam",
+    "firefox") of every running process -- for the Settings > Auto Add
+    Filter app-name dropdown, which needs something a person can
+    actually scan/pick from, not the full /proc dump _running_process_names()
+    returns (that includes full command lines, used for actual matching,
+    not for display)."""
+    proc_dir = Path("/proc")
+    names: set[str] = set()
+    if not proc_dir.is_dir():
+        return []
+    for entry in proc_dir.iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            comm = (entry / "comm").read_text().strip()
+            if comm:
+                names.add(comm)
+        except (OSError, PermissionError):
+            continue
+    return sorted(names, key=str.lower)
+
+
 def _find_focused_sway_node(node: dict) -> dict | None:
     if node.get("focused"):
         return node

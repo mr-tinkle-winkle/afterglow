@@ -19,11 +19,12 @@ from __future__ import annotations
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGroupBox, QLabel, QPushButton,
     QFileDialog, QComboBox, QCheckBox, QScrollArea, QFrame, QLineEdit,
-    QMessageBox, QTabWidget, QFormLayout,
+    QMessageBox, QTabWidget, QFormLayout, QInputDialog,
 )
 
 from .. import library
 from .. import config as config_module
+from .. import autofilter
 
 _ICON_LOCATIONS = [
     ("Above", "above"),
@@ -32,9 +33,12 @@ _ICON_LOCATIONS = [
     ("Vertical Tiling Right", "vtile_right"),
 ]
 
+_NEW_CATEGORY_DATA = "__new_category__"
+
 
 class _TagIconRow(QFrame):
-    def __init__(self, tag_id: int, tag_name: str, icon_path: str | None, parent=None):
+    def __init__(self, tag_id: int, tag_name: str, icon_path: str | None,
+                 category_id: int | None, categories: list[tuple[int, str]], parent=None):
         super().__init__(parent)
         self.tag_id = tag_id
         self.tag_name = tag_name
@@ -45,6 +49,11 @@ class _TagIconRow(QFrame):
 
         self.name_label = QLabel(tag_name)
         row.addWidget(self.name_label, stretch=1)
+
+        self.category_combo = QComboBox()
+        self._populate_category_combo(categories, category_id)
+        self.category_combo.currentIndexChanged.connect(self._on_category_changed)
+        row.addWidget(self.category_combo)
 
         self.icon_preview = QLabel(self._icon_summary())
         self.icon_preview.setStyleSheet("color: gray;")
@@ -62,6 +71,33 @@ class _TagIconRow(QFrame):
         rename_btn.clicked.connect(self._rename)
         row.addWidget(rename_btn)
 
+    def _populate_category_combo(self, categories: list[tuple[int, str]], selected_id: int | None) -> None:
+        self.category_combo.blockSignals(True)
+        self.category_combo.clear()
+        self.category_combo.addItem("(no category)", None)
+        for cat_id, cat_name in categories:
+            self.category_combo.addItem(cat_name, cat_id)
+        self.category_combo.addItem("+ New Category...", _NEW_CATEGORY_DATA)
+        index = self.category_combo.findData(selected_id)
+        self.category_combo.setCurrentIndex(index if index >= 0 else 0)
+        self.category_combo.blockSignals(False)
+
+    def _on_category_changed(self, _index: int) -> None:
+        data = self.category_combo.currentData()
+        if data == _NEW_CATEGORY_DATA:
+            name, ok = QInputDialog.getText(self, "New Category", "Category name:")
+            name = name.strip()
+            if not ok or not name:
+                # Revert to "(no category)" rather than leaving the
+                # "+ New Category..." entry selected.
+                self.category_combo.setCurrentIndex(0)
+                return
+            new_id = library.create_category(name)
+            library.set_tag_category(self.tag_id, new_id)
+            self._populate_category_combo(library.all_categories(), new_id)
+        else:
+            library.set_tag_category(self.tag_id, data)
+
     def _icon_summary(self) -> str:
         return self.icon_path.rsplit("/", 1)[-1] if self.icon_path else "(no icon)"
 
@@ -78,7 +114,6 @@ class _TagIconRow(QFrame):
         self.icon_preview.setText(self._icon_summary())
 
     def _rename(self) -> None:
-        from PySide6.QtWidgets import QInputDialog
         new_name, ok = QInputDialog.getText(self, "Rename Filter", "Filter name:", text=self.tag_name)
         new_name = new_name.strip()
         if not ok or not new_name or new_name == self.tag_name:
@@ -103,9 +138,22 @@ class _AutoFilterRow(QFrame):
         self.tag_edit.setPlaceholderText("Filter name")
         row.addWidget(self.tag_edit, stretch=1)
 
-        self.app_edit = QLineEdit(app_match)
-        self.app_edit.setPlaceholderText("App/process name match")
-        row.addWidget(self.app_edit, stretch=1)
+        # Editable combo, not a plain text field: it doubles as a
+        # dropdown of currently-running process names (so a match
+        # string can be picked with a click instead of typed blind) and
+        # a normal typable box, since the app you want to match might
+        # not be running yet when this row is being set up.
+        self.app_combo = QComboBox()
+        self.app_combo.setEditable(True)
+        self.app_combo.setPlaceholderText("App/process name match")
+        self._refresh_running_apps(keep_text=app_match)
+        row.addWidget(self.app_combo, stretch=1)
+
+        refresh_apps_btn = QPushButton("\u21bb")  # "↻"
+        refresh_apps_btn.setToolTip("Refresh running app list")
+        refresh_apps_btn.setFixedWidth(28)
+        refresh_apps_btn.clicked.connect(lambda: self._refresh_running_apps())
+        row.addWidget(refresh_apps_btn)
 
         self.mode_combo = QComboBox()
         self.mode_combo.addItem("While app is open", "open")
@@ -117,10 +165,16 @@ class _AutoFilterRow(QFrame):
         self.remove_btn = QPushButton("Remove")
         row.addWidget(self.remove_btn)
 
+    def _refresh_running_apps(self, keep_text: str | None = None) -> None:
+        current_text = keep_text if keep_text is not None else self.app_combo.currentText()
+        self.app_combo.clear()
+        self.app_combo.addItems(autofilter.list_running_process_display_names())
+        self.app_combo.setCurrentText(current_text)  # still typable -- doesn't have to match a list entry
+
     def to_rule(self) -> config_module.AutoFilterRule:
         return config_module.AutoFilterRule(
             tag_name=self.tag_edit.text().strip(),
-            app_match=self.app_edit.text().strip(),
+            app_match=self.app_combo.currentText().strip(),
             mode=self.mode_combo.currentData(),
         )
 
@@ -185,8 +239,12 @@ class FiltersSettingsPage(QWidget):
             row.deleteLater()
         self._tag_rows = []
         icons = library.tag_icons()
+        category_ids = library.tag_category_ids()
+        categories = library.all_categories()
         for tag_id, tag_name in library.all_tags_with_ids():
-            row = _TagIconRow(tag_id, tag_name, icons.get(tag_name))
+            row = _TagIconRow(
+                tag_id, tag_name, icons.get(tag_name), category_ids.get(tag_id), categories,
+            )
             self.rows_layout.insertWidget(self.rows_layout.count() - 1, row)
             self._tag_rows.append(row)
 

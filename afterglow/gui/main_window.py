@@ -21,7 +21,7 @@ looked proportionally too small once the window was large/fullscreen.
 from __future__ import annotations
 
 from PySide6.QtCore import QSize
-from PySide6.QtGui import QPainter, QRegion
+from PySide6.QtGui import QPainter, QRegion, QColor
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QToolButton,
     QButtonGroup, QStackedWidget, QSizePolicy,
@@ -60,6 +60,7 @@ class _ScalingIconButton(QToolButton):
     # that regardless of whatever the native style happens to do.
     ACTIVE_BORDER_WIDTH = 9
     INACTIVE_BORDER_WIDTH = 5  # was effectively ~4, asked to be 1px more
+    INACTIVE_DARKEN_FACTOR = 0.35  # how much darker the inactive gradient is
 
     def __init__(self, icon_name: str, tooltip: str, parent=None, size_basis: str = "min",
                  gradient_image_name: str | None = None):
@@ -69,6 +70,18 @@ class _ScalingIconButton(QToolButton):
         self.setCheckable(True)
         self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
         self.setAutoRaise(True)
+        # Fully flat/transparent regardless of checked state -- without
+        # this, the native style's own "checked" background fill (which
+        # varies by theme/style) was what made the active button's
+        # overall painted footprint look bigger than the inactive one,
+        # even though neither button's actual widget geometry ever
+        # changes. Only this class's own paintEvent below should ever
+        # draw anything but the icon itself.
+        self.setStyleSheet(
+            "QToolButton { border: none; background: transparent; }"
+            "QToolButton:checked { border: none; background: transparent; }"
+            "QToolButton:pressed { border: none; background: transparent; }"
+        )
         # "min": size to whichever of width/height is smaller (used by
         # Library/Editor, which are tall and narrow -- width is always
         # the limiting dimension there). "width": size purely off width,
@@ -109,6 +122,15 @@ class _ScalingIconButton(QToolButton):
             clip_region = QRegion(self.rect()) - QRegion(inner_rect)
             painter.setClipRegion(clip_region)
             painter.drawPixmap(self.rect(), self._gradient_pixmap)
+            if not self.isChecked():
+                # Darken the inactive tab's gradient by 35% via a
+                # multiply-blend gray fill (multiplying by 0.65 darkens
+                # any underlying color proportionally, rather than a
+                # flat alpha-black overlay which would wash out darker
+                # parts of the gradient less than lighter ones).
+                gray = round(255 * (1 - self.INACTIVE_DARKEN_FACTOR))
+                painter.setCompositionMode(QPainter.CompositionMode_Multiply)
+                painter.fillRect(self.rect(), QColor(gray, gray, gray))
             painter.end()
         super().paintEvent(event)
 

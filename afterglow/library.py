@@ -272,6 +272,14 @@ def tag_icons() -> dict[str, str]:
         return {r["name"]: r["icon_path"] for r in rows}
 
 
+def tag_category_ids() -> dict[int, int | None]:
+    """{tag_id: category_id or None} -- used by the Settings > Filters
+    page to pre-select each tag's current category in its dropdown."""
+    with db.get_conn() as conn:
+        rows = conn.execute("SELECT id, category_id FROM tags").fetchall()
+        return {r["id"]: r["category_id"] for r in rows}
+
+
 def create_tag(tag_name: str) -> None:
     """Create a tag/filter without applying it to any video -- used by
     the Editor's Create New Filter dialog when "Apply to current video?"
@@ -407,6 +415,70 @@ def scan_and_ingest_new_videos() -> list[Video]:
 
 
 # ---------------------------------------------------------------- tags
+
+def all_categories() -> list[tuple[int, str]]:
+    with db.get_conn() as conn:
+        rows = conn.execute("SELECT id, name FROM filter_categories ORDER BY name").fetchall()
+        return [(r["id"], r["name"]) for r in rows]
+
+
+def create_category(name: str) -> int:
+    name = name.strip()
+    if not name:
+        raise LibraryError("Category name can't be empty.")
+    with db.get_conn() as conn:
+        conn.execute("INSERT OR IGNORE INTO filter_categories (name) VALUES (?)", (name,))
+        return conn.execute(
+            "SELECT id FROM filter_categories WHERE name = ?", (name,)
+        ).fetchone()["id"]
+
+
+def rename_category(category_id: int, new_name: str) -> None:
+    new_name = new_name.strip()
+    if not new_name:
+        raise LibraryError("Category name can't be empty.")
+    with db.get_conn() as conn:
+        existing = conn.execute(
+            "SELECT id FROM filter_categories WHERE name = ? COLLATE NOCASE AND id != ?",
+            (new_name, category_id),
+        ).fetchone()
+        if existing is not None:
+            raise LibraryError(f"A category named '{new_name}' already exists.")
+        conn.execute("UPDATE filter_categories SET name = ? WHERE id = ?", (new_name, category_id))
+
+
+def delete_category(category_id: int) -> None:
+    """Deletes the category itself; any tags in it become uncategorized
+    (ON DELETE SET NULL on tags.category_id), not deleted."""
+    with db.get_conn() as conn:
+        conn.execute("DELETE FROM filter_categories WHERE id = ?", (category_id,))
+
+
+def set_tag_category(tag_id: int, category_id: int | None) -> None:
+    with db.get_conn() as conn:
+        conn.execute("UPDATE tags SET category_id = ? WHERE id = ?", (category_id, tag_id))
+
+
+def tags_grouped_by_category() -> tuple[dict[str, list[str]], list[str]]:
+    """({category_name: [tag_name, ...]}, [uncategorized_tag_name, ...]) --
+    used to build the Filters dropdown's folder-style submenus. Category
+    dict preserves category name alphabetical order (dict insertion
+    order); each category's tag list is alphabetical too."""
+    with db.get_conn() as conn:
+        rows = conn.execute(
+            """SELECT t.name AS tag_name, c.name AS category_name
+               FROM tags t LEFT JOIN filter_categories c ON c.id = t.category_id
+               ORDER BY c.name, t.name"""
+        ).fetchall()
+    grouped: dict[str, list[str]] = {}
+    uncategorized: list[str] = []
+    for row in rows:
+        if row["category_name"] is None:
+            uncategorized.append(row["tag_name"])
+        else:
+            grouped.setdefault(row["category_name"], []).append(row["tag_name"])
+    return grouped, uncategorized
+
 
 def add_tag_to_video(video_id: int, tag_name: str) -> None:
     tag_name = tag_name.strip()

@@ -5,6 +5,7 @@ right-click context menu (Edit / Upload / Delete / Add Filter).
 from __future__ import annotations
 
 from pathlib import Path
+from datetime import datetime
 
 from PySide6.QtCore import Qt, Signal, QSize
 from PySide6.QtGui import QPixmap, QPainter, QColor, QIcon
@@ -20,6 +21,54 @@ from .resources import resource_qpixmap
 THUMB_SIZE = QSize(400, 224)  # 16:9, doubled from the original 200x112
 FAVORITE_STAR = "\u2605"  # "★"
 
+# 3x the original 18px icon size, per request -- ICON_SPACING between
+# each. When more filter icons are on one video than fit at that size
+# within the thumbnail's own width (horizontal rows) or height
+# (vertical tiling), _icon_size_for_count scales all of them down
+# together to fit, rather than letting the row overflow the card.
+BASE_ICON_SIZE = 54
+ICON_SPACING = 4
+MIN_ICON_SIZE = 16
+
+
+def _icon_size_for_count(count: int, available: int) -> int:
+    if count <= 0:
+        return BASE_ICON_SIZE
+    natural_total = count * BASE_ICON_SIZE + (count - 1) * ICON_SPACING
+    if natural_total <= available:
+        return BASE_ICON_SIZE
+    fitted = (available - (count - 1) * ICON_SPACING) // count
+    return max(fitted, MIN_ICON_SIZE)
+
+
+def _format_duration(seconds: float | None) -> str | None:
+    if seconds is None:
+        return None
+    total = round(seconds)
+    minutes, secs = divmod(total, 60)
+    return f"{minutes}:{secs:02d}"
+
+
+def _format_file_size(path: str) -> str | None:
+    try:
+        size_bytes = Path(path).stat().st_size
+    except OSError:
+        return None
+    size = float(size_bytes)
+    for unit in ("B", "KB", "MB", "GB"):
+        if size < 1024 or unit == "GB":
+            return f"{size:.0f} {unit}" if unit == "B" else f"{size:.1f} {unit}"
+        size /= 1024
+    return None
+
+
+def _format_date(created_at: str) -> str | None:
+    try:
+        dt = datetime.fromisoformat(created_at)
+    except ValueError:
+        return None
+    return dt.strftime("%b %d, %Y")
+
 
 def _placeholder_pixmap() -> QPixmap:
     pixmap = QPixmap(THUMB_SIZE)
@@ -29,6 +78,34 @@ def _placeholder_pixmap() -> QPixmap:
     painter.drawText(pixmap.rect(), Qt.AlignCenter, "No preview")
     painter.end()
     return pixmap
+
+
+class _FilterIconLabel(QLabel):
+    """One filter icon rendered over/under a card's thumbnail. Hovering
+    shows the filter's name; left-click and right-click mirror the
+    Filters dropdown's own include/block gestures (see FilterCheckBox
+    in library_page.py) rather than requiring the dropdown to be opened
+    just to toggle one filter you can already see on the card."""
+
+    left_clicked = Signal(str)   # tag_name -- toggle "filter for this"
+    right_clicked = Signal(str)  # tag_name -- toggle "block this"
+
+    def __init__(self, tag_name: str, pixmap: QPixmap, size: int, parent=None):
+        super().__init__(parent)
+        self._tag_name = tag_name
+        if not pixmap.isNull():
+            self.setPixmap(pixmap.scaled(QSize(size, size), Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        self.setFixedSize(size, size)
+        self.setAlignment(Qt.AlignCenter)
+        self.setToolTip(tag_name)
+        self.setCursor(Qt.PointingHandCursor)
+
+    def mousePressEvent(self, event) -> None:
+        if event.button() == Qt.LeftButton:
+            self.left_clicked.emit(self._tag_name)
+        elif event.button() == Qt.RightButton:
+            self.right_clicked.emit(self._tag_name)
+        super().mousePressEvent(event)
 
 
 class AddTagDialog(QDialog):
@@ -83,6 +160,8 @@ class VideoCard(QWidget):
     upload_requested = Signal(int)    # video_id
     tags_changed = Signal()           # tag added/removed -- parent should refresh filter list
     renamed = Signal()                # title changed -- parent should refresh (search may no longer match)
+    filter_left_clicked = Signal(str)   # tag_name, from clicking an icon on the card itself
+    filter_right_clicked = Signal(str)  # tag_name, ditto (block)
 
     def __init__(self, video: "library.Video", parent=None, highlight_enabled: bool = True,
                  font_scale: float = 1.0):
@@ -95,20 +174,21 @@ class VideoCard(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
 
-        display_settings = config_module.load().filter_display
+        settings = config_module.load()
+        display_settings = settings.filter_display
+        info_settings = settings.card_info
         icons = library.tag_icons()
-        matching_icons = [icons[t] for t in video.tags if t in icons]
+        show_filters = info_settings.show_filters
+        matching = [(t, icons[t]) for t in video.tags if t in icons]
 
-        icon_row_above = None
-        if display_settings.show_filter_icons and matching_icons and \
+        if show_filters and display_settings.show_filter_icons and matching and \
                 display_settings.filter_icon_location == "above":
-            icon_row_above = self._build_icon_row(matching_icons, vertical=False)
-            layout.addWidget(icon_row_above)
+            layout.addWidget(self._build_icon_row(matching, vertical=False))
 
         thumb_row = QHBoxLayout()
-        if display_settings.show_filter_icons and matching_icons and \
+        if show_filters and display_settings.show_filter_icons and matching and \
                 display_settings.filter_icon_location == "vtile_left":
-            thumb_row.addWidget(self._build_icon_row(matching_icons, vertical=True))
+            thumb_row.addWidget(self._build_icon_row(matching, vertical=True))
 
         self.thumb_label = QLabel()
         self.thumb_label.setFixedSize(THUMB_SIZE)
@@ -116,14 +196,10 @@ class VideoCard(QWidget):
         self.thumb_label.setPixmap(self._load_pixmap(video))
         thumb_row.addWidget(self.thumb_label)
 
-        if display_settings.show_filter_icons and matching_icons and \
+        if show_filters and display_settings.show_filter_icons and matching and \
                 display_settings.filter_icon_location == "vtile_right":
-            thumb_row.addWidget(self._build_icon_row(matching_icons, vertical=True))
+            thumb_row.addWidget(self._build_icon_row(matching, vertical=True))
         layout.addLayout(thumb_row)
-
-        if display_settings.show_filter_icons and matching_icons and \
-                display_settings.filter_icon_location == "below":
-            layout.addWidget(self._build_icon_row(matching_icons, vertical=False))
 
         self.title_label = QLabel(self._title_text(video))
         self.title_label.setWordWrap(True)
@@ -143,11 +219,47 @@ class VideoCard(QWidget):
         self.set_font_scale(font_scale)
         layout.addWidget(self.title_label)
 
-        if video.tags and display_settings.show_filter_names:
-            tag_label = QLabel(", ".join(video.tags))
-            tag_label.setStyleSheet("color: gray; font-size: 10px;")
-            tag_label.setAlignment(Qt.AlignCenter)
-            layout.addWidget(tag_label)
+        # Info line(s), per the Library's "Info" dropdown: length + file
+        # size on one line (size after length), creation date on its
+        # own line under that -- both above the filters section, in
+        # that fixed order, each independently toggleable.
+        info_parts = []
+        if info_settings.show_length:
+            duration_text = _format_duration(video.duration_sec)
+            if duration_text:
+                info_parts.append(duration_text)
+        if info_settings.show_file_size:
+            size_text = _format_file_size(video.path)
+            if size_text:
+                info_parts.append(size_text)
+        if info_parts:
+            info_label = QLabel(" \u2022 ".join(info_parts))
+            info_label.setStyleSheet("color: gray; font-size: 10px;")
+            info_label.setAlignment(Qt.AlignCenter)
+            layout.addWidget(info_label)
+
+        if info_settings.show_creation_date:
+            date_text = _format_date(video.created_at)
+            if date_text:
+                date_label = QLabel(date_text)
+                date_label.setStyleSheet("color: gray; font-size: 10px;")
+                date_label.setAlignment(Qt.AlignCenter)
+                layout.addWidget(date_label)
+
+        # Filters section: "below"-location icons, then tag-name text --
+        # both come after the title (and after the optional length/
+        # size/date lines above), replacing where tag-name text used to
+        # sit right under the title before length/size/date existed.
+        if show_filters:
+            if display_settings.show_filter_icons and matching and \
+                    display_settings.filter_icon_location == "below":
+                layout.addWidget(self._build_icon_row(matching, vertical=False))
+
+            if video.tags and display_settings.show_filter_names:
+                tag_label = QLabel(", ".join(video.tags))
+                tag_label.setStyleSheet("color: gray; font-size: 10px;")
+                tag_label.setAlignment(Qt.AlignCenter)
+                layout.addWidget(tag_label)
 
         # Without this, extra vertical space the grid gives this card
         # (e.g. because another card in the same row is taller, due to
@@ -165,21 +277,23 @@ class VideoCard(QWidget):
     def _title_text(self, video: "library.Video") -> str:
         return f"{FAVORITE_STAR} {video.title}" if video.favorite else video.title
 
-    def _build_icon_row(self, icon_paths: list[str], vertical: bool) -> QWidget:
+    def _build_icon_row(self, matching: list[tuple[str, str]], vertical: bool) -> QWidget:
+        available = THUMB_SIZE.height() if vertical else THUMB_SIZE.width()
+        icon_size = _icon_size_for_count(len(matching), available)
+
         container = QWidget()
         row_layout = QVBoxLayout(container) if vertical else QHBoxLayout(container)
         row_layout.setContentsMargins(0, 0, 0, 0)
-        row_layout.setSpacing(2)
-        for path in icon_paths:
-            icon_label = QLabel()
-            pixmap = QPixmap(path)
-            if not pixmap.isNull():
-                icon_label.setPixmap(
-                    pixmap.scaled(QSize(18, 18), Qt.KeepAspectRatio, Qt.SmoothTransformation)
-                )
+        row_layout.setSpacing(ICON_SPACING)
+        # Stretches on both ends center the icons within the row/column
+        # rather than left/top-aligning them.
+        row_layout.addStretch(1)
+        for tag_name, path in matching:
+            icon_label = _FilterIconLabel(tag_name, QPixmap(path), icon_size, container)
+            icon_label.left_clicked.connect(self.filter_left_clicked.emit)
+            icon_label.right_clicked.connect(self.filter_right_clicked.emit)
             row_layout.addWidget(icon_label)
-        if vertical:
-            row_layout.addStretch(1)
+        row_layout.addStretch(1)
         return container
 
     def set_font_scale(self, factor: float) -> None:

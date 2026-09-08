@@ -42,10 +42,17 @@ CREATE TABLE IF NOT EXISTS videos (
     FOREIGN KEY (clip_config_id) REFERENCES clip_configs(id) ON DELETE SET NULL
 );
 
+CREATE TABLE IF NOT EXISTS filter_categories (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    name        TEXT NOT NULL UNIQUE COLLATE NOCASE
+);
+
 CREATE TABLE IF NOT EXISTS tags (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     name        TEXT NOT NULL UNIQUE COLLATE NOCASE,
-    icon_path   TEXT                     -- optional icon shown above/below clip thumbnails
+    icon_path   TEXT,                    -- optional icon shown above/below clip thumbnails
+    category_id INTEGER,                 -- NULL = uncategorized, shown loose in the Filters dropdown
+    FOREIGN KEY (category_id) REFERENCES filter_categories(id) ON DELETE SET NULL
 );
 
 CREATE TABLE IF NOT EXISTS video_tags (
@@ -87,6 +94,8 @@ def _migrate_columns(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE videos ADD COLUMN favorite INTEGER NOT NULL DEFAULT 0")
     if not _has_column(conn, "tags", "icon_path"):
         conn.execute("ALTER TABLE tags ADD COLUMN icon_path TEXT")
+    if not _has_column(conn, "tags", "category_id"):
+        conn.execute("ALTER TABLE tags ADD COLUMN category_id INTEGER REFERENCES filter_categories(id) ON DELETE SET NULL")
 
 
 def init_db() -> None:
