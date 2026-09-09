@@ -18,7 +18,7 @@ from __future__ import annotations
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QGroupBox, QLineEdit,
     QSpinBox, QDoubleSpinBox, QPushButton, QFileDialog, QLabel, QScrollArea,
-    QMessageBox, QTabWidget, QCheckBox,
+    QMessageBox, QTabWidget, QCheckBox, QComboBox,
 )
 
 from .. import config as config_module
@@ -37,15 +37,23 @@ class SettingsPage(QWidget):
 
         outer = QVBoxLayout(self)
 
-        # A tab per settings cluster -- General (everything that used to
-        # be the whole page) plus the new Filters page, rather than
-        # stacking the Filters controls underneath everything else.
+        # A tab per settings cluster. "Clipping" is everything that used
+        # to be the page's single "General" section (OBS/clip-capture
+        # settings) -- renamed once an actual appearance-focused
+        # "General" tab existed, since "General" then meant something
+        # more specific than "everything else."
         tabs = QTabWidget()
+        clipping_page = QWidget()
+        clipping_layout = QVBoxLayout(clipping_page)
+        clipping_layout.addWidget(self._build_obs_group())
+        clipping_layout.addWidget(self._build_clipping_group())
+        clipping_layout.addWidget(self._build_clip_options_group(), stretch=1)
+        tabs.addTab(clipping_page, "Clipping")
+
         general_page = QWidget()
         general_layout = QVBoxLayout(general_page)
-        general_layout.addWidget(self._build_obs_group())
-        general_layout.addWidget(self._build_general_group())
-        general_layout.addWidget(self._build_clip_options_group(), stretch=1)
+        general_layout.addWidget(self._build_appearance_group())
+        general_layout.addStretch(1)
         tabs.addTab(general_page, "General")
 
         self.filters_settings_page = FiltersSettingsPage()
@@ -137,10 +145,10 @@ class SettingsPage(QWidget):
         except OBSError as e:
             QMessageBox.critical(self, "OBS Connection Failed", str(e))
 
-    # ------------------------------------------------------------ general group
+    # ------------------------------------------------------------ clipping group
 
-    def _build_general_group(self) -> QGroupBox:
-        group = QGroupBox("General")
+    def _build_clipping_group(self) -> QGroupBox:
+        group = QGroupBox("Clip Capture")
         form = QFormLayout(group)
 
         dir_row = QHBoxLayout()
@@ -163,6 +171,84 @@ class SettingsPage(QWidget):
         self.fullscreen_check = QCheckBox()
         self.fullscreen_check.setChecked(self._settings.default_to_fullscreen)
         form.addRow("Default to Fullscreen:", self.fullscreen_check)
+
+        return group
+
+    # ------------------------------------------------------------ appearance group
+
+    def _build_appearance_group(self) -> QGroupBox:
+        group = QGroupBox("Appearance")
+        form = QFormLayout(group)
+        a = self._settings.appearance
+
+        self.resize_text_check = QCheckBox()
+        self.resize_text_check.setChecked(a.resize_text_to_fit)
+        self.resize_text_check.setToolTip(
+            "Shrinks a clip's title font just enough to keep it on one line "
+            "instead of wrapping to a second."
+        )
+        form.addRow("Resize Text to Fit:", self.resize_text_check)
+
+        self.inactive_border_width_spin = QSpinBox()
+        self.inactive_border_width_spin.setRange(0, 50)
+        self.inactive_border_width_spin.setValue(a.inactive_border_width)
+        form.addRow("Inactive Border Width:", self.inactive_border_width_spin)
+
+        self.inactive_border_brightness_spin = QSpinBox()
+        self.inactive_border_brightness_spin.setRange(0, 100)
+        self.inactive_border_brightness_spin.setSuffix("%")
+        self.inactive_border_brightness_spin.setValue(a.inactive_border_brightness)
+        form.addRow("Inactive Border Brightness:", self.inactive_border_brightness_spin)
+
+        self.active_border_width_spin = QSpinBox()
+        self.active_border_width_spin.setRange(0, 50)
+        self.active_border_width_spin.setValue(a.active_border_width)
+        form.addRow("Active Border Width:", self.active_border_width_spin)
+
+        self.active_border_brightness_spin = QSpinBox()
+        self.active_border_brightness_spin.setRange(0, 100)
+        self.active_border_brightness_spin.setSuffix("%")
+        self.active_border_brightness_spin.setValue(a.active_border_brightness)
+        form.addRow("Active Border Brightness:", self.active_border_brightness_spin)
+
+        self.settings_border_combo = QComboBox()
+        self.settings_border_combo.addItem("Disabled", "disabled")
+        self.settings_border_combo.addItem("Only when on the settings page", "only_settings")
+        self.settings_border_combo.addItem("Always", "always")
+        index = self.settings_border_combo.findData(a.settings_border_mode)
+        self.settings_border_combo.setCurrentIndex(index if index >= 0 else 1)
+        form.addRow("Border around Settings?", self.settings_border_combo)
+
+        self.unedited_highlight_width_spin = QSpinBox()
+        self.unedited_highlight_width_spin.setRange(0, 50)
+        self.unedited_highlight_width_spin.setValue(a.unedited_highlight_width)
+        form.addRow("Unedited Highlight Width:", self.unedited_highlight_width_spin)
+
+        self.unedited_highlight_brightness_spin = QSpinBox()
+        self.unedited_highlight_brightness_spin.setRange(0, 100)
+        self.unedited_highlight_brightness_spin.setSuffix("%")
+        self.unedited_highlight_brightness_spin.setValue(a.unedited_highlight_brightness)
+        form.addRow("Unedited Highlight Brightness:", self.unedited_highlight_brightness_spin)
+
+        self.filter_icon_size_spin = QSpinBox()
+        self.filter_icon_size_spin.setRange(8, 200)
+        self.filter_icon_size_spin.setSuffix(" px")
+        self.filter_icon_size_spin.setValue(a.filter_icon_size)
+        form.addRow("Filter Icons Size:", self.filter_icon_size_spin)
+
+        self.library_icon_size_spin = QSpinBox()
+        self.library_icon_size_spin.setRange(10, 200)
+        self.library_icon_size_spin.setSuffix("%")
+        self.library_icon_size_spin.setValue(a.library_icon_size)
+        form.addRow("Library Page Icons Size:", self.library_icon_size_spin)
+
+        note = QLabel(
+            "Sidebar/border settings apply next launch (the sidebar buttons "
+            "are only ever built once)."
+        )
+        note.setStyleSheet("color: gray;")
+        note.setWordWrap(True)
+        form.addRow("", note)
 
         return group
 
@@ -247,6 +333,19 @@ class SettingsPage(QWidget):
         self._settings.clips_dir = self.clips_dir_edit.text().strip()
         self._settings.default_sound_path = self.default_sound_edit.text().strip()
         self._settings.default_to_fullscreen = self.fullscreen_check.isChecked()
+
+        a = self._settings.appearance
+        a.resize_text_to_fit = self.resize_text_check.isChecked()
+        a.inactive_border_width = self.inactive_border_width_spin.value()
+        a.inactive_border_brightness = self.inactive_border_brightness_spin.value()
+        a.active_border_width = self.active_border_width_spin.value()
+        a.active_border_brightness = self.active_border_brightness_spin.value()
+        a.settings_border_mode = self.settings_border_combo.currentData()
+        a.unedited_highlight_width = self.unedited_highlight_width_spin.value()
+        a.unedited_highlight_brightness = self.unedited_highlight_brightness_spin.value()
+        a.filter_icon_size = self.filter_icon_size_spin.value()
+        a.library_icon_size = self.library_icon_size_spin.value()
+
         config_module.save(self._settings)
         self.filters_settings_page.save()
 
@@ -267,3 +366,8 @@ class SettingsPage(QWidget):
             return
 
         self.status_label.setText("Saved.")
+
+    def refresh_dynamic_lists(self) -> None:
+        """Passthrough to the Filters sub-page -- see its own docstring
+        for why this is needed (called by MainWindow on Settings nav)."""
+        self.filters_settings_page.refresh_dynamic_lists()

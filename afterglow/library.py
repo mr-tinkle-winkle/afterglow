@@ -7,6 +7,7 @@ about the database; library.py is the glue.
 """
 from __future__ import annotations
 
+import re
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -24,6 +25,23 @@ from .editor import (
 # realistic cases; the others are included for anyone who's changed their
 # OBS output format or drags in clips from elsewhere).
 KNOWN_VIDEO_EXTENSIONS = {".mp4", ".mkv", ".mov", ".webm", ".avi"}
+
+_UNSAFE_FILENAME_CHARS = re.compile(r'[\/\\:\*\?"<>\|\x00-\x1f]')
+
+
+def _sanitize_filename_stem(title: str) -> str:
+    cleaned = _UNSAFE_FILENAME_CHARS.sub("_", title).strip()
+    cleaned = re.sub(r"\s+", " ", cleaned)
+    return cleaned or "clip"
+
+
+def _unique_path(directory: Path, stem: str, suffix: str) -> Path:
+    candidate = directory / f"{stem}{suffix}"
+    n = 2
+    while candidate.exists():
+        candidate = directory / f"{stem} ({n}){suffix}"
+        n += 1
+    return candidate
 
 
 class LibraryError(RuntimeError):
@@ -302,8 +320,35 @@ def rename_video(video_id: int, title: str | None = None, description: str | Non
             raise LibraryError(f"No video with id {video_id}")
         new_title = title if title is not None else row["title"]
         new_desc = description if description is not None else row["description"]
-        conn.execute("UPDATE videos SET title = ?, description = ? WHERE id = ?",
-                     (new_title, new_desc, video_id))
+
+        # Renaming a video's title used to only ever touch the DB row --
+        # the Editor and Library both showed the new title (even after
+        # reopening), but the actual file on disk kept its original
+        # auto-generated name forever, which is confusing/unhelpful for
+        # anyone who goes looking for the file directly (e.g. to send it
+        # to someone -- see the Library's Copy context menu action).
+        # Rename the real file to match whenever the title actually
+        # changes, and keep filename/path in the DB in sync with it.
+        new_path_str = row["path"]
+        new_filename = row["filename"]
+        if title is not None and title != row["title"]:
+            current_path = Path(row["path"])
+            if current_path.exists():
+                target_stem = _sanitize_filename_stem(new_title)
+                if target_stem != current_path.stem:
+                    target_path = _unique_path(current_path.parent, target_stem, current_path.suffix)
+                    current_path.rename(target_path)
+                    new_path_str = str(target_path)
+                    new_filename = target_path.name
+            # If the file's missing, just update the DB text fields below --
+            # same "don't treat a missing file as fatal for a metadata
+            # edit" leniency prune_missing_videos() already assumes
+            # elsewhere in this module.
+
+        conn.execute(
+            "UPDATE videos SET title = ?, description = ?, path = ?, filename = ? WHERE id = ?",
+            (new_title, new_desc, new_path_str, new_filename, video_id),
+        )
         # Build the return value from THIS SAME connection/transaction,
         # not via get_video() (which opens a separate connection) -- a
         # separate connection can't see this transaction's write until it

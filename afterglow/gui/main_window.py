@@ -17,21 +17,29 @@ occasionally.
 The sidebar's width and each nav icon's size both scale with the window
 rather than staying fixed -- a fixed 72px sidebar with fixed 32px icons
 looked proportionally too small once the window was large/fullscreen.
+
+Most of the sidebar's visual tuning (border widths, border darkening,
+icon size, whether Settings gets a border at all) is configurable now
+via Settings > General (see config.AppearanceSettings) -- read fresh at
+construction time; changing it takes effect on next launch, not live,
+since these buttons are only ever built once.
 """
 from __future__ import annotations
 
-from PySide6.QtCore import QSize
-from PySide6.QtGui import QPainter, QRegion, QColor
+from PySide6.QtCore import QSize, Qt
+from PySide6.QtGui import QPainter, QRegion, QColor, QIcon, QPixmap
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QToolButton,
     QButtonGroup, QStackedWidget, QSizePolicy,
 )
 
+from .. import config as config_module
 from .settings_page import SettingsPage
 from .library_page import LibraryPage
 from .editor_page import EditorPage
 from .resources import resource_qicon, resource_qpixmap
 from .scaling import compute_scale
+from .pulse_animation import PulseAnimator
 
 # Indices into self.stack -- fixed at construction time (see __init__).
 _SETTINGS_INDEX = 0
@@ -42,6 +50,33 @@ SIDEBAR_WIDTH_FRACTION = 0.07  # of the whole window's width
 SIDEBAR_MIN_WIDTH = 64
 SIDEBAR_MAX_WIDTH = 140
 
+# Fixed, not user-configurable (unlike the border brightness settings) --
+# darkens the icon ITSELF (not the gradient border behind it) while a
+# nav button isn't the current page.
+INACTIVE_ICON_DARKEN_FACTOR = 0.45
+
+# Settings' own gradient asset doesn't exist yet -- reusing Library's
+# rather than shipping no border at all for "Always"/"only when on
+# Settings" modes. Swap this for a dedicated asset if one gets made.
+_SETTINGS_GRADIENT_IMAGE = "library_bg_gradient.png"
+
+
+def _darken_pixmap(pixmap: QPixmap, darken_factor: float) -> QPixmap:
+    """Multiply-blend darken that respects the source's own alpha
+    channel (so an icon's transparent background stays transparent,
+    only its opaque pixels actually darken) -- same technique already
+    used for the border gradient darkening below, just applied to an
+    icon pixmap instead of a rectangular background image."""
+    result = QPixmap(pixmap.size())
+    result.fill(Qt.transparent)
+    painter = QPainter(result)
+    painter.drawPixmap(0, 0, pixmap)
+    gray = round(255 * (1 - darken_factor))
+    painter.setCompositionMode(QPainter.CompositionMode_Multiply)
+    painter.fillRect(result.rect(), QColor(gray, gray, gray))
+    painter.end()
+    return result
+
 
 class _ScalingIconButton(QToolButton):
     """A QToolButton whose icon is resized to fill the button's own
@@ -49,23 +84,11 @@ class _ScalingIconButton(QToolButton):
     pixel size regardless of how big the button itself gets."""
 
     ICON_PADDING = 14
-    SCALE = 0.85  # was 100% ("as large as they are right now"), scaled down 15%
-    # Explicit, deterministic border widths by checked state -- Qt's
-    # native "checked" styling for a flat/autoRaise button can itself
-    # visually encroach into the border area (a fill/inset that varies
-    # by theme), which was making the ACTIVE (checked/current-page)
-    # button's gradient border look smaller than the inactive one even
-    # though the same clip width was being drawn underneath for both.
-    # Making both widths explicit and swapping which is larger fixes
-    # that regardless of whatever the native style happens to do.
-    ACTIVE_BORDER_WIDTH = 9
-    INACTIVE_BORDER_WIDTH = 5  # was effectively ~4, asked to be 1px more
-    INACTIVE_DARKEN_FACTOR = 0.35  # how much darker the inactive gradient is
 
-    def __init__(self, icon_name: str, tooltip: str, parent=None, size_basis: str = "min",
-                 gradient_image_name: str | None = None):
+    def __init__(self, icon_name: str, tooltip: str, appearance: "config_module.AppearanceSettings",
+                 parent=None, size_basis: str = "min", gradient_image_name: str | None = None,
+                 border_mode: str = "always"):
         super().__init__(parent)
-        self.setIcon(resource_qicon(icon_name))
         self.setToolTip(tooltip)
         self.setCheckable(True)
         self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
@@ -82,6 +105,25 @@ class _ScalingIconButton(QToolButton):
             "QToolButton:checked { border: none; background: transparent; }"
             "QToolButton:pressed { border: none; background: transparent; }"
         )
+
+        # Explicit, deterministic border widths by checked state -- Qt's
+        # native "checked" styling for a flat/autoRaise button can itself
+        # visually encroach into the border area (a fill/inset that
+        # varies by theme), which was making the ACTIVE button's
+        # gradient border look smaller than the inactive one even though
+        # the same width was being drawn underneath for both.
+        self._active_border_width = appearance.active_border_width
+        self._inactive_border_width = appearance.inactive_border_width
+        self._active_darken_factor = 1 - (appearance.active_border_brightness / 100.0)
+        self._inactive_darken_factor = 1 - (appearance.inactive_border_brightness / 100.0)
+        self._border_mode = border_mode  # "always" | "only_active" | "disabled"
+        self._icon_scale = appearance.library_icon_size / 100.0
+
+        normal_pixmap = resource_qpixmap(icon_name)
+        self._normal_icon = QIcon(normal_pixmap)
+        self._dark_icon = QIcon(_darken_pixmap(normal_pixmap, INACTIVE_ICON_DARKEN_FACTOR))
+        self.toggled.connect(lambda _checked: self._apply_icon_for_state())
+
         # "min": size to whichever of width/height is smaller (used by
         # Library/Editor, which are tall and narrow -- width is always
         # the limiting dimension there). "width": size purely off width,
@@ -92,14 +134,31 @@ class _ScalingIconButton(QToolButton):
         self._size_basis = size_basis
         self._gradient_pixmap = resource_qpixmap(gradient_image_name) if gradient_image_name else None
         if self._gradient_pixmap is not None:
-            # Border width depends on checked state (see paintEvent) --
-            # repaint immediately when that changes, not just whenever
-            # something else happens to trigger one.
+            # Border width/visibility depends on checked state (see
+            # paintEvent) -- repaint immediately when that changes, not
+            # just whenever something else happens to trigger one.
             self.toggled.connect(lambda _checked: self.update())
+
+        self._natural_icon_size = 8  # replaced by _update_icon_size() below
+        self._pulse = PulseAnimator(
+            get_base_size=lambda: self._natural_icon_size,
+            apply_size=lambda size: self.setIconSize(QSize(size, size)),
+        )
         self._update_icon_size()
+        self._apply_icon_for_state()
+
+    def _apply_icon_for_state(self) -> None:
+        self.setIcon(self._normal_icon if self.isChecked() else self._dark_icon)
+
+    def _border_visible(self) -> bool:
+        if self._border_mode == "disabled":
+            return False
+        if self._border_mode == "only_active":
+            return self.isChecked()
+        return True  # "always"
 
     def paintEvent(self, event) -> None:
-        if self._gradient_pixmap is not None:
+        if self._gradient_pixmap is not None and self._border_visible():
             # Same effect as VideoCard's unedited-clip highlight (a
             # gradient image behind the content, only visible as a
             # border ring around it) but via a CLIP REGION instead of
@@ -117,18 +176,18 @@ class _ScalingIconButton(QToolButton):
             # margin.
             painter = QPainter(self)
             painter.setRenderHint(QPainter.SmoothPixmapTransform)
-            border = self.ACTIVE_BORDER_WIDTH if self.isChecked() else self.INACTIVE_BORDER_WIDTH
+            border = self._active_border_width if self.isChecked() else self._inactive_border_width
             inner_rect = self.rect().adjusted(border, border, -border, -border)
             clip_region = QRegion(self.rect()) - QRegion(inner_rect)
             painter.setClipRegion(clip_region)
             painter.drawPixmap(self.rect(), self._gradient_pixmap)
-            if not self.isChecked():
-                # Darken the inactive tab's gradient by 35% via a
-                # multiply-blend gray fill (multiplying by 0.65 darkens
-                # any underlying color proportionally, rather than a
-                # flat alpha-black overlay which would wash out darker
-                # parts of the gradient less than lighter ones).
-                gray = round(255 * (1 - self.INACTIVE_DARKEN_FACTOR))
+            darken_factor = self._active_darken_factor if self.isChecked() else self._inactive_darken_factor
+            if darken_factor > 0:
+                # Multiply-blend gray fill darkens any underlying color
+                # proportionally, rather than a flat alpha-black overlay
+                # which would wash out darker parts of the gradient less
+                # evenly than lighter ones.
+                gray = round(255 * (1 - darken_factor))
                 painter.setCompositionMode(QPainter.CompositionMode_Multiply)
                 painter.fillRect(self.rect(), QColor(gray, gray, gray))
             painter.end()
@@ -138,13 +197,23 @@ class _ScalingIconButton(QToolButton):
         super().resizeEvent(event)
         self._update_icon_size()
 
+    def mousePressEvent(self, event) -> None:
+        if event.button() == Qt.LeftButton:
+            self._pulse.press()
+        super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:
+        if event.button() == Qt.LeftButton:
+            self._pulse.release()
+        super().mouseReleaseEvent(event)
+
     def icon_size_for_width(self, width: int) -> int:
         """The icon pixel size this button would use at the given width,
         with no dependency on its actual current height -- exposed so
         MainWindow can compute Settings' target height (icon size +
         padding) from the sidebar width alone, without a circular
         dependency on this button's own not-yet-updated height."""
-        return max(round((width - self.ICON_PADDING) * self.SCALE), 8)
+        return max(round((width - self.ICON_PADDING) * self._icon_scale), 8)
 
     def _update_icon_size(self) -> None:
         # min(width, height) rather than stretching to each dimension
@@ -153,7 +222,8 @@ class _ScalingIconButton(QToolButton):
         if self._size_basis == "width":
             size = self.icon_size_for_width(self.width())
         else:
-            size = max(round((min(self.width(), self.height()) - self.ICON_PADDING) * self.SCALE), 8)
+            size = max(round((min(self.width(), self.height()) - self.ICON_PADDING) * self._icon_scale), 8)
+        self._natural_icon_size = size
         self.setIconSize(QSize(size, size))
 
 
@@ -169,6 +239,8 @@ class MainWindow(QMainWindow):
         # size looks comparatively narrow next to a fullscreen-shaped
         # taskbar/monitor.
         self.resize(1600, 900)
+
+        appearance = config_module.load().appearance
 
         central = QWidget()
         self.setCentralWidget(central)
@@ -187,19 +259,26 @@ class MainWindow(QMainWindow):
         self.nav_group.setExclusive(True)
 
         self.library_nav_btn = _ScalingIconButton(
-            "library.png", "Library", gradient_image_name="library_bg_gradient.png"
+            "library.png", "Library", appearance, gradient_image_name="library_bg_gradient.png"
         )
         self.editor_nav_btn = _ScalingIconButton(
-            "editor.png", "Editor", gradient_image_name="editor_bg_gradient.png"
+            "editor.png", "Editor", appearance, gradient_image_name="editor_bg_gradient.png"
         )
         # size_basis="width": Settings has a small FIXED height (below),
         # so sizing its icon off min(width, height) like the other two
         # would size it off that small height instead, making it much
-        # smaller than Library/Editor's icons even at the same SCALE --
+        # smaller than Library/Editor's icons even at the same scale --
         # basing it on width alone (matching the sidebar's own width,
         # same as the other two effectively use) keeps all three the
-        # same size.
-        self.settings_nav_btn = _ScalingIconButton("settings.png", "Settings", size_basis="width")
+        # same size. settings_border_mode maps directly to this button's
+        # border_mode ("only_settings" -> "only_active").
+        settings_border_mode = {
+            "disabled": "disabled", "always": "always", "only_settings": "only_active",
+        }.get(appearance.settings_border_mode, "only_active")
+        self.settings_nav_btn = _ScalingIconButton(
+            "settings.png", "Settings", appearance, size_basis="width",
+            gradient_image_name=_SETTINGS_GRADIENT_IMAGE, border_mode=settings_border_mode,
+        )
 
         # Library and Editor stretch to fill most of the sidebar's
         # vertical space; the gear stays a fixed small size at the bottom
@@ -263,6 +342,21 @@ class MainWindow(QMainWindow):
         self.library_page.apply_scale(scale)
 
     def _on_nav_clicked(self, index: int) -> None:
+        if index == _LIBRARY_INDEX:
+            # Direct click on Library (not the Editor-redirect case
+            # below, which sets its own message right after this) --
+            # clear any "Select a video." prompt left over from an
+            # earlier redirect, since it no longer applies once the
+            # user has actively chosen to look at the Library.
+            self.library_page.clear_status_message()
+
+        if index == _SETTINGS_INDEX:
+            # Settings is built once at startup (like the other two
+            # pages) and never rebuilt on nav -- refresh whatever it
+            # shows that can change while the app's been running
+            # (filters created/renamed from the Library since launch).
+            self.settings_page.refresh_dynamic_lists()
+
         if index == _EDITOR_INDEX and self.editor_page.current_video_id is None:
             # Nothing has ever been loaded into the Editor -- go to the
             # Library instead and prompt there, rather than showing the

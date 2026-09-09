@@ -25,6 +25,7 @@ already been consumed and moved away by an earlier successful capture.
 """
 from __future__ import annotations
 
+import fcntl
 import logging
 import threading
 import time
@@ -32,7 +33,7 @@ from pathlib import Path
 
 import obsws_python as obs
 
-from .config import OBSSettings
+from .config import CONFIG_DIR, OBSSettings
 
 # obsws-python logs raw connection tracebacks itself (logger.exception(...))
 # on failure, which looks like an uncaught crash even when we've correctly
@@ -49,6 +50,15 @@ EVENT_MAX_WAIT_SEC = 10
 DIR_WATCH_MAX_WAIT_SEC = 30
 STABILIZE_MAX_WAIT_SEC = 30
 POLL_INTERVAL_SEC = 0.3
+
+# A save-in-progress lock, held for the duration of save_replay_buffer()
+# (request through confirmed-complete) -- see that method's docstring
+# for why. File-based (not an in-process threading.Lock) so this is
+# safe across separate processes too: the daemon's own worker already
+# serializes hotkey-triggered captures in-process, but a manual
+# `afterglow-cli trigger` run alongside the daemon is a second OS
+# process with no shared Python state to lock against otherwise.
+_REPLAY_BUFFER_LOCK_PATH = CONFIG_DIR / "replay_buffer.lock"
 
 
 class OBSError(RuntimeError):
@@ -183,7 +193,25 @@ class OBSClient:
         doesn't arrive, or if the event subscription itself never
         connected. Either way, applies the user-configurable
         wait_after_replay_buffer_finishes_sec grace period at the end.
+
+        Serialized via a cross-process file lock: OBS can't usefully run
+        two save-and-report cycles at once, and calling SaveReplayBuffer
+        again before a prior one has actually flushed doesn't queue a
+        second save -- it's a silent no-op inside OBS, which is what made
+        clipping again quickly appear to "do nothing." If another call
+        (this process or a different one) is still waiting on its own
+        save, this blocks here until that one is confirmed complete, then
+        requests its own fresh save afterward rather than racing it.
         """
+        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        with open(_REPLAY_BUFFER_LOCK_PATH, "w") as lock_file:
+            fcntl.flock(lock_file, fcntl.LOCK_EX)
+            try:
+                return self._save_replay_buffer_locked()
+            finally:
+                fcntl.flock(lock_file, fcntl.LOCK_UN)
+
+    def _save_replay_buffer_locked(self) -> Path:
         self.ensure_replay_buffer_active()
 
         if self._event_client is not None:

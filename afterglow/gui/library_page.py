@@ -16,7 +16,7 @@ from PySide6.QtCore import Qt, Signal, QSize
 from PySide6.QtGui import QActionGroup
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLineEdit, QToolButton,
-    QMenu, QScrollArea, QLabel, QTabWidget, QMessageBox, QWidgetAction,
+    QMenu, QScrollArea, QLabel, QTabWidget, QTabBar, QMessageBox, QWidgetAction,
     QCheckBox, QStyle, QInputDialog, QPushButton,
 )
 
@@ -24,6 +24,7 @@ from .. import library
 from .. import config as config_module
 from .video_card import VideoCard, THUMB_SIZE, FAVORITE_STAR
 from .resources import resource_qicon
+from .pulse_animation import PulseAnimator
 
 # Approximate on-screen width of one card (thumbnail + its own internal
 # margins + the grid's inter-column spacing) -- used only to decide how
@@ -420,6 +421,30 @@ class _VideoGridTab(QWidget):
         )
 
 
+class _PulsingTabBar(QTabBar):
+    """A QTabBar that pulses its icon(s) on press/release, matching the
+    sidebar nav buttons' click feel. QTabBar only exposes ONE iconSize
+    for the whole bar (not per-tab), so both Local/Uploaded icons pulse
+    together rather than just the one actually clicked -- an accepted
+    simplification given there are only ever the two of them, both
+    visible at once."""
+
+    def __init__(self, on_press, on_release, parent=None):
+        super().__init__(parent)
+        self._on_press = on_press
+        self._on_release = on_release
+
+    def mousePressEvent(self, event) -> None:
+        if event.button() == Qt.LeftButton and self.tabAt(event.pos()) != -1:
+            self._on_press()
+        super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:
+        if event.button() == Qt.LeftButton:
+            self._on_release()
+        super().mouseReleaseEvent(event)
+
+
 class LibraryPage(QWidget):
     edit_requested = Signal(int)  # bubbled up from either tab, for MainWindow to route to Editor
 
@@ -436,6 +461,11 @@ class LibraryPage(QWidget):
         library.remove_stray_orig_entries()
 
         self.tabs = QTabWidget()
+        self._tab_pulse = PulseAnimator(
+            get_base_size=lambda: self._current_tab_icon_size,
+            apply_size=lambda size: self.tabs.setIconSize(QSize(size, size)),
+        )
+        self.tabs.setTabBar(_PulsingTabBar(self._tab_pulse.press, self._tab_pulse.release))
         self.local_tab = _VideoGridTab(uploaded_only=False, local_only=True)
         self.uploaded_tab = _VideoGridTab(uploaded_only=True, local_only=False)
         self.local_tab.edit_requested.connect(self.edit_requested.emit)
@@ -453,6 +483,7 @@ class LibraryPage(QWidget):
         self._base_tab_icon_size = round(
             self.tabs.style().pixelMetric(QStyle.PM_TabBarIconSize) * 4.5
         )
+        self._current_tab_icon_size = self._base_tab_icon_size
         self.tabs.setIconSize(QSize(self._base_tab_icon_size, self._base_tab_icon_size))
         self.tabs.addTab(self.local_tab, resource_qicon("local_videos.png"), "")
         self.tabs.addTab(self.uploaded_tab, resource_qicon("uploaded_videos.png"), "")
@@ -508,4 +539,5 @@ class LibraryPage(QWidget):
         # again, so it stayed fixed regardless of window size while
         # everything else scaled -- now rescaled live alongside them.
         size = max(round(self._base_tab_icon_size * factor), 8)
+        self._current_tab_icon_size = size
         self.tabs.setIconSize(QSize(size, size))

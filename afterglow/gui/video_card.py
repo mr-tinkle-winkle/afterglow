@@ -31,12 +31,12 @@ ICON_SPACING = 4
 MIN_ICON_SIZE = 16
 
 
-def _icon_size_for_count(count: int, available: int) -> int:
+def _icon_size_for_count(count: int, available: int, base_size: int = BASE_ICON_SIZE) -> int:
     if count <= 0:
-        return BASE_ICON_SIZE
-    natural_total = count * BASE_ICON_SIZE + (count - 1) * ICON_SPACING
+        return base_size
+    natural_total = count * base_size + (count - 1) * ICON_SPACING
     if natural_total <= available:
-        return BASE_ICON_SIZE
+        return base_size
     fitted = (available - (count - 1) * ICON_SPACING) // count
     return max(fitted, MIN_ICON_SIZE)
 
@@ -171,10 +171,12 @@ class VideoCard(QWidget):
         self._highlight_enabled = highlight_enabled
         self._highlight_pixmap = resource_qpixmap("unedited_highlight_gradient.png")
 
+        settings = config_module.load()
+        self._appearance = settings.appearance
+
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
 
-        settings = config_module.load()
         display_settings = settings.filter_display
         info_settings = settings.card_info
         icons = library.tag_icons()
@@ -202,7 +204,7 @@ class VideoCard(QWidget):
         layout.addLayout(thumb_row)
 
         self.title_label = QLabel(self._title_text(video))
-        self.title_label.setWordWrap(True)
+        self.title_label.setWordWrap(not self._appearance.resize_text_to_fit)
         self.title_label.setAlignment(Qt.AlignCenter)
         self.title_label.setFixedWidth(THUMB_SIZE.width())
         # 1.875x the app's actual default label size -- was 2.5x, then
@@ -216,6 +218,7 @@ class VideoCard(QWidget):
         if self._base_title_pt <= 0:  # some platforms report pixel-based fonts instead
             self._base_title_pt = 9.0
         self._base_title_pt *= 1.875
+        self._current_font_scale = font_scale
         self.set_font_scale(font_scale)
         layout.addWidget(self.title_label)
 
@@ -279,7 +282,7 @@ class VideoCard(QWidget):
 
     def _build_icon_row(self, matching: list[tuple[str, str]], vertical: bool) -> QWidget:
         available = THUMB_SIZE.height() if vertical else THUMB_SIZE.width()
-        icon_size = _icon_size_for_count(len(matching), available)
+        icon_size = _icon_size_for_count(len(matching), available, self._appearance.filter_icon_size)
 
         container = QWidget()
         row_layout = QVBoxLayout(container) if vertical else QHBoxLayout(container)
@@ -300,8 +303,25 @@ class VideoCard(QWidget):
         """Live-updatable independent of set_highlight_enabled -- called
         by the Library's window-size-based scaling (see
         LibraryPage.apply_scale) without needing to rebuild the card."""
+        self._current_font_scale = factor
         font = self.title_label.font()
-        font.setPointSizeF(self._base_title_pt * factor)
+        target_pt = self._base_title_pt * factor
+        if self._appearance.resize_text_to_fit:
+            # Shrink (never grow past target_pt) until the title's
+            # single-line width fits the card -- word-wrap is turned
+            # off for this mode (see __init__), so an overlong title
+            # needs to shrink instead of wrapping to a second line.
+            from PySide6.QtGui import QFontMetricsF
+            pt = target_pt
+            max_width = THUMB_SIZE.width() - 8  # small margin, matches layout's own content margins
+            while pt > 6.0:
+                font.setPointSizeF(pt)
+                if QFontMetricsF(font).horizontalAdvance(self.title_label.text()) <= max_width:
+                    break
+                pt -= 0.5
+            font.setPointSizeF(pt)
+        else:
+            font.setPointSizeF(target_pt)
         self.title_label.setFont(font)
 
     def set_highlight_enabled(self, enabled: bool) -> None:
@@ -328,12 +348,17 @@ class VideoCard(QWidget):
             # normal background color on top -- only the outer rim (not
             # covered by the inset) ends up showing the gradient, which
             # is what reads as a "border" rather than a solid highlight
-            # fill. The 3px inset here is independent of the layout's
-            # own 4px content margin (children never fully reach the
+            # fill. The inset here is independent of the layout's own
+            # 4px content margin (children never fully reach the
             # widget's edge either way), so it works regardless of
             # whatever's between the thumbnail/title internally.
             painter.drawPixmap(self.rect(), self._highlight_pixmap)
-            border_width = 3
+            darken_factor = 1 - (self._appearance.unedited_highlight_brightness / 100.0)
+            if darken_factor > 0:
+                gray = round(255 * (1 - darken_factor))
+                painter.setCompositionMode(QPainter.CompositionMode_Multiply)
+                painter.fillRect(self.rect(), QColor(gray, gray, gray))
+            border_width = self._appearance.unedited_highlight_width
             inner_rect = self.rect().adjusted(border_width, border_width, -border_width, -border_width)
             painter.fillRect(inner_rect, self.palette().window())
             painter.end()
@@ -360,6 +385,7 @@ class VideoCard(QWidget):
         )
         upload_action = menu.addAction("Upload")
         add_filter_action = menu.addAction("Add Filter")
+        copy_action = menu.addAction("Copy")
         delete_action = menu.addAction("Delete")
 
         chosen = menu.exec(self.mapToGlobal(pos))
@@ -373,8 +399,28 @@ class VideoCard(QWidget):
             self.upload_requested.emit(self.video_id)
         elif chosen == add_filter_action:
             self._add_filter()
+        elif chosen == copy_action:
+            self._copy_to_clipboard()
         elif chosen == delete_action:
             self._confirm_delete()
+
+    def _copy_to_clipboard(self) -> None:
+        """Copies the clip FILE to the system clipboard -- same as
+        Ctrl+C on a file in a file manager -- rather than copying any
+        text, so pasting into a chat app (Discord, etc.) attaches the
+        actual clip. There's no in-app paste target; this is purely so
+        the file ends up wherever the system clipboard's normal
+        paste-a-file behavior takes it."""
+        from PySide6.QtCore import QUrl, QMimeData
+        from PySide6.QtWidgets import QApplication
+
+        path = Path(self._video.path)
+        if not path.exists():
+            QMessageBox.warning(self, "Copy Failed", f"File not found: {path}")
+            return
+        mime = QMimeData()
+        mime.setUrls([QUrl.fromLocalFile(str(path))])
+        QApplication.clipboard().setMimeData(mime)
 
     def _rename(self) -> None:
         new_title, ok = QInputDialog.getText(
@@ -387,11 +433,13 @@ class VideoCard(QWidget):
             return
         self._video = library.rename_video(self.video_id, title=new_title)
         self.title_label.setText(self._title_text(self._video))
+        self.set_font_scale(self._current_font_scale)  # re-fit if Resize Text to Fit is on
         self.renamed.emit()
 
     def _toggle_favorite(self) -> None:
         self._video = library.set_favorite(self.video_id, not self._video.favorite)
         self.title_label.setText(self._title_text(self._video))
+        self.set_font_scale(self._current_font_scale)  # the "★ " prefix changes the text width
         self.tags_changed.emit()
 
     def _add_filter(self) -> None:

@@ -57,7 +57,11 @@ class FilterDisplaySettings:
 
 @dataclass
 class AutoFilterRule:
-    tag_name: str = ""
+    # Multiple filters can be set as "the filter(s) of choice" for one
+    # rule -- all of them get applied together whenever this rule
+    # matches (was a single tag_name string; see load()'s
+    # backward-compat handling for configs written before this change).
+    tag_names: list[str] = field(default_factory=list)
     # Substring matched (case-insensitive) against a running process's
     # name/cmdline (mode="open") or the focused window's title/process
     # name (mode="focused").
@@ -81,6 +85,38 @@ class CardInfoSettings:
 
 
 @dataclass
+class AppearanceSettings:
+    """Everything under Settings > General (visual tuning of the
+    sidebar border/highlight/icon sizes) -- split out from AppSettings'
+    old flat "General" group, which got renamed to "Clipping" once this
+    existed, since "General" now means appearance specifically rather
+    than a catch-all.
+
+    Brightness fields are a 0-100 percent (100 = full brightness/no
+    darkening), matching how a person would think of a brightness
+    slider, rather than the darken-factor fraction the code multiplies
+    by internally (brightness/100.0).
+    """
+    resize_text_to_fit: bool = False
+    inactive_border_width: int = 5
+    inactive_border_brightness: int = 65
+    active_border_width: int = 9
+    active_border_brightness: int = 100
+    # "disabled" | "only_settings" | "always" -- whether the Settings
+    # nav button gets the same gradient-border treatment Library/Editor
+    # already have, and if so, whether only while it's the active page
+    # or all the time.
+    settings_border_mode: str = "only_settings"
+    unedited_highlight_width: int = 9
+    unedited_highlight_brightness: int = 100
+    filter_icon_size: int = 54
+    # Sidebar nav icon scale, as a 0-200 percent of the button's own
+    # available space (matches _ScalingIconButton.SCALE, previously a
+    # hardcoded 0.85 i.e. 85%).
+    library_icon_size: int = 85
+
+
+@dataclass
 class AppSettings:
     clips_dir: str = str(DEFAULT_CLIPS_DIR)
     default_sound_path: str = ""
@@ -90,6 +126,7 @@ class AppSettings:
     filter_display: FilterDisplaySettings = field(default_factory=FilterDisplaySettings)
     auto_filters: list[AutoFilterRule] = field(default_factory=list)
     card_info: CardInfoSettings = field(default_factory=CardInfoSettings)
+    appearance: AppearanceSettings = field(default_factory=AppearanceSettings)
 
     def clips_path(self) -> Path:
         return Path(self.clips_dir).expanduser()
@@ -114,15 +151,25 @@ def load() -> AppSettings:
     obs = OBSSettings(**raw.get("obs", {}))
     youtube = YouTubeSettings(**raw.get("youtube", {}))
     filter_display = FilterDisplaySettings(**raw.get("filter_display", {}))
-    auto_filters = [AutoFilterRule(**rule) for rule in raw.get("auto_filters", [])]
+
+    auto_filters = []
+    for rule in raw.get("auto_filters", []):
+        rule = dict(rule)
+        if "tag_name" in rule and "tag_names" not in rule:
+            # Pre-multi-select config format -- one filter per rule.
+            old_tag = rule.pop("tag_name")
+            rule["tag_names"] = [old_tag] if old_tag else []
+        auto_filters.append(AutoFilterRule(**rule))
+
     card_info = CardInfoSettings(**raw.get("card_info", {}))
+    appearance = AppearanceSettings(**raw.get("appearance", {}))
     top_level = {
         k: v for k, v in raw.items()
-        if k not in ("obs", "youtube", "filter_display", "auto_filters", "card_info")
+        if k not in ("obs", "youtube", "filter_display", "auto_filters", "card_info", "appearance")
     }
     settings = AppSettings(
         obs=obs, youtube=youtube, filter_display=filter_display,
-        auto_filters=auto_filters, card_info=card_info, **top_level,
+        auto_filters=auto_filters, card_info=card_info, appearance=appearance, **top_level,
     )
     _ensure_dirs(settings)
     return settings

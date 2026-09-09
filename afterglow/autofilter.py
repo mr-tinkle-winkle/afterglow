@@ -171,17 +171,17 @@ def compute_active_auto_tags(settings: "config_module.AppSettings | None" = None
     matched_tags: list[str] = []
 
     for rule in settings.auto_filters:
-        if not rule.tag_name or not rule.app_match:
+        if not rule.tag_names or not rule.app_match:
             continue
         if rule.mode == "focused":
             if focused_info is None:
                 focused_info = _focused_window_info() or ("", "")
             if _matches(rule.app_match, list(focused_info)):
-                matched_tags.append(rule.tag_name)
+                matched_tags.extend(rule.tag_names)
         else:  # "open"
             if open_names is None:
                 open_names = _running_process_names()
             if _matches(rule.app_match, list(open_names)):
-                matched_tags.append(rule.tag_name)
+                matched_tags.extend(rule.tag_names)
 
-    return matched_tags
+    return list(dict.fromkeys(matched_tags))  # de-dup, preserve order

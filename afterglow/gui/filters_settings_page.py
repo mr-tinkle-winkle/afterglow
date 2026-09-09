@@ -19,7 +19,8 @@ from __future__ import annotations
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGroupBox, QLabel, QPushButton,
     QFileDialog, QComboBox, QCheckBox, QScrollArea, QFrame, QLineEdit,
-    QMessageBox, QTabWidget, QFormLayout, QInputDialog,
+    QMessageBox, QTabWidget, QFormLayout, QInputDialog, QToolButton,
+    QMenu, QWidgetAction,
 )
 
 from .. import library
@@ -127,16 +128,59 @@ class _TagIconRow(QFrame):
         self.name_label.setText(new_name)
 
 
+class _MultiFilterSelectButton(QToolButton):
+    """A dropdown of every existing filter, each with its own checkbox,
+    letting an Auto Add Filter rule apply several filters at once (the
+    "filter(s) of choice" for that rule) -- replaces a single free-text
+    filter-name field."""
+
+    def __init__(self, selected: list[str], parent=None):
+        super().__init__(parent)
+        self.setPopupMode(QToolButton.InstantPopup)
+        self._selected: list[str] = list(selected)
+        self.refresh_options()
+
+    def refresh_options(self) -> None:
+        menu = QMenu(self)
+        all_tags = library.all_known_tags()
+        if not all_tags:
+            action = menu.addAction("(no filters yet)")
+            action.setEnabled(False)
+        for tag in all_tags:
+            checkbox = QCheckBox(tag, menu)
+            checkbox.setChecked(tag in self._selected)
+            checkbox.toggled.connect(lambda checked, t=tag: self._toggle(t, checked))
+            action = QWidgetAction(menu)
+            action.setDefaultWidget(checkbox)
+            menu.addAction(action)
+        self.setMenu(menu)
+        self._update_text()
+
+    def _toggle(self, tag: str, checked: bool) -> None:
+        if checked and tag not in self._selected:
+            self._selected.append(tag)
+        elif not checked and tag in self._selected:
+            self._selected.remove(tag)
+        self._update_text()
+
+    def _update_text(self) -> None:
+        self.setText(", ".join(self._selected) if self._selected else "Choose filter(s)...")
+
+    @property
+    def selected_tags(self) -> list[str]:
+        return list(self._selected)
+
+
 class _AutoFilterRow(QFrame):
-    def __init__(self, tag_name: str = "", app_match: str = "", mode: str = "open", parent=None):
+    def __init__(self, tag_names: list[str] | None = None, app_match: str = "",
+                 mode: str = "open", parent=None):
         super().__init__(parent)
         self.setFrameShape(QFrame.StyledPanel)
         row = QHBoxLayout(self)
         row.setContentsMargins(4, 4, 4, 4)
 
-        self.tag_edit = QLineEdit(tag_name)
-        self.tag_edit.setPlaceholderText("Filter name")
-        row.addWidget(self.tag_edit, stretch=1)
+        self.filter_select = _MultiFilterSelectButton(tag_names or [])
+        row.addWidget(self.filter_select, stretch=1)
 
         # Editable combo, not a plain text field: it doubles as a
         # dropdown of currently-running process names (so a match
@@ -173,7 +217,7 @@ class _AutoFilterRow(QFrame):
 
     def to_rule(self) -> config_module.AutoFilterRule:
         return config_module.AutoFilterRule(
-            tag_name=self.tag_edit.text().strip(),
+            tag_names=self.filter_select.selected_tags,
             app_match=self.app_combo.currentText().strip(),
             mode=self.mode_combo.currentData(),
         )
@@ -278,12 +322,12 @@ class FiltersSettingsPage(QWidget):
         layout.addWidget(add_btn)
 
         for rule in self._settings.auto_filters:
-            self._add_auto_row(rule.tag_name, rule.app_match, rule.mode)
+            self._add_auto_row(rule.tag_names, rule.app_match, rule.mode)
 
         return page
 
-    def _add_auto_row(self, tag_name: str = "", app_match: str = "", mode: str = "open") -> None:
-        row = _AutoFilterRow(tag_name, app_match, mode)
+    def _add_auto_row(self, tag_names: list[str] | None = None, app_match: str = "", mode: str = "open") -> None:
+        row = _AutoFilterRow(tag_names, app_match, mode)
         row.remove_btn.clicked.connect(lambda: self._remove_auto_row(row))
         self.auto_rows_layout.insertWidget(self.auto_rows_layout.count() - 1, row)
         self._auto_rows.append(row)
@@ -292,6 +336,17 @@ class FiltersSettingsPage(QWidget):
         self._auto_rows.remove(row)
         row.setParent(None)
         row.deleteLater()
+
+    def refresh_dynamic_lists(self) -> None:
+        """Re-reads the current set of filters from the DB -- called
+        whenever Settings becomes visible again (see MainWindow), since
+        this page (like the others) is built once at startup and would
+        otherwise keep showing whatever filters existed at launch time
+        in the tag-icon list and the Auto Add Filter multi-select
+        dropdowns."""
+        self._reload_tag_rows()
+        for row in self._auto_rows:
+            row.filter_select.refresh_options()
 
     # ------------------------------------------------------------ save
 
@@ -304,7 +359,7 @@ class FiltersSettingsPage(QWidget):
         settings.filter_display.show_filter_icons = self.show_icons_check.isChecked()
         settings.filter_display.filter_icon_location = self.icon_location_combo.currentData()
         settings.auto_filters = [
-            row.to_rule() for row in self._auto_rows if row.to_rule().tag_name
+            row.to_rule() for row in self._auto_rows if row.to_rule().tag_names
         ]
         config_module.save(settings)
 
