@@ -27,7 +27,7 @@ since these buttons are only ever built once.
 from __future__ import annotations
 
 from PySide6.QtCore import QSize, Qt
-from PySide6.QtGui import QPainter, QRegion, QColor, QIcon, QPixmap
+from PySide6.QtGui import QPainter, QRegion, QColor, QIcon, QPixmap, QImage
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QToolButton,
     QButtonGroup, QStackedWidget, QSizePolicy,
@@ -66,16 +66,36 @@ def _darken_pixmap(pixmap: QPixmap, darken_factor: float) -> QPixmap:
     channel (so an icon's transparent background stays transparent,
     only its opaque pixels actually darken) -- same technique already
     used for the border gradient darkening below, just applied to an
-    icon pixmap instead of a rectangular background image."""
-    result = QPixmap(pixmap.size())
-    result.fill(Qt.transparent)
-    painter = QPainter(result)
-    painter.drawPixmap(0, 0, pixmap)
+    icon pixmap instead of a rectangular background image.
+
+    Built via QImage in an explicit alpha format rather than a plain
+    QPixmap: a bare `QPixmap(size)` + `.fill(Qt.transparent)` isn't
+    guaranteed to carry an alpha channel on every platform/format, so
+    the "transparent" fill can silently render as opaque white
+    instead (seen as a white box behind inactive sidebar icons).
+    QImage.Format_ARGB32_Premultiplied always has one.
+
+    Filling the whole canvas under CompositionMode_Multiply also
+    necessarily makes every pixel fully opaque on its own -- Qt's
+    compositing math gives `alpha_out = alpha_src + alpha_dst*(1 -
+    alpha_src)`, which is 1 wherever the opaque gray fill (alpha_src=1)
+    lands, regardless of blend mode or the destination's own alpha.
+    Left alone that reintroduces the same solid-box problem one layer
+    down (gray instead of white). The final DestinationIn pass re-clips
+    the darkened result back down to the source icon's own alpha shape,
+    so only pixels the icon actually covers stay visible."""
+    source_image = pixmap.toImage().convertToFormat(QImage.Format_ARGB32_Premultiplied)
+    result_image = QImage(source_image.size(), QImage.Format_ARGB32_Premultiplied)
+    result_image.fill(Qt.transparent)
+    painter = QPainter(result_image)
+    painter.drawImage(0, 0, source_image)
     gray = round(255 * (1 - darken_factor))
     painter.setCompositionMode(QPainter.CompositionMode_Multiply)
-    painter.fillRect(result.rect(), QColor(gray, gray, gray))
+    painter.fillRect(result_image.rect(), QColor(gray, gray, gray))
+    painter.setCompositionMode(QPainter.CompositionMode_DestinationIn)
+    painter.drawImage(0, 0, source_image)
     painter.end()
-    return result
+    return QPixmap.fromImage(result_image)
 
 
 class _ScalingIconButton(QToolButton):
@@ -204,8 +224,16 @@ class _ScalingIconButton(QToolButton):
 
     def mouseReleaseEvent(self, event) -> None:
         if event.button() == Qt.LeftButton:
-            self._pulse.release()
+            self._pulse.release(is_hovered=self.underMouse())
         super().mouseReleaseEvent(event)
+
+    def enterEvent(self, event) -> None:
+        self._pulse.hover_enter()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event) -> None:
+        self._pulse.hover_leave()
+        super().leaveEvent(event)
 
     def icon_size_for_width(self, width: int) -> int:
         """The icon pixel size this button would use at the given width,

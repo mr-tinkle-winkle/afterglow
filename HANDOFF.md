@@ -8,23 +8,99 @@ Library pages are solid and confirmed working across multiple
 machines. Recent sessions have focused on Library filtering/display
 features and app-wide appearance tuning rather than the Editor itself.
 
-All files compile and import cleanly as of this handoff, and the
-GUI/DB/config layers have been exercised under an offscreen Qt
-platform (categories, icons, favoriting, click-to-filter, info display
-toggles, settings save round-trips, rename-renames-the-file,
-replay-buffer lock behavior, appearance settings round-tripping)
-since there's no real display or GPU in this sandbox to run the app
-against directly. A segfault was observed on interpreter teardown
-during one such offscreen test, after every functional assertion in
-it had already printed successfully -- consistent with this sandbox's
-pre-existing lack of a real GL context (see "Still unverified" below)
-rather than a logic bug, but worth knowing about if it recurs.
+All files compile and import cleanly as of this handoff. This
+session's four fixes were exercised under an offscreen Qt platform
+against real widget instances (not just compiled/imported) -- a
+`_ScalingIconButton` and a full `LibraryPage` (backed by a real
+scratch SQLite DB and config dir) were actually constructed and driven
+through hover/press/release events and icon-size changes, and
+`_darken_pixmap()` was run against a hand-built transparent-icon
+QImage and checked pixel-by-pixel. One correction came out of that
+testing that isn't reflected in the "next up" writeup below (now
+folded into "This session" instead): fixing only the initial
+transparent-fill format wasn't sufficient on its own -- Qt's alpha
+compositing math makes a full-canvas `CompositionMode_Multiply` fill
+opaque everywhere regardless of pixmap-vs-image format (`alpha_out =
+alpha_src + alpha_dst*(1-alpha_src)`, which is 1 wherever the opaque
+gray fill lands), so a `CompositionMode_DestinationIn` re-clip against
+the source icon's own alpha was also needed to keep the background
+actually transparent. Earlier sessions' GUI/DB/config-layer exercises
+(categories, icons, favoriting, click-to-filter, info display toggles,
+settings save round-trips, rename-renames-the-file, replay-buffer lock
+behavior, appearance settings round-tripping) since there's no real
+display or GPU in this sandbox to run the app against directly. A
+segfault was observed on interpreter teardown during one such
+offscreen test in an earlier session, after every functional assertion
+in it had already printed successfully -- consistent with this
+sandbox's pre-existing lack of a real GL context rather than a logic
+bug, but worth knowing about if it recurs.
 
 ## Currently being worked on
-Three consecutive batches of Library/Settings/appearance features,
-given together each time. Newest first.
+Five consecutive batches of Library/Settings/appearance features/bug
+fixes, given together each time. Newest first.
 
 ### This session
+All four items carried over from last handoff's "next up" list,
+implemented and verified (not just compiled -- see the offscreen
+widget-level testing note above):
+
+1. **Inactive sidebar icons' white-box background** -- `_darken_pixmap()`
+   in main_window.py now builds its result via `QImage` in
+   `Format_ARGB32_Premultiplied` instead of a bare `QPixmap`, which
+   isn't guaranteed to carry an alpha channel on every platform/format.
+   Turned up a second bug while verifying the first: filling the whole
+   canvas under `CompositionMode_Multiply` makes it opaque everywhere
+   regardless of format (Qt's alpha math forces `alpha_out = 1`
+   wherever an opaque color is painted, independent of blend mode), so
+   a final `CompositionMode_DestinationIn` pass re-clips the darkened
+   result back down to the source icon's own alpha shape. Verified
+   pixel-by-pixel against a hand-built transparent icon: background
+   corners stay at alpha 0, opaque icon pixels darken correctly.
+
+2. **Tab bar height jump during the Local/Uploaded pulse** -- added
+   `LibraryPage._fix_tab_bar_height()`, which locks the tab bar's
+   height via `setFixedHeight(tabBar().sizeHint().height())` at
+   construction and again in `apply_scale()` whenever the base icon
+   size legitimately changes. The pulse animation's per-frame
+   `setIconSize()` calls now only change how big the icon renders
+   inside a constant-height bar. Verified directly: the tab bar's
+   height doesn't move even when `setIconSize()` is called down to a
+   tiny size, before or after `apply_scale()`.
+
+3. **Hover downsize effect** -- `PulseAnimator` (gui/pulse_animation.py)
+   is now built around a shared `_animate_to(target_fraction,
+   duration_ms)` helper, tracking a `_current_fraction` so a new
+   animation started mid-flight eases from wherever the icon actually
+   is rather than snapping. `press()` -> 82%, `hover_enter()` -> 93%,
+   `hover_leave()` -> 100%, and `release(is_hovered: bool)` -> 93% if
+   the pointer's still over the widget or 100% if not. Wired into
+   `_ScalingIconButton`'s `enterEvent`/`leaveEvent`/`mouseReleaseEvent`
+   (passing its own `underMouse()` into `release()`) and
+   `_PulsingTabBar`'s equivalents. Verified both widget types directly
+   -- hover/press/release event handlers actually invoked against real
+   `_ScalingIconButton` and `LibraryPage` instances, fraction values
+   checked after each.
+
+4. **Startup Window Mode combo box + wrong-monitor fullscreen** --
+   `AppearanceSettings.startup_window_mode: str` (`"normal"` /
+   `"maximized"` / `"fullscreen"`) replaces the old top-level
+   `AppSettings.default_to_fullscreen: bool`, exposed as a combo box
+   (not a checkbox pair, which could produce a contradictory
+   both-checked state) in Settings > General; the old checkbox is gone
+   from Clipping. `config.load()` migrates old `default_to_fullscreen
+   = true` configs to `startup_window_mode = "fullscreen"` the same
+   way `AutoFilterRule.tag_name` was handled previously. Separately,
+   `main.py` now resolves the screen under the cursor at launch
+   (`QGuiApplication.screenAt(QCursor.pos())`, falling back to
+   `primaryScreen()`) and calls `window.setScreen(...)` +
+   `window.move(screen.availableGeometry().topLeft())` before
+   requesting fullscreen/maximized, since `setScreen()` alone doesn't
+   reliably relocate the window first. Verified: defaults, the
+   backward-compat migration from an old config file, and a
+   save-then-load round trip of the new field, all against the actual
+   `config` module (not reimplemented logic).
+
+### Three sessions ago
 - Bug fixes:
   - The Editor's "Select a video." prompt (shown when redirected there
     with nothing loaded) now clears when Library is clicked directly,
@@ -84,16 +160,16 @@ given together each time. Newest first.
   icon placement and general layout carried through unchanged; this
   session's work sits alongside it rather than touching it.
 
-### Two sessions ago
+### Four sessions ago
 - Filter categories as side-opening submenus, 3x larger/centered/
   auto-shrinking filter icons, the "Below" icon location moved to
   after the title, hover-tooltip + click-to-filter/block on card
-  icons, sidebar gradient-border darkening (35%, distinct from this
-  session's icon darkening), the "Info" dropdown (filters/length/
+  icons, sidebar gradient-border darkening (35%, distinct from a
+  later session's icon darkening), the "Info" dropdown (filters/length/
   size/date toggles), and the running-process dropdown for Auto Add
   Filter's app-match field.
 
-### Three sessions ago
+### Five sessions ago
 - Favoriting, block/exclude filters, "+ Add Filter" embedded in both
   dropdowns, the Library's Add Filter dialog redesigned as
   dropdown+"+", Editor clips pausing (not unloading) on tab switch, a
@@ -128,8 +204,38 @@ given together each time. Newest first.
 - Category management still has no dedicated rename/delete-a-whole-
   category UI -- only per-tag membership changes, via a tag's
   "+ New Category..." dropdown entry in Settings > Filters.
+- **This session's four fixes are unverified on real hardware.** All
+  four were exercised at the widget level under an offscreen Qt
+  platform (see the top of this file), which catches logic bugs but
+  can't confirm the actual visual result -- in particular, whether the
+  darkened-icon transparency fix looks right at real screen DPI/
+  scaling, and whether the fullscreen-monitor fix picks the correct
+  monitor on an actual multi-monitor KDE Plasma setup.
 
 ## Architecture pointers
+- `afterglow/gui/pulse_animation.py` -- generalized this session:
+  shared `_animate_to(target_fraction, duration_ms)` helper backing
+  `press()`/`release(is_hovered)`/`hover_enter()`/`hover_leave()`, with
+  a tracked `_current_fraction` so animations started mid-flight ease
+  from the current position instead of snapping.
+- `afterglow/gui/main_window.py` -- `_darken_pixmap()` rebuilt this
+  session on `QImage.Format_ARGB32_Premultiplied` +
+  `CompositionMode_DestinationIn` re-clip (was a plain `QPixmap`, see
+  "This session" above for why that alone wasn't enough);
+  `_ScalingIconButton` gained `enterEvent`/`leaveEvent` wired to the
+  pulse animator's new hover methods.
+- `afterglow/gui/library_page.py` -- `LibraryPage._fix_tab_bar_height()`
+  (new this session, called from `__init__` and `apply_scale()`);
+  `_PulsingTabBar` gained `enterEvent`/`leaveEvent` and its `release`
+  callback now passes `underMouse()` through.
+- `afterglow/config.py` -- `AppearanceSettings.startup_window_mode:
+  str` (new this session, replaces top-level
+  `AppSettings.default_to_fullscreen: bool`); `load()`'s backward-
+  compat shim for it sits alongside the existing `AutoFilterRule.
+  tag_name` one.
+- `afterglow/gui/main.py` -- launch now resolves
+  `QGuiApplication.screenAt(QCursor.pos())` and moves the window there
+  before honoring `startup_window_mode` (new this session).
 - `autofilter.py` -- Auto Add Filter detection (process scanning +
   kdotool/hyprctl/swaymsg); `list_running_process_display_names()` for
   the Settings dropdown.
@@ -139,31 +245,21 @@ given together each time. Newest first.
 - `afterglow/obs_client.py` -- `save_replay_buffer()` now wraps
   `_save_replay_buffer_locked()` in a cross-process `fcntl.flock` on
   `CONFIG_DIR/replay_buffer.lock`.
-- `afterglow/config.py` -- `AppearanceSettings` (new this session),
-  `CardInfoSettings`, `FilterDisplaySettings`, `AutoFilterRule`
-  (`tag_names: list[str]`, was `tag_name: str` -- see load()'s
-  backward-compat shim).
 - `afterglow/library.py` -- `rename_video()` now renames the actual
   file (`_sanitize_filename_stem`, `_unique_path`); category CRUD;
   `set_favorite`, `tag_icons`, `tag_category_ids`, etc. from earlier
   sessions.
-- `afterglow/gui/pulse_animation.py` -- new file; shared press/release
-  icon-size easing used by both the sidebar and the Library tab bar.
-- `afterglow/gui/main_window.py` -- `_ScalingIconButton` now takes an
-  `AppearanceSettings` instance and a `border_mode`; icon darkening via
-  precomputed `QIcon` swap; pulse wired into mouse press/release.
-- `afterglow/gui/library_page.py` -- `_PulsingTabBar` (QTabBar
-  subclass) drives the Local/Uploaded tab pulse; `FilterCheckBox` and
-  category submenus from earlier sessions unchanged.
 - `afterglow/gui/video_card.py` -- `_copy_to_clipboard` (Copy context
   menu action); `set_font_scale` now implements Resize Text to Fit via
   `QFontMetricsF`; icon size and the unedited-highlight width/
   brightness now read from `AppearanceSettings` instead of hardcoded
   constants.
 - `afterglow/gui/settings_page.py` -- "Clipping" + "General" +
-  "Filters" tabs; `refresh_dynamic_lists()` passthrough to
-  `FiltersSettingsPage`, called by MainWindow whenever Settings is
-  navigated to (since it's built once at startup, not per-visit).
+  "Filters" tabs; the fullscreen checkbox moved out of Clipping this
+  session and a `startup_window_mode_combo` added to General instead;
+  `refresh_dynamic_lists()` passthrough to `FiltersSettingsPage`,
+  called by MainWindow whenever Settings is navigated to (since it's
+  built once at startup, not per-visit).
 - `afterglow/gui/filters_settings_page.py` -- `_MultiFilterSelectButton`
   for Auto Add Filter's multi-select; `refresh_dynamic_lists()`.
 

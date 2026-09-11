@@ -2,7 +2,7 @@ import locale
 import sys
 from pathlib import Path
 
-from PySide6.QtGui import QIcon, QSurfaceFormat
+from PySide6.QtGui import QCursor, QGuiApplication, QIcon, QSurfaceFormat
 from PySide6.QtWidgets import QApplication
 
 from .. import db
@@ -70,8 +70,23 @@ def main() -> None:
             app.setWindowIcon(QIcon(str(dev_icon)))
 
     window = MainWindow()
-    if config_module.load().default_to_fullscreen:
+
+    # Resolve the screen actually under the cursor at launch, rather
+    # than letting Qt pick one on its own (not necessarily the one in
+    # use) -- fixes fullscreen/maximized opening on the wrong monitor.
+    # setScreen() alone doesn't reliably relocate the window's actual
+    # on-screen position ahead of a fullscreen/maximize request, so
+    # move() to that screen's origin first.
+    screen = QGuiApplication.screenAt(QCursor.pos()) or QGuiApplication.primaryScreen()
+    if screen is not None:
+        window.setScreen(screen)
+        window.move(screen.availableGeometry().topLeft())
+
+    startup_mode = config_module.load().appearance.startup_window_mode
+    if startup_mode == "fullscreen":
         window.showFullScreen()
+    elif startup_mode == "maximized":
+        window.showMaximized()
     else:
         window.show()
     sys.exit(app.exec())

@@ -114,13 +114,19 @@ class AppearanceSettings:
     # available space (matches _ScalingIconButton.SCALE, previously a
     # hardcoded 0.85 i.e. 85%).
     library_icon_size: int = 85
+    # "normal" | "maximized" | "fullscreen" -- replaces the old
+    # top-level default_to_fullscreen bool (see load()'s backward-compat
+    # shim), moved here from the Clipping tab into General since it's
+    # an appearance/startup-appearance concern, and widened to a third
+    # choice: a checkbox pair for fullscreen+maximized could produce a
+    # contradictory both-checked state, so this is one combo box instead.
+    startup_window_mode: str = "normal"
 
 
 @dataclass
 class AppSettings:
     clips_dir: str = str(DEFAULT_CLIPS_DIR)
     default_sound_path: str = ""
-    default_to_fullscreen: bool = False
     obs: OBSSettings = field(default_factory=OBSSettings)
     youtube: YouTubeSettings = field(default_factory=YouTubeSettings)
     filter_display: FilterDisplaySettings = field(default_factory=FilterDisplaySettings)
@@ -162,10 +168,20 @@ def load() -> AppSettings:
         auto_filters.append(AutoFilterRule(**rule))
 
     card_info = CardInfoSettings(**raw.get("card_info", {}))
-    appearance = AppearanceSettings(**raw.get("appearance", {}))
+    appearance_raw = dict(raw.get("appearance", {}))
+    if "startup_window_mode" not in appearance_raw and raw.get("default_to_fullscreen"):
+        # Pre-startup-window-mode config format -- the old top-level
+        # fullscreen-only bool. Only a `true` value carries information
+        # (the default was already False, matching "normal"), so a
+        # missing or false value needs no conversion.
+        appearance_raw["startup_window_mode"] = "fullscreen"
+    appearance = AppearanceSettings(**appearance_raw)
     top_level = {
         k: v for k, v in raw.items()
-        if k not in ("obs", "youtube", "filter_display", "auto_filters", "card_info", "appearance")
+        if k not in (
+            "obs", "youtube", "filter_display", "auto_filters", "card_info", "appearance",
+            "default_to_fullscreen",  # old field, folded into appearance.startup_window_mode above
+        )
     }
     settings = AppSettings(
         obs=obs, youtube=youtube, filter_display=filter_display,

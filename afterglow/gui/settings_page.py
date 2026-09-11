@@ -168,10 +168,6 @@ class SettingsPage(QWidget):
         sound_row.addWidget(sound_browse)
         form.addRow("Default sound:", sound_row)
 
-        self.fullscreen_check = QCheckBox()
-        self.fullscreen_check.setChecked(self._settings.default_to_fullscreen)
-        form.addRow("Default to Fullscreen:", self.fullscreen_check)
-
         return group
 
     # ------------------------------------------------------------ appearance group
@@ -241,6 +237,18 @@ class SettingsPage(QWidget):
         self.library_icon_size_spin.setSuffix("%")
         self.library_icon_size_spin.setValue(a.library_icon_size)
         form.addRow("Library Page Icons Size:", self.library_icon_size_spin)
+
+        # A combo box rather than a checkbox pair (Fullscreen + Maximized)
+        # deliberately -- two independent checkboxes could both end up
+        # checked at once, which has no sensible meaning. Moved here from
+        # Clipping since it's a startup-appearance choice.
+        self.startup_window_mode_combo = QComboBox()
+        self.startup_window_mode_combo.addItem("Normal", "normal")
+        self.startup_window_mode_combo.addItem("Maximized", "maximized")
+        self.startup_window_mode_combo.addItem("Fullscreen", "fullscreen")
+        index = self.startup_window_mode_combo.findData(a.startup_window_mode)
+        self.startup_window_mode_combo.setCurrentIndex(index if index >= 0 else 0)
+        form.addRow("Startup Window Mode:", self.startup_window_mode_combo)
 
         note = QLabel(
             "Sidebar/border settings apply next launch (the sidebar buttons "
@@ -332,7 +340,6 @@ class SettingsPage(QWidget):
         )
         self._settings.clips_dir = self.clips_dir_edit.text().strip()
         self._settings.default_sound_path = self.default_sound_edit.text().strip()
-        self._settings.default_to_fullscreen = self.fullscreen_check.isChecked()
 
         a = self._settings.appearance
         a.resize_text_to_fit = self.resize_text_check.isChecked()
@@ -345,6 +352,7 @@ class SettingsPage(QWidget):
         a.unedited_highlight_brightness = self.unedited_highlight_brightness_spin.value()
         a.filter_icon_size = self.filter_icon_size_spin.value()
         a.library_icon_size = self.library_icon_size_spin.value()
+        a.startup_window_mode = self.startup_window_mode_combo.currentData()
 
         config_module.save(self._settings)
         self.filters_settings_page.save()

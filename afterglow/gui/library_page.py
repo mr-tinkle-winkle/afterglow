@@ -422,17 +422,20 @@ class _VideoGridTab(QWidget):
 
 
 class _PulsingTabBar(QTabBar):
-    """A QTabBar that pulses its icon(s) on press/release, matching the
-    sidebar nav buttons' click feel. QTabBar only exposes ONE iconSize
-    for the whole bar (not per-tab), so both Local/Uploaded icons pulse
-    together rather than just the one actually clicked -- an accepted
+    """A QTabBar that pulses its icon(s) on press/release and eases to a
+    slightly smaller size on hover, matching the sidebar nav buttons'
+    click/hover feel. QTabBar only exposes ONE iconSize for the whole
+    bar (not per-tab), so both Local/Uploaded icons move together
+    rather than just the one actually clicked/hovered -- an accepted
     simplification given there are only ever the two of them, both
     visible at once."""
 
-    def __init__(self, on_press, on_release, parent=None):
+    def __init__(self, on_press, on_release, on_hover_enter, on_hover_leave, parent=None):
         super().__init__(parent)
         self._on_press = on_press
         self._on_release = on_release
+        self._on_hover_enter = on_hover_enter
+        self._on_hover_leave = on_hover_leave
 
     def mousePressEvent(self, event) -> None:
         if event.button() == Qt.LeftButton and self.tabAt(event.pos()) != -1:
@@ -441,8 +444,16 @@ class _PulsingTabBar(QTabBar):
 
     def mouseReleaseEvent(self, event) -> None:
         if event.button() == Qt.LeftButton:
-            self._on_release()
+            self._on_release(self.underMouse())
         super().mouseReleaseEvent(event)
+
+    def enterEvent(self, event) -> None:
+        self._on_hover_enter()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event) -> None:
+        self._on_hover_leave()
+        super().leaveEvent(event)
 
 
 class LibraryPage(QWidget):
@@ -465,7 +476,10 @@ class LibraryPage(QWidget):
             get_base_size=lambda: self._current_tab_icon_size,
             apply_size=lambda size: self.tabs.setIconSize(QSize(size, size)),
         )
-        self.tabs.setTabBar(_PulsingTabBar(self._tab_pulse.press, self._tab_pulse.release))
+        self.tabs.setTabBar(_PulsingTabBar(
+            self._tab_pulse.press, self._tab_pulse.release,
+            self._tab_pulse.hover_enter, self._tab_pulse.hover_leave,
+        ))
         self.local_tab = _VideoGridTab(uploaded_only=False, local_only=True)
         self.uploaded_tab = _VideoGridTab(uploaded_only=True, local_only=False)
         self.local_tab.edit_requested.connect(self.edit_requested.emit)
@@ -489,6 +503,7 @@ class LibraryPage(QWidget):
         self.tabs.addTab(self.uploaded_tab, resource_qicon("uploaded_videos.png"), "")
         self.tabs.setTabToolTip(0, "Local")
         self.tabs.setTabToolTip(1, "Uploaded")
+        self._fix_tab_bar_height()
         layout.addWidget(self.tabs)
 
         # Shown when the Editor is opened with no video ever having been
@@ -532,6 +547,18 @@ class LibraryPage(QWidget):
         self.local_tab.refresh()
         self.uploaded_tab.refresh()
 
+    def _fix_tab_bar_height(self) -> None:
+        """Lock the tab bar's own height to its natural size at the
+        current (un-animated) icon size, so the click-pulse's per-frame
+        setIconSize() calls -- which would otherwise shrink/grow the
+        tab bar itself, since QTabBar derives its height from icon
+        size -- only change how big the icon renders inside a
+        constant-height bar, instead of pushing the search bar and
+        video grid below it up and down. Re-called from apply_scale()
+        whenever the base icon size legitimately changes; the pulse
+        animation itself never touches this."""
+        self.tabs.tabBar().setFixedHeight(self.tabs.tabBar().sizeHint().height())
+
     def apply_scale(self, factor: float) -> None:
         self.local_tab.apply_scale(factor)
         self.uploaded_tab.apply_scale(factor)
@@ -541,3 +568,4 @@ class LibraryPage(QWidget):
         size = max(round(self._base_tab_icon_size * factor), 8)
         self._current_tab_icon_size = size
         self.tabs.setIconSize(QSize(size, size))
+        self._fix_tab_bar_height()
