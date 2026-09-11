@@ -12,7 +12,7 @@ grid/search/filter wiring twice.
 """
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, Signal, QSize
+from PySide6.QtCore import Qt, Signal, QSize, QFileSystemWatcher, QTimer
 from PySide6.QtGui import QActionGroup
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLineEdit, QToolButton,
@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
 
 from .. import library
 from .. import config as config_module
+from .. import db as db_module
 from .video_card import VideoCard, THUMB_SIZE, FAVORITE_STAR
 from .resources import resource_qicon
 from .pulse_animation import PulseAnimator
@@ -399,7 +400,11 @@ class _VideoGridTab(QWidget):
         self.scroll.setVisible(len(videos) > 0)
 
         for video in videos:
-            card = VideoCard(video, highlight_enabled=self._highlight_unedited, font_scale=self._font_scale)
+            card = VideoCard(
+                video, highlight_enabled=self._highlight_unedited, font_scale=self._font_scale,
+                get_selected_ids=lambda: self._selected_ids,
+                ensure_selected=self._ensure_selected_for_context_menu,
+            )
             card.edit_requested.connect(self.edit_requested.emit)
             card.deleted.connect(lambda _vid: self.refresh())
             card.tags_changed.connect(self.refresh)
@@ -440,6 +445,22 @@ class _VideoGridTab(QWidget):
         if self._selected_ids:
             self._selected_ids = set()
             self._selection_anchor_index = None
+            self._apply_selection_visuals()
+
+    def _ensure_selected_for_context_menu(self, video_id: int) -> None:
+        """Called by a VideoCard right before it builds its context
+        menu. Standard file-manager convention: right-clicking a card
+        that's already part of the current multi-selection leaves that
+        selection intact (so the menu acts on all of it); right-clicking
+        one that ISN'T replaces the selection with just that card (so
+        the menu doesn't act on some unrelated older selection)."""
+        if video_id not in self._selected_ids:
+            try:
+                index = next(i for i, c in enumerate(self._cards) if c.video_id == video_id)
+            except StopIteration:
+                index = None
+            self._selected_ids = {video_id}
+            self._selection_anchor_index = index
             self._apply_selection_visuals()
 
     def _apply_selection_visuals(self) -> None:
@@ -504,6 +525,24 @@ class _PulsingTabBar(QTabBar):
         self._on_release = on_release
         self._on_hover_enter = on_hover_enter
         self._on_hover_leave = on_hover_leave
+        self._frozen_size_hint: QSize | None = None
+
+    def freeze_size_hint(self) -> None:
+        """Capture sizeHint() at the current (un-animated) icon size and
+        report that fixed value from sizeHint() from then on, regardless
+        of the pulse animation's per-frame setIconSize() calls.
+        QTabWidget's own internal layout sizes the tab bar vs. the page
+        content below it using the tab bar's sizeHint() -- NOT its
+        actual on-screen height -- so setFixedHeight() alone (which only
+        constrains the bar's own rendered size) wasn't enough: the
+        content area's height/position still visibly shifted every
+        animation frame, tracking sizeHint()'s shrink/grow instead."""
+        self._frozen_size_hint = QTabBar.sizeHint(self)
+
+    def sizeHint(self) -> QSize:
+        if self._frozen_size_hint is not None:
+            return self._frozen_size_hint
+        return super().sizeHint()
 
     def mousePressEvent(self, event) -> None:
         if event.button() == Qt.LeftButton and self.tabAt(event.pos()) != -1:
@@ -588,6 +627,43 @@ class LibraryPage(QWidget):
         # prompt no longer applies.
         self.edit_requested.connect(lambda _video_id: self.clear_status_message())
 
+        # Live refresh: the hotkey-triggered clip pipeline (trim + Auto
+        # Add Filter tagging) runs in a completely separate daemon
+        # process (see daemon.py), not this GUI -- so there's no
+        # in-process signal to connect to when a new clip finishes.
+        # Watching the DB file itself for changes is the cross-process
+        # signal instead: the daemon's LAST write for a given clip is
+        # always its tag inserts (after the video row itself), so by
+        # the time this fires, the clip's filters are already applied
+        # too, matching "refresh once it's fully done" rather than
+        # refreshing the moment the file appears but before it's
+        # tagged. Requires the default rollback-journal mode (not WAL,
+        # which this app doesn't use) -- WAL writes go to a separate
+        # -wal sidecar file most of the time, which a watch on the main
+        # .db file alone would largely miss.
+        self._db_watcher = QFileSystemWatcher(self)
+        if db_module.DB_PATH.exists():
+            self._db_watcher.addPath(str(db_module.DB_PATH))
+        self._db_watcher.fileChanged.connect(self._on_db_file_changed)
+        # Debounced rather than refreshing on every individual fileChanged
+        # signal: one clip capture is actually several writes in quick
+        # succession (the video row, then one insert per applied auto-tag),
+        # each of which would otherwise trigger its own separate refresh.
+        self._refresh_debounce = QTimer(self)
+        self._refresh_debounce.setSingleShot(True)
+        self._refresh_debounce.setInterval(400)
+        self._refresh_debounce.timeout.connect(self.refresh)
+
+    def _on_db_file_changed(self, path: str) -> None:
+        # Some editors/writers replace rather than modify a watched file,
+        # which silently drops it from QFileSystemWatcher's internal list
+        # -- re-adding it defensively after every change keeps the watch
+        # alive even if SQLite's actual on-disk write pattern ever changes
+        # (e.g. a future switch to WAL mode's checkpoint-and-replace).
+        if path not in self._db_watcher.files() and db_module.DB_PATH.exists():
+            self._db_watcher.addPath(path)
+        self._refresh_debounce.start()  # (re)start -- coalesces a burst of writes into one refresh
+
     def show_status_message(self, text: str) -> None:
         self.status_bar.setText(text)
         self.status_bar.setVisible(True)
@@ -624,8 +700,17 @@ class LibraryPage(QWidget):
         constant-height bar, instead of pushing the search bar and
         video grid below it up and down. Re-called from apply_scale()
         whenever the base icon size legitimately changes; the pulse
-        animation itself never touches this."""
-        self.tabs.tabBar().setFixedHeight(self.tabs.tabBar().sizeHint().height())
+        animation itself never touches this.
+
+        freeze_size_hint() first: setFixedHeight() alone constrains the
+        bar's own rendered height, but QTabWidget's internal layout
+        positions the page content below the bar using the bar's
+        sizeHint() (not its actual height), which the animation's
+        setIconSize() calls still changed every frame -- see
+        freeze_size_hint()'s docstring."""
+        bar = self.tabs.tabBar()
+        bar.freeze_size_hint()
+        bar.setFixedHeight(bar.sizeHint().height())
 
     def apply_scale(self, factor: float) -> None:
         self.local_tab.apply_scale(factor)

@@ -9,77 +9,180 @@ machines. Recent sessions have focused on Library filtering/display
 features and app-wide appearance tuning rather than the Editor itself.
 
 All files compile and import cleanly as of this handoff. This
-session's multi-select feature was exercised under an offscreen Qt
-platform against a real `LibraryPage` (real scratch SQLite DB, real
-ffmpeg-generated test clips) -- plain/ctrl/shift click sequences were
-driven directly through `_on_card_clicked` and checked against both
-the selection-state dict and each card's actual `_selected` flag, and
-the border repaint itself was verified pixel-by-pixel via
-`card.grab()` (selected -> flat gray; deselected on an unedited video
--> the gradient highlight again). Two sessions ago's four fixes were
-exercised the same way (see git history / that entry below for
-detail) against real widget instances -- a `_ScalingIconButton` and a
-full `LibraryPage` were actually constructed and driven through
-hover/press/release events and icon-size changes, and `_darken_pixmap()`
-was run against a hand-built transparent-icon QImage and checked
-pixel-by-pixel. Earlier sessions' GUI/DB/config-layer exercises
-(categories, icons, favoriting, click-to-filter, info display toggles,
-settings save round-trips, rename-renames-the-file, replay-buffer lock
-behavior, appearance settings round-tripping) since there's no real
-display or GPU in this sandbox to run the app against directly. A
-segfault was observed on interpreter teardown during one such
-offscreen test in an earlier session, after every functional assertion
-in it had already printed successfully -- consistent with this
-sandbox's pre-existing lack of a real GL context rather than a logic
-bug, but worth knowing about if it recurs.
+session covered a lot of ground and corrected two of its own earlier
+claims after more rigorous testing (see below) -- both real bugs that
+compiled fine and passed a shallower test, caught only by testing
+through the *actual* mechanism (real Qt event dispatch, a real
+`QTabWidget` layout pass, a real `QContextMenuEvent`) instead of
+calling the handler function directly. That pattern held up well
+enough this session that it's worth calling out explicitly for next
+time: **calling a handler method directly proves the method's logic
+works; it does NOT prove the method actually gets called, or that Qt's
+surrounding machinery behaves the way the code assumes.** Prefer
+`QTest`/real event dispatch, and a real widget actually shown in a
+real layout, wherever plausible.
 
 ## Currently being worked on
-Six consecutive batches of Library/Settings/appearance features/bug
-fixes, given together each time. Newest first.
+Seven consecutive batches of Library/Settings/appearance
+features/bug fixes, given together each time. Newest first.
 
 ### This session
-**Multi-select for video cards**, standard file-manager click
-conventions:
-- Plain click selects exactly that card, replacing any existing
-  selection, and sets the "anchor" (see below).
-- Ctrl+click toggles just that one card in/out of the selection
-  (leaving the rest alone) and ALSO moves the anchor to it -- matches
-  the common convention that the most recently ctrl-clicked card
-  becomes the new range-start for a subsequent shift-click, whether
-  that click added or removed it.
-- Shift+click selects the contiguous range from the anchor to the
-  clicked card, replacing the current selection. The anchor itself is
-  NOT moved by a shift-click, so repeated shift-clicks keep
-  re-ranging from the same fixed starting point (also standard
-  behavior -- lets you shrink a range back down after overshooting).
-- Left-clicking empty grid space (gaps between cards, or below the
-  last row) clears the selection entirely -- `_SelectionClearingContainer`,
-  a tiny `QWidget` subclass swapped in as `grid_container`, whose
-  `mousePressEvent` only fires when the click didn't land on a card
-  (child widgets consume the event first).
-- Selection is tracked per-tab (`_VideoGridTab._selected_ids` +
-  `_selection_anchor_index`) and reset whenever `refresh()` actually
-  requeries/rebuilds the cards (search, filter, sort, tag/favorite
-  change, delete) -- NOT on a plain window-resize relayout, since
-  that reuses the same card objects.
-- Visual: a selected card's border always wins over whatever it would
-  otherwise show (the unedited-clip gradient highlight, or nothing on
-  an edited one) -- a flat neutral gray (`#999999`) fill inset by the
-  same width as the unedited highlight's border, drawn in a new
-  first-priority branch of `VideoCard.paintEvent`. This piggybacked on
-  renaming `AppearanceSettings.unedited_highlight_width` to
-  `unedited_selected_border_width` (asked for directly -- the setting
-  is now genuinely dual-purpose), with `config.load()`'s usual
-  backward-compat shim for the old field name and the Settings >
-  General label updated to "Unedited/Selected Border Width". The
-  brightness setting stayed put (`unedited_highlight_brightness`) --
-  it only ever applied to the gradient highlight's look, which the
-  selection border doesn't use.
-- No bulk actions (delete/copy/tag multiple at once) are wired up
-  yet -- right-click's context menu still only acts on whichever
-  single card was right-clicked, regardless of what else is selected.
-  Flagged in "What's not working" below since multi-select's main
-  practical use is presumably bulk operations.
+Multi-select landed this session too (standard file-manager
+conventions -- plain click selects one and sets an "anchor"; ctrl+click
+toggles one card and moves the anchor to it; shift+click selects the
+contiguous range from the anchor to the clicked card without moving
+the anchor, so repeated shift-clicks re-range from the same fixed
+point; clicking empty grid space clears the selection). A selected
+card's border always wins over the unedited-highlight gradient (or
+nothing, if edited) -- a flat gray fill at the same width as that
+highlight, via a renamed, now dual-purpose
+`AppearanceSettings.unedited_selected_border_width` (was
+`unedited_highlight_width`, with the usual load()-time backward-compat
+shim). Everything below happened in the same session as follow-up,
+starting from three explicit asks (bulk context menu, a "Filters" side
+panel, right-click-to-block not closing the menu) plus a report that
+selection wasn't visibly working and the tab-bar-pulse layout shift
+was still happening despite two sessions ago's fix -- then grew to
+include a full Advanced Sound feature partway through. In order:
+
+1. **Selection wasn't visibly working -- root cause found and fixed.**
+   `VideoCard.mousePressEvent` emitted the `clicked` signal (correctly
+   selecting the card) but then called `super().mousePressEvent(event)`,
+   which leaves the event un-accepted -- Qt then bubbles it up to the
+   parent, where `_SelectionClearingContainer`'s own `mousePressEvent`
+   fired `background_clicked`, clearing the selection that had just
+   been set, all within the same click. Fixed by calling
+   `event.accept()` instead. This is exactly the kind of bug direct
+   handler calls can't catch -- last session's tests called
+   `_on_card_clicked` and `mousePressEvent` directly, which proved the
+   selection logic itself was right but never exercised the real event
+   bubbling that was undoing it. Verified this time via `QTest.mouseClick`
+   on the actual `thumb_label`/`title_label` child widgets, confirming
+   the selection now survives the same real click that sets it, and via
+   `card.grab()` that the border pixel is genuinely gray afterward.
+
+2. **Tab-bar pulse was STILL shifting page layout -- a second, deeper
+   bug under the one already "fixed."** `QTabWidget`'s own internal
+   layout sizes the tab bar vs. the page content below it using
+   `tabBar().sizeHint()`, NOT the bar's actual rendered height --
+   `setFixedHeight()` (two sessions ago's fix) only constrains the
+   latter. The animation's per-frame `setIconSize()` calls kept
+   changing `sizeHint()` regardless, so the content area's height still
+   visibly moved every frame even though the bar itself didn't. Fixed
+   with `_PulsingTabBar.freeze_size_hint()`, which caches `sizeHint()`
+   at the un-animated icon size and overrides `sizeHint()` to always
+   return that frozen value. Verified by actually stepping a real
+   `QVariantAnimation` via `QTest.mousePress`/real timer ticks and
+   reading `local_tab.geometry()` mid-pulse -- it changed from 792px to
+   805px before the fix, stays at 792px throughout after it. As a
+   side effect the bar's *width* is now frozen too (previously it also
+   visibly narrowed during the pulse) -- not asked for, but strictly an
+   improvement, not a behavior change anyone would want reverted.
+
+3. **Bulk context-menu actions.** Right-clicking a card that's part of
+   the current multi-selection now applies Favorite/Unfavorite,
+   Upload, Copy, and Delete to the WHOLE selection; right-clicking a
+   card that ISN'T part of it first replaces the selection with just
+   that card (standard file-manager convention) via
+   `_VideoGridTab._ensure_selected_for_context_menu`, called from
+   `VideoCard._show_context_menu` before it builds the menu. Edit and
+   Rename stay single-card-only (hidden, not just disabled, when 2+
+   are selected) since neither has a sensible bulk meaning. `VideoCard`
+   takes two new optional constructor callables, `get_selected_ids`
+   and `ensure_selected`, wired up in `_VideoGridTab.refresh()`; a
+   card built without them (e.g. directly, outside a `_VideoGridTab`)
+   falls back to acting on just itself. Copy now puts one `QUrl` per
+   selected file on the clipboard instead of one. Verified against a
+   real multi-selection: right-click-keeps-selection vs.
+   right-click-replaces-it, and that each bulk action (favorite, tag
+   add/remove, delete) touches exactly the target set and nothing else.
+
+4. **"Filters" side panel replaces "Add Filter."** The old
+   single-tag `AddTagDialog` (a combo box + OK button) is gone --
+   right-click > Filters now opens a hover-opening submenu, categorized
+   the same way as the Library search's own Filters dropdown, with a
+   plain `QCheckBox` per tag: checked when EVERY targeted video already
+   has that tag, toggling adds/removes it across all of them at once
+   (this is also how the bulk case above applies filters). A "+ Add
+   Filter" button at the bottom creates a new tag globally, same
+   one-shot behavior as the search dropdown's own "+" (doesn't apply it
+   to anything, shows up next time a Filters menu is opened). Verified
+   the "all have it -> checked, mixed -> unchecked" logic directly
+   against real `library.Video` objects, and the create-new-tag flow
+   with `QInputDialog` mocked.
+
+5. **Right-click-to-block investigated -- confirmed it already works,
+   NOT a bug.** First test attempt (`QTest.mouseClick(checkbox,
+   Qt.RightButton, ...)`) showed the block state never changing and the
+   menu closing -- looked like confirmation of the reported bug. But
+   this was a **false negative from the test method, not a real bug**:
+   `QTest.mouseClick` only synthesizes `MouseButtonPress`/
+   `MouseButtonRelease`, and does NOT synthesize the separate
+   `QContextMenuEvent` that `customContextMenuRequested` actually fires
+   from -- that event is normally generated by the platform's native
+   input handling on a genuine right-click, which this offscreen
+   sandbox's synthetic clicks don't replicate. Re-tested by posting a
+   real `QContextMenuEvent` directly (matching what native right-click
+   input actually produces) -- the existing `FilterCheckBox` correctly
+   set its blocked state AND the enclosing `QMenu` stayed open,
+   confirming the feature already does what was asked. No code change
+   made here. Flagging the test-methodology lesson at the top of this
+   file since it's the second time this session a shallow test gave a
+   false result in one direction or the other (see item 1's opposite
+   case: a passing direct-call test that hid a real bug).
+
+6. **Live library refresh.** The hotkey-triggered clip pipeline runs in
+   a completely separate process (`daemon.py`), so there's no
+   in-process signal for the GUI to connect to -- `LibraryPage` now
+   watches `db.DB_PATH` itself via `QFileSystemWatcher`, debounced
+   400ms (`_refresh_debounce`, a singleShot `QTimer`) to coalesce a
+   burst of writes (one clip capture is a video-row insert plus one
+   insert per auto-applied tag) into a single `refresh()`. Relies on
+   SQLite's default rollback-journal mode writing to the main `.db`
+   file directly on commit -- would need reworking if the app ever
+   switches to WAL mode, where writes mostly go to a `-wal` sidecar a
+   watch on the main file wouldn't see. Verified with a simulated
+   external writer (a second, independent `sqlite3`/`library` call
+   sequence into the same DB file, standing in for the daemon actually
+   being a different OS process) -- confirmed one debounced refresh
+   fires per burst, and the refreshed grid reflects both the new video
+   AND the tag applied in the same burst.
+
+7. **Advanced Sound + Error Noise.** New `afterglow/keyframes.py`
+   defines `PIPELINE_KEYFRAMES`, the five named pipeline checkpoints
+   (`hotkey_received`, `replay_buffer_sent`, `replay_buffer_completed`,
+   `trim_finished`, `cleaned_up_moved`) in pipeline order -- deliberately
+   its own module, not living in `clips.py` or `config.py`, since it's
+   meant to be reused as the same ordered checkpoint list for a future
+   animation-trigger system once that exists, per how this was framed
+   when asked for. `AppSettings` gained `advanced_sounds: dict[str,
+   str]` (keyframe -> sound path) and `error_sounds: dict[str, str]`
+   (keyframe -> error sound path, played INSTEAD of the normal one if
+   that stage's work raises) plus `default_error_sound_path` as the
+   fallback for a keyframe with no specific error sound.
+   `default_sound_path` (pre-existing) keeps its old meaning
+   unchanged -- it's specifically `replay_buffer_completed`'s legacy
+   fallback (chain: per-clip-config `sound_path` -> new
+   `advanced_sounds[replay_buffer_completed]` -> old
+   `default_sound_path`), NOT a fallback for the other four keyframes,
+   which have no prior behavior to preserve. `clips.trigger_clip()`
+   tracks a `stage` variable, set to the upcoming keyframe BEFORE
+   attempting that keyframe's actual work (not after) so a failure
+   during, say, the trim itself is correctly attributed to
+   `trim_finished`'s error sound rather than whichever keyframe came
+   before it -- confirmed this distinction mattered by writing a test
+   for the wrong (after-the-fact) version first and watching it
+   correctly fail. A single try/except wraps the whole pipeline rather
+   than nesting one per stage. New `AdvancedSoundDialog`
+   (gui/advanced_sound_dialog.py) opened via an "Advanced Sound..."
+   button in Settings > Clip Capture, holding all ten-plus file
+   pickers rather than cramming them into the main form. Verified: full
+   keyframe-sound-order pipeline run (mocked OBS/trim/probe_duration,
+   real `ClipConfig`/DB), the `replay_buffer_completed` legacy fallback
+   chain including the per-clip-config override, error-sound stage
+   attribution on both a mid-pipeline failure and a specific-vs.-fallback
+   case, the dialog's read-back, and a full Settings-page save/load
+   round trip including old configs with none of these fields at all.
 
 ### Two sessions ago
 All four items carried over from that session's "next up" list,
@@ -227,12 +330,13 @@ widget-level testing note above):
   KWin session available in this sandbox across any of these
   sessions to test kdotool's actual output against. This remains the
   single biggest open unknown.
-- **"Library Page Icons Size" was an interpretive call.** There's no
-  other "icon" concept on the actual Library page distinct from the
-  sidebar nav icons and the per-clip filter icons (which already has
-  its own "Filter Icons Size" setting) -- it's wired to the sidebar
-  nav icon scale (previously a hardcoded 0.85/85%). Flag it if that's
-  not what was meant.
+- **"Library Page Icons Size" is a confirmed bug, not just an
+  interpretive call anymore** -- it's wired to the sidebar nav icon
+  scale, but was actually meant to control the Library page's OWN
+  icons (the Local/Uploaded tab icons). See "Next up" below -- the
+  fix is to replace this one setting with five separate ones (Library,
+  Editor, Settings, Saved Videos, Uploaded Videos), not just repoint
+  the existing single setting at a different icon.
 - **The Local/Uploaded tab pulse animates both icons together**, not
   just the clicked one -- a QTabBar limitation (one shared iconSize
   for the whole bar), noted above.
@@ -246,80 +350,148 @@ widget-level testing note above):
 - Category management still has no dedicated rename/delete-a-whole-
   category UI -- only per-tag membership changes, via a tag's
   "+ New Category..." dropdown entry in Settings > Filters.
-- **Two sessions ago's four fixes are unverified on real hardware.**
-  All four were exercised at the widget level under an offscreen Qt
-  platform, which catches logic bugs but can't confirm the actual
-  visual result -- in particular, whether the darkened-icon
-  transparency fix looks right at real screen DPI/scaling, and
-  whether the fullscreen-monitor fix picks the correct monitor on an
-  actual multi-monitor KDE Plasma setup.
-- **Multi-select (this session) has no bulk actions yet.** Selecting
-  several cards highlights them, but the right-click context menu
-  still only acts on the single card that was right-clicked --
-  Delete/Copy/Add Filter/Favorite/Rename/Upload for the WHOLE
-  selection isn't wired up. Given multi-select's main practical
-  motivation is presumably doing one of those in bulk, this is
-  probably the natural next step rather than a separate ask.
-- **Multi-select is also unverified on real hardware**, same caveat
-  as above -- offscreen widget-level testing confirmed the selection
-  state machine and the border repaint's actual pixel colors, but not
-  how it feels/looks interactively (e.g. whether a real mouse drag
-  during a shift-click range, which wasn't tested, behaves sanely).
+- **Nothing from this session or two sessions ago is verified on real
+  hardware yet** -- all of it was exercised at the widget/logic level
+  under an offscreen Qt platform (see the top of this file for why
+  that's not the same as verification, and for two cases this session
+  where it actually mattered). In particular: whether the
+  darkened-icon transparency and fullscreen-monitor fixes (two
+  sessions ago) look right on a real multi-monitor KDE Plasma setup;
+  how multi-select's shift-click range-selection feels with a real
+  mouse (a drag across multiple cards wasn't tested at all, only
+  discrete clicks); whether `QFileSystemWatcher` on the DB file
+  actually fires promptly against the REAL daemon process's real
+  write pattern (only a simulated same-process external writer was
+  tested); and whether right-click-to-block's confirmed-working
+  behavior (item 5, this session) holds on whatever desktop
+  environment is actually running, since the difference between the
+  synthetic-click false negative and the real behavior came down to
+  exactly the kind of platform-level input plumbing this sandbox can't
+  fully replicate either way.
+- **The Filters submenu (per-video) and the Filters dropdown (search)
+  now have two separate, near-identical pieces of
+  category/checkbox-building code** (`VideoCard._build_filters_menu`
+  vs. `_VideoGridTab._rebuild_filters_menu`) -- a dedup opportunity,
+  not attempted this session since their checkbox semantics actually
+  differ (one toggles tag-on-video, the other toggles
+  include/exclude-from-search).
+
+## Next up -- explicitly asked for, not yet started
+Four items, all from the same message, none begun:
+
+1. **Watch speed setting.** A playback-speed multiplier field in the
+   Editor (e.g. `0.1x` = 10% speed) -- presumably an mpv property
+   (`speed`) set from a new spinbox/combo near the existing playback
+   controls. Unclear yet whether this should persist as a per-video
+   setting, a per-session Editor default, or a global Settings default
+   -- worth clarifying rather than guessing.
+
+2. **Editor prev/next-video arrows.** Left/right arrows flanking the
+   video in the Editor that cycle to the previous/next video according
+   to whatever the Library's current sort order is, with a hover
+   tooltip showing which video you'd land on. Needs the Editor to know
+   "what list am I in and at what position" -- presumably passed in
+   from wherever `edit_requested` currently gets emitted (LibraryPage/
+   MainWindow), rather than the Editor re-deriving the list itself.
+
+3. **Border customization suite** -- three asks, scoped to sidebar
+   borders and unedited-video borders specifically (not the new
+   selection border):
+   - Border brightness multiplier PER sidebar border/button (currently
+     one shared `active_border_brightness` + one shared
+     `inactive_border_brightness` for ALL sidebar buttons in
+     `AppearanceSettings` -- would become a per-button dict or five
+     named fields, mirroring the icon-size split below).
+   - Replace any border (sidebar or unedited-video) with a custom
+     image instead of the current gradient/flat-color rendering.
+   - Hue shift option for both border types.
+
+4. **Icon size settings split.** Replace the single (currently
+   mis-wired, see above) `library_icon_size` with five independent
+   settings: Library, Editor, Settings (all three currently share the
+   sidebar's one scale), Saved Videos, and Uploaded Videos (the two
+   Library tab icons, currently `LibraryPage._current_tab_icon_size`,
+   one shared value for both tabs).
 
 ## Architecture pointers
-- `afterglow/gui/video_card.py` -- `VideoCard` gained multi-select
-  this session: `clicked = Signal(int, object)` (video_id, modifiers)
-  emitted from a new `mousePressEvent`; `set_selected()` + `_selected`
-  flag; `paintEvent`'s first branch now draws a flat gray selection
-  border (via `unedited_selected_border_width`, renamed this session
-  from `unedited_highlight_width`) ahead of the unedited-highlight
-  branch, which it takes priority over. Also: `_copy_to_clipboard`
-  (Copy context menu action, earlier session); `set_font_scale` now
-  implements Resize Text to Fit via `QFontMetricsF`; icon size reads
-  from `AppearanceSettings`.
-- `afterglow/gui/library_page.py` -- `_VideoGridTab` gained
-  `_selected_ids`/`_selection_anchor_index` and
-  `_on_card_clicked`/`_clear_selection`/`_apply_selection_visuals`
-  this session; new `_SelectionClearingContainer` (tiny `QWidget`
-  subclass) is now `grid_container`, emitting `background_clicked`
-  when a left-click doesn't land on any card. Also (two sessions ago):
-  `LibraryPage._fix_tab_bar_height()`; `_PulsingTabBar` hover events.
-- `afterglow/config.py` -- `AppearanceSettings.unedited_highlight_width`
-  renamed to `unedited_selected_border_width` this session (now serves
-  both the unedited-highlight border AND the new selection border);
-  `load()`'s backward-compat shim for it sits alongside the
-  `startup_window_mode`/`AutoFilterRule.tag_name` ones (two/several
-  sessions ago).
-- `afterglow/gui/settings_page.py` -- "Unedited Highlight Width" label
-  renamed to "Unedited/Selected Border Width" this session, spinbox
-  attribute renamed to match (`unedited_selected_border_width_spin`).
-  "Clipping" + "General" + "Filters" tabs otherwise as before.
+- `afterglow/keyframes.py` -- NEW this session. `PIPELINE_KEYFRAMES`,
+  the five named pipeline checkpoints in order; deliberately its own
+  module so a future animation-trigger system can import the same list
+  rather than inventing its own copy (see item 7 above).
+- `afterglow/gui/advanced_sound_dialog.py` -- NEW this session.
+  `AdvancedSoundDialog`, all the per-keyframe sound/error-sound file
+  pickers, opened from Settings > Clip Capture.
+- `afterglow/clips.py` -- `trigger_clip()` restructured this session
+  around a single try/except tracking a `stage` variable (set to the
+  UPCOMING keyframe before attempting its work, not after -- see item
+  7's note on why that ordering specifically matters for error-sound
+  attribution); new `_play_keyframe_sound()`/`_play_error_sound()`/
+  `_resolve_keyframe_sound()`. Also (earlier session): snapshots
+  `autofilter.compute_active_auto_tags()` at pipeline start.
+- `afterglow/config.py` -- `AppSettings` gained `advanced_sounds`,
+  `error_sounds`, `default_error_sound_path` this session (all plain
+  dict/str fields, no nested dataclass, so no special `load()` shim
+  needed beyond the default empty-dict/empty-string). Also (two
+  sessions ago): `AppearanceSettings.unedited_highlight_width` renamed
+  to `unedited_selected_border_width` (now serves both the
+  unedited-highlight border AND the selection border), with `load()`'s
+  usual backward-compat shim alongside the
+  `startup_window_mode`/`AutoFilterRule.tag_name` ones.
+- `afterglow/gui/video_card.py` -- `_show_context_menu` rewritten this
+  session to build `target_ids` from the whole multi-selection (via
+  two new optional constructor callables, `get_selected_ids` and
+  `ensure_selected`) instead of always just `self.video_id`; Edit/
+  Rename hidden (not disabled) when 2+ selected. Old `AddTagDialog`
+  class removed entirely, replaced by `_build_filters_menu()` (a
+  categorized `QCheckBox`-per-tag submenu, checked = every target
+  video has that tag) plus `_create_new_filter()`. New
+  `_bulk_set_favorite()`/`_bulk_copy_to_clipboard()`/`_bulk_delete()`
+  replace the old single-video `_toggle_favorite()`/
+  `_copy_to_clipboard()`/`_confirm_delete()` (removed). `mousePressEvent`
+  now calls `event.accept()` on left-button clicks instead of falling
+  through to `super()` -- see item 1 above for why that specific line
+  was the whole selection bug. `set_selected()` + `_selected` flag;
+  `paintEvent`'s first branch draws the flat gray selection border
+  ahead of the unedited-highlight branch, which it takes priority
+  over. `set_font_scale` implements Resize Text to Fit via
+  `QFontMetricsF`.
+- `afterglow/gui/library_page.py` -- `_PulsingTabBar` gained
+  `freeze_size_hint()`/an overridden `sizeHint()` this session (see
+  item 2 above -- `setFixedHeight()` alone, from two sessions ago,
+  wasn't sufficient). `_VideoGridTab` gained
+  `_ensure_selected_for_context_menu()` this session, called from
+  `VideoCard` right before it builds its context menu. `LibraryPage.
+  __init__` gained a `QFileSystemWatcher` on the DB file +
+  `_refresh_debounce` (a singleShot `QTimer`) for live refresh.
+  `_selected_ids`/`_selection_anchor_index`/`_on_card_clicked`/
+  `_clear_selection`/`_apply_selection_visuals`/
+  `_SelectionClearingContainer` (multi-select) from earlier this same
+  session, described in the preface above.
 - `afterglow/gui/pulse_animation.py` -- generalized two sessions ago:
   shared `_animate_to(target_fraction, duration_ms)` helper backing
-  `press()`/`release(is_hovered)`/`hover_enter()`/`hover_leave()`, with
-  a tracked `_current_fraction` so animations started mid-flight ease
-  from the current position instead of snapping.
+  `press()`/`release(is_hovered)`/`hover_enter()`/`hover_leave()`.
 - `afterglow/gui/main_window.py` -- `_darken_pixmap()` rebuilt two
   sessions ago on `QImage.Format_ARGB32_Premultiplied` +
-  `CompositionMode_DestinationIn` re-clip (was a plain `QPixmap`);
-  `_ScalingIconButton` gained `enterEvent`/`leaveEvent` wired to the
-  pulse animator's hover methods.
+  `CompositionMode_DestinationIn` re-clip; `_ScalingIconButton` gained
+  `enterEvent`/`leaveEvent` wired to the pulse animator's hover
+  methods. **This is also where the icon-size split (Next up #4) and
+  the per-sidebar-border brightness/image/hue options (Next up #3)
+  will mostly land**, alongside `AppearanceSettings` and
+  `settings_page.py`.
 - `afterglow/gui/main.py` -- launch resolves
   `QGuiApplication.screenAt(QCursor.pos())` and moves the window there
   before honoring `startup_window_mode` (two sessions ago).
 - `autofilter.py` -- Auto Add Filter detection (process scanning +
   kdotool/hyprctl/swaymsg); `list_running_process_display_names()` for
   the Settings dropdown.
-- `afterglow/clips.py` -- `trigger_clip()` snapshots
-  `autofilter.compute_active_auto_tags()` at the start of the
-  pipeline and applies matching tags to the resulting video.
-- `afterglow/obs_client.py` -- `save_replay_buffer()` now wraps
+- `afterglow/obs_client.py` -- `save_replay_buffer()` wraps
   `_save_replay_buffer_locked()` in a cross-process `fcntl.flock` on
   `CONFIG_DIR/replay_buffer.lock`.
-- `afterglow/library.py` -- `rename_video()` now renames the actual
-  file (`_sanitize_filename_stem`, `_unique_path`); category CRUD;
-  `set_favorite`, `tag_icons`, `tag_category_ids`, etc. from earlier
-  sessions.
+- `afterglow/library.py` -- `rename_video()` renames the actual file
+  (`_sanitize_filename_stem`, `_unique_path`); category CRUD;
+  `set_favorite`, `tag_icons`, `tag_category_ids`, `get_video`,
+  `add_tag_to_video`/`remove_tag_from_video` (the last two now also
+  used by `VideoCard._build_filters_menu`'s bulk toggle).
 - `afterglow/gui/filters_settings_page.py` -- `_MultiFilterSelectButton`
   for Auto Add Filter's multi-select; `refresh_dynamic_lists()`.
 
@@ -327,17 +499,20 @@ widget-level testing note above):
 - Whether the README rewrite (anonymizing the whole changelog, not
   just new sections) should happen as its own dedicated pass.
 - Whether categories need their own rename/delete UI.
-- Whether "Library Page Icons Size" should mean something other than
-  the sidebar nav icon scale (see "What's not finished" above).
-- Which bulk actions multi-select should support first (Delete and
-  Copy seem like the obvious/highest-value pair; Add Filter and
-  Favorite/Unfavorite are plausible too but need a decision on how a
-  mixed-state toggle -- e.g. some selected videos already favorited,
-  some not -- should behave), and whether they belong on the existing
-  right-click context menu (checking "is this card part of a
-  multi-selection, and if so act on all of it" before falling back to
-  single-card behavior) or a separate toolbar/button that appears
-  only when 2+ cards are selected.
+- Watch speed (Next up #1): does it persist per-video, per-Editor-
+  session, or as a global Settings default?
+- Border customization (Next up #3): per-sidebar-border brightness as
+  a dict keyed by which button, or five named fields (mirroring
+  whichever approach the icon-size split ends up using, for
+  consistency between the two)? Also unclear whether "replace with an
+  image" and "hue shift" should be mutually exclusive per border (an
+  image doesn't really have a meaningful "hue shift" over a flat/
+  gradient color fill) or independent toggles that happen to interact
+  oddly if both are set.
+- The two now-parallel Filters-checkbox-menu implementations
+  (`VideoCard._build_filters_menu` vs. `_VideoGridTab.
+  _rebuild_filters_menu`) could probably share more code -- worth a
+  dedicated look rather than doing it opportunistically mid-feature.
 
 ## Workflow reminder
 Edits are committed via a `full-git-update` command, then a

@@ -1,6 +1,9 @@
 """
 One clickable card in the Library grid: thumbnail + title below it, with a
-right-click context menu (Edit / Upload / Delete / Add Filter).
+right-click context menu (Edit / Rename / Favorite / Upload / Filters /
+Copy / Delete). Multi-select aware: right-clicking a card that's part of
+the current multi-selection applies these to the whole selection, not
+just the one that was clicked.
 """
 from __future__ import annotations
 
@@ -11,8 +14,7 @@ from PySide6.QtCore import Qt, Signal, QSize
 from PySide6.QtGui import QPixmap, QPainter, QColor, QIcon
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QMenu, QMessageBox, QLineEdit,
-    QPushButton, QDialog, QHBoxLayout, QInputDialog, QComboBox,
-    QDialogButtonBox,
+    QPushButton, QHBoxLayout, QInputDialog, QCheckBox, QWidgetAction,
 )
 
 from .. import library, thumbnails, config as config_module
@@ -108,52 +110,6 @@ class _FilterIconLabel(QLabel):
         super().mousePressEvent(event)
 
 
-class AddTagDialog(QDialog):
-    """A dropdown of every existing tag, plus a '+' button that prompts
-    for a brand new tag name and adds/selects it in the dropdown --
-    replaces the earlier free-text-with-autocomplete version, which read
-    as more error-prone (a typo silently creates a new near-duplicate
-    tag rather than picking the existing one)."""
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("Add Tag")
-        self.chosen_tag: str | None = None
-
-        layout = QVBoxLayout(self)
-        row = QHBoxLayout()
-        self.tag_combo = QComboBox()
-        self.tag_combo.addItems(library.all_known_tags())
-        row.addWidget(self.tag_combo, stretch=1)
-
-        add_btn = QPushButton("+")
-        add_btn.setFixedWidth(30)
-        add_btn.setToolTip("Create a new tag")
-        add_btn.clicked.connect(self._create_new_tag)
-        row.addWidget(add_btn)
-        layout.addLayout(row)
-
-        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        buttons.accepted.connect(self._accept_selected)
-        buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
-
-    def _create_new_tag(self) -> None:
-        name, ok = QInputDialog.getText(self, "New Tag", "Tag name:")
-        name = name.strip()
-        if not ok or not name:
-            return
-        if self.tag_combo.findText(name, Qt.MatchFixedString) < 0:
-            self.tag_combo.addItem(name)
-        self.tag_combo.setCurrentText(name)
-
-    def _accept_selected(self) -> None:
-        text = self.tag_combo.currentText().strip()
-        if text:
-            self.chosen_tag = text
-            self.accept()
-
-
 class VideoCard(QWidget):
     edit_requested = Signal(int)      # video_id
     deleted = Signal(int)             # video_id
@@ -165,13 +121,24 @@ class VideoCard(QWidget):
     clicked = Signal(int, object)       # video_id, Qt.KeyboardModifiers -- parent handles selection
 
     def __init__(self, video: "library.Video", parent=None, highlight_enabled: bool = True,
-                 font_scale: float = 1.0):
+                 font_scale: float = 1.0, get_selected_ids=None, ensure_selected=None):
         super().__init__(parent)
         self.video_id = video.id
         self._video = video
         self._highlight_enabled = highlight_enabled
         self._highlight_pixmap = resource_qpixmap("unedited_highlight_gradient.png")
         self._selected = False
+        # Both optional and both supplied together by _VideoGridTab (see
+        # its refresh()) -- let the right-click context menu act on the
+        # WHOLE current multi-selection instead of just this one card.
+        # get_selected_ids: () -> set[int], the tab's current selection.
+        # ensure_selected: (int) -> None, called first on right-click so
+        # right-clicking a card that ISN'T part of the current selection
+        # replaces the selection with just that card first (standard
+        # file-manager convention), rather than leaving some unrelated
+        # other selection in place while acting on the newly-clicked one.
+        self._get_selected_ids = get_selected_ids
+        self._ensure_selected = ensure_selected
 
         settings = config_module.load()
         self._appearance = settings.appearance
@@ -399,38 +366,189 @@ class VideoCard(QWidget):
     def mousePressEvent(self, event) -> None:
         if event.button() == Qt.LeftButton:
             self.clicked.emit(self.video_id, event.modifiers())
+            # Explicitly accept (rather than falling through to
+            # QWidget's default, which ignores it) -- an ignored event
+            # bubbles up to the parent's own mousePressEvent, which
+            # would otherwise immediately clear the selection this
+            # just set via the grid container's own background-click
+            # handling (see _SelectionClearingContainer).
+            event.accept()
+            return
         super().mousePressEvent(event)
 
     def mouseDoubleClickEvent(self, event) -> None:
         self.edit_requested.emit(self.video_id)
 
     def _show_context_menu(self, pos) -> None:
+        if self._ensure_selected:
+            self._ensure_selected(self.video_id)
+        target_ids = set(self._get_selected_ids()) if self._get_selected_ids else set()
+        if self.video_id not in target_ids:
+            # No selection wiring, or the current selection somehow
+            # doesn't include the card that was actually right-clicked
+            # (shouldn't happen once _ensure_selected has run, but don't
+            # silently act on the wrong videos if it does) -- fall back
+            # to acting on just this one card.
+            target_ids = {self.video_id}
+        multi = len(target_ids) > 1
+        count_suffix = f" ({len(target_ids)})" if multi else ""
+
         menu = QMenu(self)
-        edit_action = menu.addAction("Edit")
-        rename_action = menu.addAction("Rename")
-        favorite_action = menu.addAction(
-            "Unfavorite" if self._video.favorite else "Favorite"
-        )
-        upload_action = menu.addAction("Upload")
-        add_filter_action = menu.addAction("Add Filter")
-        copy_action = menu.addAction("Copy")
-        delete_action = menu.addAction("Delete")
+        # Edit/Rename only make sense for exactly one video at a time --
+        # hidden rather than shown-but-disabled for a multi-selection.
+        edit_action = None
+        rename_action = None
+        if not multi:
+            edit_action = menu.addAction("Edit")
+            rename_action = menu.addAction("Rename")
+
+        target_videos = [library.get_video(vid) for vid in target_ids]
+        all_favorited = all(v.favorite for v in target_videos)
+        favorite_action = menu.addAction("Unfavorite" if all_favorited else "Favorite")
+        upload_action = menu.addAction(f"Upload{count_suffix}")
+
+        filters_menu = self._build_filters_menu(menu, target_ids, target_videos)
+        menu.addMenu(filters_menu)
+
+        copy_action = menu.addAction(f"Copy{count_suffix}")
+        delete_action = menu.addAction(f"Delete{count_suffix}")
 
         chosen = menu.exec(self.mapToGlobal(pos))
-        if chosen == edit_action:
+        if edit_action is not None and chosen == edit_action:
             self.edit_requested.emit(self.video_id)
-        elif chosen == rename_action:
+        elif rename_action is not None and chosen == rename_action:
             self._rename()
         elif chosen == favorite_action:
-            self._toggle_favorite()
+            self._bulk_set_favorite(target_ids, not all_favorited)
         elif chosen == upload_action:
-            self.upload_requested.emit(self.video_id)
-        elif chosen == add_filter_action:
-            self._add_filter()
+            for vid in target_ids:
+                self.upload_requested.emit(vid)
         elif chosen == copy_action:
-            self._copy_to_clipboard()
+            self._bulk_copy_to_clipboard(target_ids)
         elif chosen == delete_action:
-            self._confirm_delete()
+            self._bulk_delete(target_ids)
+
+    def _build_filters_menu(self, parent_menu: QMenu, target_ids: set[int],
+                             target_videos: list["library.Video"]) -> QMenu:
+        """Replaces the old single-tag "Add Filter" dialog with a
+        side-opening submenu (hover to open, like the category submenus
+        in the Library's own Filters dropdown) listing every known tag,
+        grouped into the same categories, each as a checkbox: checked
+        when EVERY video in target_ids already has that tag, toggling
+        adds/removes it across all of them at once. A "+" at the bottom
+        creates a brand new tag (globally -- mirrors the Library
+        dropdown's own "+ Add Filter", which also just creates the tag
+        without applying it to anything)."""
+        menu = QMenu("Filters", parent_menu)
+
+        def make_checkbox(tag: str, target_menu: QMenu) -> None:
+            checkbox = QCheckBox(tag, target_menu)
+            checkbox.setChecked(all(tag in v.tags for v in target_videos))
+
+            def on_toggled(checked: bool, tag=tag) -> None:
+                for vid in target_ids:
+                    if checked:
+                        library.add_tag_to_video(vid, tag)
+                    else:
+                        library.remove_tag_from_video(vid, tag)
+                self.tags_changed.emit()
+
+            checkbox.toggled.connect(on_toggled)
+            action = QWidgetAction(target_menu)
+            action.setDefaultWidget(checkbox)
+            target_menu.addAction(action)
+
+        all_tags = library.all_known_tags()
+        grouped, uncategorized = library.tags_grouped_by_category()
+
+        if not all_tags:
+            no_tags_action = menu.addAction("(no tags yet)")
+            no_tags_action.setEnabled(False)
+
+        for category_name, tag_names in grouped.items():
+            category_menu = QMenu(category_name, menu)
+            for tag in tag_names:
+                make_checkbox(tag, category_menu)
+            menu.addMenu(category_menu)
+
+        for tag in uncategorized:
+            make_checkbox(tag, menu)
+
+        menu.addSeparator()
+        add_filter_btn = QPushButton("+ Add Filter")
+        add_filter_btn.setFlat(True)
+        add_filter_btn.clicked.connect(self._create_new_filter)
+        add_filter_action = QWidgetAction(menu)
+        add_filter_action.setDefaultWidget(add_filter_btn)
+        menu.addAction(add_filter_action)
+
+        return menu
+
+    def _create_new_filter(self) -> None:
+        name, ok = QInputDialog.getText(self, "Add Filter", "Filter name:")
+        name = name.strip()
+        if ok and name:
+            library.create_tag(name)
+            # Doesn't apply it to anything or update the currently-open
+            # submenu in place (matches the Library Filters dropdown's
+            # own "+ Add Filter", which is the same one-shot behavior) --
+            # it'll show up next time a filters menu is opened, once
+            # tags_changed has propagated through to a refresh().
+            self.tags_changed.emit()
+
+    def _bulk_set_favorite(self, target_ids: set[int], favorite: bool) -> None:
+        for vid in target_ids:
+            library.set_favorite(vid, favorite)
+        self.tags_changed.emit()  # parent refresh -- title/star + filters-menu-relevant either way
+
+    def _bulk_copy_to_clipboard(self, target_ids: set[int]) -> None:
+        """Same file-clipboard mechanism as the single-card Copy (see
+        its docstring) but with one URL per selected video, so a paste
+        into a file manager or chat app attaches/drops all of them at
+        once."""
+        from PySide6.QtCore import QUrl, QMimeData
+        from PySide6.QtWidgets import QApplication
+
+        urls = []
+        missing = []
+        for vid in target_ids:
+            video = library.get_video(vid)
+            path = Path(video.path)
+            if path.exists():
+                urls.append(QUrl.fromLocalFile(str(path)))
+            else:
+                missing.append(str(path))
+        if missing:
+            QMessageBox.warning(
+                self, "Copy Failed",
+                "File(s) not found:\n" + "\n".join(missing),
+            )
+        if urls:
+            mime = QMimeData()
+            mime.setUrls(urls)
+            QApplication.clipboard().setMimeData(mime)
+
+    def _bulk_delete(self, target_ids: set[int]) -> None:
+        if len(target_ids) == 1:
+            video = library.get_video(next(iter(target_ids)))
+            message = f"Delete '{video.title}'? This removes the file from disk and can't be undone."
+        else:
+            message = (
+                f"Delete {len(target_ids)} videos? This removes the files from disk "
+                "and can't be undone."
+            )
+        reply = QMessageBox.question(
+            self, "Delete Video" if len(target_ids) == 1 else "Delete Videos",
+            message, QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            return
+        for vid in target_ids:
+            library.delete_video(vid)
+        # One emit regardless of how many were deleted -- the connected
+        # slot (_VideoGridTab.refresh, via a lambda that ignores its
+        # argument) does a single full refresh either way.
+        self.deleted.emit(self.video_id)
 
     def _copy_to_clipboard(self) -> None:
         """Copies the clip FILE to the system clipboard -- same as
@@ -463,25 +581,3 @@ class VideoCard(QWidget):
         self.title_label.setText(self._title_text(self._video))
         self.set_font_scale(self._current_font_scale)  # re-fit if Resize Text to Fit is on
         self.renamed.emit()
-
-    def _toggle_favorite(self) -> None:
-        self._video = library.set_favorite(self.video_id, not self._video.favorite)
-        self.title_label.setText(self._title_text(self._video))
-        self.set_font_scale(self._current_font_scale)  # the "★ " prefix changes the text width
-        self.tags_changed.emit()
-
-    def _add_filter(self) -> None:
-        dialog = AddTagDialog(self)
-        if dialog.exec() and dialog.chosen_tag:
-            library.add_tag_to_video(self.video_id, dialog.chosen_tag)
-            self.tags_changed.emit()
-
-    def _confirm_delete(self) -> None:
-        reply = QMessageBox.question(
-            self, "Delete Video",
-            f"Delete '{self._video.title}'? This removes the file from disk and can't be undone.",
-            QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
-        )
-        if reply == QMessageBox.Yes:
-            library.delete_video(self.video_id)
-            self.deleted.emit(self.video_id)

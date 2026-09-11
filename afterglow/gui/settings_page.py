@@ -168,6 +168,17 @@ class SettingsPage(QWidget):
         sound_row.addWidget(sound_browse)
         form.addRow("Default sound:", sound_row)
 
+        # Holds the dialog's result between "Advanced Sound..." closing
+        # and _save() actually writing it to self._settings -- mirrors
+        # every other field on this page, which all stay as pending
+        # widget state until Save is clicked.
+        self._pending_advanced_sounds = dict(self._settings.advanced_sounds)
+        self._pending_error_sounds = dict(self._settings.error_sounds)
+        self._pending_default_error_sound = self._settings.default_error_sound_path
+        advanced_sound_btn = QPushButton("Advanced Sound...")
+        advanced_sound_btn.clicked.connect(self._open_advanced_sound_dialog)
+        form.addRow("", advanced_sound_btn)
+
         return group
 
     # ------------------------------------------------------------ appearance group
@@ -272,6 +283,17 @@ class SettingsPage(QWidget):
         if path:
             self.default_sound_edit.setText(path)
 
+    def _open_advanced_sound_dialog(self) -> None:
+        from .advanced_sound_dialog import AdvancedSoundDialog
+        dialog = AdvancedSoundDialog(
+            self._pending_advanced_sounds, self._pending_error_sounds,
+            self._pending_default_error_sound, parent=self,
+        )
+        if dialog.exec():
+            self._pending_advanced_sounds = dialog.get_advanced_sounds()
+            self._pending_error_sounds = dialog.get_error_sounds()
+            self._pending_default_error_sound = dialog.get_default_error_sound()
+
     # ------------------------------------------------------------ clip options group
 
     def _build_clip_options_group(self) -> QGroupBox:
@@ -340,6 +362,9 @@ class SettingsPage(QWidget):
         )
         self._settings.clips_dir = self.clips_dir_edit.text().strip()
         self._settings.default_sound_path = self.default_sound_edit.text().strip()
+        self._settings.advanced_sounds = dict(self._pending_advanced_sounds)
+        self._settings.error_sounds = dict(self._pending_error_sounds)
+        self._settings.default_error_sound_path = self._pending_default_error_sound
 
         a = self._settings.appearance
         a.resize_text_to_fit = self.resize_text_check.isChecked()

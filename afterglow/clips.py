@@ -34,6 +34,7 @@ from pathlib import Path
 from . import db
 from . import config as config_module
 from . import autofilter
+from . import keyframes
 from .editor import TrimRequest, commit_trim, probe_duration, EditorError
 from .obs_client import OBSClient, OBSError
 from .library import add_video, add_tag_to_video, get_video, Video
@@ -202,113 +203,174 @@ def play_sound(sound_path: str | None) -> None:
     )
 
 
+def _resolve_keyframe_sound(keyframe: str, clip_cfg: "ClipConfig", settings) -> str | None:
+    """Which sound (if any) to play for a given pipeline keyframe.
+    REPLAY_BUFFER_COMPLETED alone keeps its pre-Advanced-Sound fallback
+    chain (per-clip-config override, then the old global default) so
+    existing configs sound exactly like they did before Advanced Sound
+    existed unless a person opts into the new per-keyframe setting for
+    it too. The other four keyframes are pure additions with nothing to
+    stay backward-compatible with."""
+    if keyframe == keyframes.REPLAY_BUFFER_COMPLETED:
+        return (
+            clip_cfg.sound_path
+            or settings.advanced_sounds.get(keyframe)
+            or settings.default_sound_path
+            or None
+        )
+    return settings.advanced_sounds.get(keyframe) or None
+
+
+def _play_keyframe_sound(keyframe: str, clip_cfg: "ClipConfig", settings) -> None:
+    try:
+        play_sound(_resolve_keyframe_sound(keyframe, clip_cfg, settings))
+    except Exception as e:
+        print(f"Warning: failed to play '{keyframe}' clip sound (pipeline continues): {e}")
+
+
+def _play_error_sound(keyframe: str, settings) -> None:
+    sound = settings.error_sounds.get(keyframe) or settings.default_error_sound_path or None
+    try:
+        play_sound(sound)
+    except Exception as e:
+        print(f"Warning: failed to play error sound for '{keyframe}': {e}")
+
+
 # ---------------------------------------------------------------- trigger pipeline
 
 def trigger_clip(clip_config_id: int) -> Video:
     """
     The full hotkey-press pipeline. Returns the newly-created library Video.
+
+    Wrapped end-to-end in a single try/except that tracks which named
+    keyframe (see keyframes.py) is currently in flight and plays that
+    keyframe's configured Error Noise -- falling back to the global
+    default -- before re-raising, rather than nesting a separate
+    try/except around each of the five stages individually.
     """
     clip_cfg = get_clip_config(clip_config_id)
     settings = config_module.load()
-
-    # Snapshot which Auto Add Filter rules currently match right away --
-    # what's open/focused at the moment the hotkey was actually pressed
-    # is what matters, not several seconds later once the OBS save/trim
-    # pipeline below has finished (the user may well have already
-    # alt-tabbed away by then).
-    auto_tag_names = autofilter.compute_active_auto_tags(settings)
-
-    with OBSClient(settings.obs) as obs_client:
-        raw_path = obs_client.save_replay_buffer()  # already waits for exists + size-stable
-
-    # Confirmation the raw capture is done -- play the feedback sound now,
-    # immediately, rather than after the slower trim/re-encode step below.
-    sound_to_play = clip_cfg.sound_path or settings.default_sound_path
+    stage = keyframes.HOTKEY_RECEIVED
     try:
-        play_sound(sound_to_play)
-    except Exception as e:
-        print(f"Warning: failed to play clip sound (clip capture still succeeded): {e}")
+        # First thing in the pipeline, before anything else has even
+        # been attempted -- the practical stand-in for "the hotkey was
+        # pressed", since the actual OS-level key event is caught by
+        # daemon.py's listener a layer up from here, immediately calling
+        # straight into this function with no other work in between.
+        # HOTKEY_RECEIVED and REPLAY_BUFFER_SENT both name the ACT of
+        # reaching that point (not a chunk of work that could fail on
+        # its own before then), so their sound plays immediately on
+        # arrival. The remaining three keyframes name something
+        # completing (a save, a trim, a move+DB-write) -- for those,
+        # `stage` is set BEFORE attempting the underlying work, but the
+        # success sound only plays AFTER it's confirmed done, so a
+        # failure during that work is correctly attributed to the
+        # keyframe it belongs to instead of whichever one came earlier.
+        _play_keyframe_sound(stage, clip_cfg, settings)
 
-    # Extra settle time in case OBS is still doing internal post-save work
-    # (e.g. auto-remux) even though the raw file itself looks stable.
-    time.sleep(POST_SAVE_SETTLE_SECONDS)
+        # Snapshot which Auto Add Filter rules currently match right away --
+        # what's open/focused at the moment the hotkey was actually pressed
+        # is what matters, not several seconds later once the OBS save/trim
+        # pipeline below has finished (the user may well have already
+        # alt-tabbed away by then).
+        auto_tag_names = autofilter.compute_active_auto_tags(settings)
 
-    raw_duration = probe_duration(raw_path)
-    trim_start = max(0.0, raw_duration - clip_cfg.length_seconds)
-    requested_duration = raw_duration - trim_start
+        stage = keyframes.REPLAY_BUFFER_SENT
+        _play_keyframe_sound(stage, clip_cfg, settings)
 
-    if trim_start <= SKIP_TRIM_TOLERANCE_SECONDS:
-        # The raw buffer is already at or under the requested clip length
-        # -- there's nothing meaningful to cut. Skip the re-encode
-        # entirely and just use the raw capture as-is, renamed into place
-        # below like any other result. Saves the encode time/quality cost
-        # for a trim that would have been a no-op anyway.
-        print(
-            f"Raw capture ({raw_duration:.2f}s) is already at or under the "
-            f"requested length ({clip_cfg.length_seconds}s) -- skipping "
-            f"trim, using it as-is."
-        )
-        actual_duration = raw_duration
-    else:
-        request = TrimRequest(
-            video_path=raw_path, start_sec=trim_start, end_sec=raw_duration,
-            # Trigger-time trims must always be frame-perfect (full re-encode),
-            # NOT fast/keyframe-seek mode -- confirmed by direct reproduction:
-            # OBS's replay buffer output can have a keyframe interval larger
-            # than the requested clip length (sometimes only a single keyframe
-            # near the very start of the saved segment, depending on encoder
-            # settings). Fast mode snaps the start time back to the nearest
-            # keyframe at-or-before the request -- if that's the file's only
-            # keyframe, at time 0, you get the ENTIRE raw buffer back with no
-            # trim applied at all, regardless of the requested clip length.
-            # frame_perfect remains an explicit opt-in only in the manual
-            # Editor, where a person is choosing a precise custom range rather
-            # than relying on "give me the last N seconds."
-            frame_perfect=True,
-            # "veryfast" rather than editor.py's "medium" default -- measured
-            # directly: on a realistic 1080p60 test clip, veryfast cut total
-            # trim time roughly in half versus medium, with file size much
-            # closer to medium's efficiency than "ultrafast" (which is faster
-            # still but bloats file size significantly). Speed matters more
-            # here than optimal compression -- this is the automatic "give me
-            # my clip right now" pipeline, not a considered export.
-            preset="veryfast",
-        )
-        commit_trim(request, has_prior_edit=False, existing_backup=None, skip_backup=True)
+        stage = keyframes.REPLAY_BUFFER_COMPLETED  # set before the call: a failure inside it belongs to this keyframe
+        with OBSClient(settings.obs) as obs_client:
+            raw_path = obs_client.save_replay_buffer()  # already waits for exists + size-stable
+        _play_keyframe_sound(stage, clip_cfg, settings)
 
-        # Verify the trim actually produced roughly the requested length,
-        # loudly, rather than trusting ffmpeg's exit code alone. This is what
-        # would have caught "clipped but didn't trim" as an immediate error
-        # instead of a silent wrong-length file reaching the library.
-        actual_duration = probe_duration(raw_path)
-        if abs(actual_duration - requested_duration) > DURATION_TOLERANCE_SECONDS:
-            raise ClipError(
-                f"Trim produced an unexpected duration: got {actual_duration:.2f}s, "
-                f"expected ~{requested_duration:.2f}s. The raw OBS file has been left "
-                f"in place at {raw_path} for inspection rather than being moved/deleted."
+        # Extra settle time in case OBS is still doing internal post-save work
+        # (e.g. auto-remux) even though the raw file itself looks stable.
+        time.sleep(POST_SAVE_SETTLE_SECONDS)
+
+        raw_duration = probe_duration(raw_path)
+        trim_start = max(0.0, raw_duration - clip_cfg.length_seconds)
+        requested_duration = raw_duration - trim_start
+
+        stage = keyframes.TRIM_FINISHED  # set before attempting it (or the skip-branch below) for the same reason
+        if trim_start <= SKIP_TRIM_TOLERANCE_SECONDS:
+            # The raw buffer is already at or under the requested clip length
+            # -- there's nothing meaningful to cut. Skip the re-encode
+            # entirely and just use the raw capture as-is, renamed into place
+            # below like any other result. Saves the encode time/quality cost
+            # for a trim that would have been a no-op anyway.
+            print(
+                f"Raw capture ({raw_duration:.2f}s) is already at or under the "
+                f"requested length ({clip_cfg.length_seconds}s) -- skipping "
+                f"trim, using it as-is."
             )
+            actual_duration = raw_duration
+        else:
+            request = TrimRequest(
+                video_path=raw_path, start_sec=trim_start, end_sec=raw_duration,
+                # Trigger-time trims must always be frame-perfect (full re-encode),
+                # NOT fast/keyframe-seek mode -- confirmed by direct reproduction:
+                # OBS's replay buffer output can have a keyframe interval larger
+                # than the requested clip length (sometimes only a single keyframe
+                # near the very start of the saved segment, depending on encoder
+                # settings). Fast mode snaps the start time back to the nearest
+                # keyframe at-or-before the request -- if that's the file's only
+                # keyframe, at time 0, you get the ENTIRE raw buffer back with no
+                # trim applied at all, regardless of the requested clip length.
+                # frame_perfect remains an explicit opt-in only in the manual
+                # Editor, where a person is choosing a precise custom range rather
+                # than relying on "give me the last N seconds."
+                frame_perfect=True,
+                # "veryfast" rather than editor.py's "medium" default -- measured
+                # directly: on a realistic 1080p60 test clip, veryfast cut total
+                # trim time roughly in half versus medium, with file size much
+                # closer to medium's efficiency than "ultrafast" (which is faster
+                # still but bloats file size significantly). Speed matters more
+                # here than optimal compression -- this is the automatic "give me
+                # my clip right now" pipeline, not a considered export.
+                preset="veryfast",
+            )
+            commit_trim(request, has_prior_edit=False, existing_backup=None, skip_backup=True)
 
-    clips_dir = settings.clips_path()
-    clips_dir.mkdir(parents=True, exist_ok=True)
-    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    # Filename is just the timestamp now (not prefixed with the clip
-    # config's name) -- the config's name still shows up in the title
-    # below, this only changes what the file on disk is called.
-    final_name = f"{timestamp}{raw_path.suffix}"
-    final_path = clips_dir / final_name
-    shutil.move(str(raw_path), str(final_path))
+            # Verify the trim actually produced roughly the requested length,
+            # loudly, rather than trusting ffmpeg's exit code alone. This is what
+            # would have caught "clipped but didn't trim" as an immediate error
+            # instead of a silent wrong-length file reaching the library.
+            actual_duration = probe_duration(raw_path)
+            if abs(actual_duration - requested_duration) > DURATION_TOLERANCE_SECONDS:
+                raise ClipError(
+                    f"Trim produced an unexpected duration: got {actual_duration:.2f}s, "
+                    f"expected ~{requested_duration:.2f}s. The raw OBS file has been left "
+                    f"in place at {raw_path} for inspection rather than being moved/deleted."
+                )
+        _play_keyframe_sound(stage, clip_cfg, settings)
 
-    video = add_video(
-        final_path,
-        title=f"{clip_cfg.name} - {timestamp}",
-        description="",
-        clip_config_id=clip_cfg.id,
-    )
-    if auto_tag_names:
-        for tag_name in auto_tag_names:
-            add_tag_to_video(video.id, tag_name)
-        video = get_video(video.id)
-    return video
+        stage = keyframes.CLEANED_UP_MOVED  # set before attempting it, same reason as above
+        clips_dir = settings.clips_path()
+        clips_dir.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        # Filename is just the timestamp now (not prefixed with the clip
+        # config's name) -- the config's name still shows up in the title
+        # below, this only changes what the file on disk is called.
+        final_name = f"{timestamp}{raw_path.suffix}"
+        final_path = clips_dir / final_name
+        shutil.move(str(raw_path), str(final_path))
+
+        video = add_video(
+            final_path,
+            title=f"{clip_cfg.name} - {timestamp}",
+            description="",
+            clip_config_id=clip_cfg.id,
+        )
+        if auto_tag_names:
+            for tag_name in auto_tag_names:
+                add_tag_to_video(video.id, tag_name)
+            video = get_video(video.id)
+        _play_keyframe_sound(stage, clip_cfg, settings)
+
+        return video
+    except Exception:
+        _play_error_sound(stage, settings)
+        raise
 
 
 if __name__ == "__main__":

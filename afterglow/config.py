@@ -131,7 +131,20 @@ class AppearanceSettings:
 @dataclass
 class AppSettings:
     clips_dir: str = str(DEFAULT_CLIPS_DIR)
-    default_sound_path: str = ""
+    default_sound_path: str = ""  # legacy -- specifically the "replay buffer completed" keyframe's sound (see keyframes.py)
+    # "Advanced Sound": a distinct sound for each pipeline checkpoint in
+    # keyframes.PIPELINE_KEYFRAMES, keyed by its keyframe id. All optional
+    # -- an unset keyframe just plays nothing. default_sound_path above
+    # keeps working unchanged as the REPLAY_BUFFER_COMPLETED keyframe's
+    # fallback specifically (for configs from before this existed), not
+    # as a fallback for the other four, which are purely new additions
+    # with no prior behavior to preserve.
+    advanced_sounds: dict[str, str] = field(default_factory=dict)
+    # "Error Noise": played instead of (never in addition to) a
+    # keyframe's normal sound if that pipeline stage raises. Falls back
+    # to default_error_sound_path when a keyframe has no specific one.
+    error_sounds: dict[str, str] = field(default_factory=dict)
+    default_error_sound_path: str = ""
     obs: OBSSettings = field(default_factory=OBSSettings)
     youtube: YouTubeSettings = field(default_factory=YouTubeSettings)
     filter_display: FilterDisplaySettings = field(default_factory=FilterDisplaySettings)
