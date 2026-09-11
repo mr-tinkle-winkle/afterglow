@@ -9,22 +9,20 @@ machines. Recent sessions have focused on Library filtering/display
 features and app-wide appearance tuning rather than the Editor itself.
 
 All files compile and import cleanly as of this handoff. This
-session's four fixes were exercised under an offscreen Qt platform
-against real widget instances (not just compiled/imported) -- a
-`_ScalingIconButton` and a full `LibraryPage` (backed by a real
-scratch SQLite DB and config dir) were actually constructed and driven
-through hover/press/release events and icon-size changes, and
-`_darken_pixmap()` was run against a hand-built transparent-icon
-QImage and checked pixel-by-pixel. One correction came out of that
-testing that isn't reflected in the "next up" writeup below (now
-folded into "This session" instead): fixing only the initial
-transparent-fill format wasn't sufficient on its own -- Qt's alpha
-compositing math makes a full-canvas `CompositionMode_Multiply` fill
-opaque everywhere regardless of pixmap-vs-image format (`alpha_out =
-alpha_src + alpha_dst*(1-alpha_src)`, which is 1 wherever the opaque
-gray fill lands), so a `CompositionMode_DestinationIn` re-clip against
-the source icon's own alpha was also needed to keep the background
-actually transparent. Earlier sessions' GUI/DB/config-layer exercises
+session's multi-select feature was exercised under an offscreen Qt
+platform against a real `LibraryPage` (real scratch SQLite DB, real
+ffmpeg-generated test clips) -- plain/ctrl/shift click sequences were
+driven directly through `_on_card_clicked` and checked against both
+the selection-state dict and each card's actual `_selected` flag, and
+the border repaint itself was verified pixel-by-pixel via
+`card.grab()` (selected -> flat gray; deselected on an unedited video
+-> the gradient highlight again). Two sessions ago's four fixes were
+exercised the same way (see git history / that entry below for
+detail) against real widget instances -- a `_ScalingIconButton` and a
+full `LibraryPage` were actually constructed and driven through
+hover/press/release events and icon-size changes, and `_darken_pixmap()`
+was run against a hand-built transparent-icon QImage and checked
+pixel-by-pixel. Earlier sessions' GUI/DB/config-layer exercises
 (categories, icons, favoriting, click-to-filter, info display toggles,
 settings save round-trips, rename-renames-the-file, replay-buffer lock
 behavior, appearance settings round-tripping) since there's no real
@@ -36,11 +34,55 @@ sandbox's pre-existing lack of a real GL context rather than a logic
 bug, but worth knowing about if it recurs.
 
 ## Currently being worked on
-Five consecutive batches of Library/Settings/appearance features/bug
+Six consecutive batches of Library/Settings/appearance features/bug
 fixes, given together each time. Newest first.
 
 ### This session
-All four items carried over from last handoff's "next up" list,
+**Multi-select for video cards**, standard file-manager click
+conventions:
+- Plain click selects exactly that card, replacing any existing
+  selection, and sets the "anchor" (see below).
+- Ctrl+click toggles just that one card in/out of the selection
+  (leaving the rest alone) and ALSO moves the anchor to it -- matches
+  the common convention that the most recently ctrl-clicked card
+  becomes the new range-start for a subsequent shift-click, whether
+  that click added or removed it.
+- Shift+click selects the contiguous range from the anchor to the
+  clicked card, replacing the current selection. The anchor itself is
+  NOT moved by a shift-click, so repeated shift-clicks keep
+  re-ranging from the same fixed starting point (also standard
+  behavior -- lets you shrink a range back down after overshooting).
+- Left-clicking empty grid space (gaps between cards, or below the
+  last row) clears the selection entirely -- `_SelectionClearingContainer`,
+  a tiny `QWidget` subclass swapped in as `grid_container`, whose
+  `mousePressEvent` only fires when the click didn't land on a card
+  (child widgets consume the event first).
+- Selection is tracked per-tab (`_VideoGridTab._selected_ids` +
+  `_selection_anchor_index`) and reset whenever `refresh()` actually
+  requeries/rebuilds the cards (search, filter, sort, tag/favorite
+  change, delete) -- NOT on a plain window-resize relayout, since
+  that reuses the same card objects.
+- Visual: a selected card's border always wins over whatever it would
+  otherwise show (the unedited-clip gradient highlight, or nothing on
+  an edited one) -- a flat neutral gray (`#999999`) fill inset by the
+  same width as the unedited highlight's border, drawn in a new
+  first-priority branch of `VideoCard.paintEvent`. This piggybacked on
+  renaming `AppearanceSettings.unedited_highlight_width` to
+  `unedited_selected_border_width` (asked for directly -- the setting
+  is now genuinely dual-purpose), with `config.load()`'s usual
+  backward-compat shim for the old field name and the Settings >
+  General label updated to "Unedited/Selected Border Width". The
+  brightness setting stayed put (`unedited_highlight_brightness`) --
+  it only ever applied to the gradient highlight's look, which the
+  selection border doesn't use.
+- No bulk actions (delete/copy/tag multiple at once) are wired up
+  yet -- right-click's context menu still only acts on whichever
+  single card was right-clicked, regardless of what else is selected.
+  Flagged in "What's not working" below since multi-select's main
+  practical use is presumably bulk operations.
+
+### Two sessions ago
+All four items carried over from that session's "next up" list,
 implemented and verified (not just compiled -- see the offscreen
 widget-level testing note above):
 
@@ -100,7 +142,7 @@ widget-level testing note above):
    save-then-load round trip of the new field, all against the actual
    `config` module (not reimplemented logic).
 
-### Three sessions ago
+### Five sessions ago
 - Bug fixes:
   - The Editor's "Select a video." prompt (shown when redirected there
     with nothing loaded) now clears when Library is clicked directly,
@@ -160,7 +202,7 @@ widget-level testing note above):
   icon placement and general layout carried through unchanged; this
   session's work sits alongside it rather than touching it.
 
-### Four sessions ago
+### Six sessions ago
 - Filter categories as side-opening submenus, 3x larger/centered/
   auto-shrinking filter icons, the "Below" icon location moved to
   after the title, hover-tooltip + click-to-filter/block on card
@@ -169,7 +211,7 @@ widget-level testing note above):
   size/date toggles), and the running-process dropdown for Auto Add
   Filter's app-match field.
 
-### Five sessions ago
+### Seven sessions ago
 - Favoriting, block/exclude filters, "+ Add Filter" embedded in both
   dropdowns, the Library's Add Filter dialog redesigned as
   dropdown+"+", Editor clips pausing (not unloading) on tab switch, a
@@ -204,38 +246,67 @@ widget-level testing note above):
 - Category management still has no dedicated rename/delete-a-whole-
   category UI -- only per-tag membership changes, via a tag's
   "+ New Category..." dropdown entry in Settings > Filters.
-- **This session's four fixes are unverified on real hardware.** All
-  four were exercised at the widget level under an offscreen Qt
-  platform (see the top of this file), which catches logic bugs but
-  can't confirm the actual visual result -- in particular, whether the
-  darkened-icon transparency fix looks right at real screen DPI/
-  scaling, and whether the fullscreen-monitor fix picks the correct
-  monitor on an actual multi-monitor KDE Plasma setup.
+- **Two sessions ago's four fixes are unverified on real hardware.**
+  All four were exercised at the widget level under an offscreen Qt
+  platform, which catches logic bugs but can't confirm the actual
+  visual result -- in particular, whether the darkened-icon
+  transparency fix looks right at real screen DPI/scaling, and
+  whether the fullscreen-monitor fix picks the correct monitor on an
+  actual multi-monitor KDE Plasma setup.
+- **Multi-select (this session) has no bulk actions yet.** Selecting
+  several cards highlights them, but the right-click context menu
+  still only acts on the single card that was right-clicked --
+  Delete/Copy/Add Filter/Favorite/Rename/Upload for the WHOLE
+  selection isn't wired up. Given multi-select's main practical
+  motivation is presumably doing one of those in bulk, this is
+  probably the natural next step rather than a separate ask.
+- **Multi-select is also unverified on real hardware**, same caveat
+  as above -- offscreen widget-level testing confirmed the selection
+  state machine and the border repaint's actual pixel colors, but not
+  how it feels/looks interactively (e.g. whether a real mouse drag
+  during a shift-click range, which wasn't tested, behaves sanely).
 
 ## Architecture pointers
-- `afterglow/gui/pulse_animation.py` -- generalized this session:
+- `afterglow/gui/video_card.py` -- `VideoCard` gained multi-select
+  this session: `clicked = Signal(int, object)` (video_id, modifiers)
+  emitted from a new `mousePressEvent`; `set_selected()` + `_selected`
+  flag; `paintEvent`'s first branch now draws a flat gray selection
+  border (via `unedited_selected_border_width`, renamed this session
+  from `unedited_highlight_width`) ahead of the unedited-highlight
+  branch, which it takes priority over. Also: `_copy_to_clipboard`
+  (Copy context menu action, earlier session); `set_font_scale` now
+  implements Resize Text to Fit via `QFontMetricsF`; icon size reads
+  from `AppearanceSettings`.
+- `afterglow/gui/library_page.py` -- `_VideoGridTab` gained
+  `_selected_ids`/`_selection_anchor_index` and
+  `_on_card_clicked`/`_clear_selection`/`_apply_selection_visuals`
+  this session; new `_SelectionClearingContainer` (tiny `QWidget`
+  subclass) is now `grid_container`, emitting `background_clicked`
+  when a left-click doesn't land on any card. Also (two sessions ago):
+  `LibraryPage._fix_tab_bar_height()`; `_PulsingTabBar` hover events.
+- `afterglow/config.py` -- `AppearanceSettings.unedited_highlight_width`
+  renamed to `unedited_selected_border_width` this session (now serves
+  both the unedited-highlight border AND the new selection border);
+  `load()`'s backward-compat shim for it sits alongside the
+  `startup_window_mode`/`AutoFilterRule.tag_name` ones (two/several
+  sessions ago).
+- `afterglow/gui/settings_page.py` -- "Unedited Highlight Width" label
+  renamed to "Unedited/Selected Border Width" this session, spinbox
+  attribute renamed to match (`unedited_selected_border_width_spin`).
+  "Clipping" + "General" + "Filters" tabs otherwise as before.
+- `afterglow/gui/pulse_animation.py` -- generalized two sessions ago:
   shared `_animate_to(target_fraction, duration_ms)` helper backing
   `press()`/`release(is_hovered)`/`hover_enter()`/`hover_leave()`, with
   a tracked `_current_fraction` so animations started mid-flight ease
   from the current position instead of snapping.
-- `afterglow/gui/main_window.py` -- `_darken_pixmap()` rebuilt this
-  session on `QImage.Format_ARGB32_Premultiplied` +
-  `CompositionMode_DestinationIn` re-clip (was a plain `QPixmap`, see
-  "This session" above for why that alone wasn't enough);
+- `afterglow/gui/main_window.py` -- `_darken_pixmap()` rebuilt two
+  sessions ago on `QImage.Format_ARGB32_Premultiplied` +
+  `CompositionMode_DestinationIn` re-clip (was a plain `QPixmap`);
   `_ScalingIconButton` gained `enterEvent`/`leaveEvent` wired to the
-  pulse animator's new hover methods.
-- `afterglow/gui/library_page.py` -- `LibraryPage._fix_tab_bar_height()`
-  (new this session, called from `__init__` and `apply_scale()`);
-  `_PulsingTabBar` gained `enterEvent`/`leaveEvent` and its `release`
-  callback now passes `underMouse()` through.
-- `afterglow/config.py` -- `AppearanceSettings.startup_window_mode:
-  str` (new this session, replaces top-level
-  `AppSettings.default_to_fullscreen: bool`); `load()`'s backward-
-  compat shim for it sits alongside the existing `AutoFilterRule.
-  tag_name` one.
-- `afterglow/gui/main.py` -- launch now resolves
+  pulse animator's hover methods.
+- `afterglow/gui/main.py` -- launch resolves
   `QGuiApplication.screenAt(QCursor.pos())` and moves the window there
-  before honoring `startup_window_mode` (new this session).
+  before honoring `startup_window_mode` (two sessions ago).
 - `autofilter.py` -- Auto Add Filter detection (process scanning +
   kdotool/hyprctl/swaymsg); `list_running_process_display_names()` for
   the Settings dropdown.
@@ -249,17 +320,6 @@ widget-level testing note above):
   file (`_sanitize_filename_stem`, `_unique_path`); category CRUD;
   `set_favorite`, `tag_icons`, `tag_category_ids`, etc. from earlier
   sessions.
-- `afterglow/gui/video_card.py` -- `_copy_to_clipboard` (Copy context
-  menu action); `set_font_scale` now implements Resize Text to Fit via
-  `QFontMetricsF`; icon size and the unedited-highlight width/
-  brightness now read from `AppearanceSettings` instead of hardcoded
-  constants.
-- `afterglow/gui/settings_page.py` -- "Clipping" + "General" +
-  "Filters" tabs; the fullscreen checkbox moved out of Clipping this
-  session and a `startup_window_mode_combo` added to General instead;
-  `refresh_dynamic_lists()` passthrough to `FiltersSettingsPage`,
-  called by MainWindow whenever Settings is navigated to (since it's
-  built once at startup, not per-visit).
 - `afterglow/gui/filters_settings_page.py` -- `_MultiFilterSelectButton`
   for Auto Add Filter's multi-select; `refresh_dynamic_lists()`.
 
@@ -269,6 +329,15 @@ widget-level testing note above):
 - Whether categories need their own rename/delete UI.
 - Whether "Library Page Icons Size" should mean something other than
   the sidebar nav icon scale (see "What's not finished" above).
+- Which bulk actions multi-select should support first (Delete and
+  Copy seem like the obvious/highest-value pair; Add Filter and
+  Favorite/Unfavorite are plausible too but need a decision on how a
+  mixed-state toggle -- e.g. some selected videos already favorited,
+  some not -- should behave), and whether they belong on the existing
+  right-click context menu (checking "is this card part of a
+  multi-selection, and if so act on all of it" before falling back to
+  single-card behavior) or a separate toolbar/button that appears
+  only when 2+ cards are selected.
 
 ## Workflow reminder
 Edits are committed via a `full-git-update` command, then a

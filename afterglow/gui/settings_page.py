@@ -215,10 +215,10 @@ class SettingsPage(QWidget):
         self.settings_border_combo.setCurrentIndex(index if index >= 0 else 1)
         form.addRow("Border around Settings?", self.settings_border_combo)
 
-        self.unedited_highlight_width_spin = QSpinBox()
-        self.unedited_highlight_width_spin.setRange(0, 50)
-        self.unedited_highlight_width_spin.setValue(a.unedited_highlight_width)
-        form.addRow("Unedited Highlight Width:", self.unedited_highlight_width_spin)
+        self.unedited_selected_border_width_spin = QSpinBox()
+        self.unedited_selected_border_width_spin.setRange(0, 50)
+        self.unedited_selected_border_width_spin.setValue(a.unedited_selected_border_width)
+        form.addRow("Unedited/Selected Border Width:", self.unedited_selected_border_width_spin)
 
         self.unedited_highlight_brightness_spin = QSpinBox()
         self.unedited_highlight_brightness_spin.setRange(0, 100)
@@ -348,7 +348,7 @@ class SettingsPage(QWidget):
         a.active_border_width = self.active_border_width_spin.value()
         a.active_border_brightness = self.active_border_brightness_spin.value()
         a.settings_border_mode = self.settings_border_combo.currentData()
-        a.unedited_highlight_width = self.unedited_highlight_width_spin.value()
+        a.unedited_selected_border_width = self.unedited_selected_border_width_spin.value()
         a.unedited_highlight_brightness = self.unedited_highlight_brightness_spin.value()
         a.filter_icon_size = self.filter_icon_size_spin.value()
         a.library_icon_size = self.library_icon_size_spin.value()

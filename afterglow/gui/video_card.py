@@ -162,6 +162,7 @@ class VideoCard(QWidget):
     renamed = Signal()                # title changed -- parent should refresh (search may no longer match)
     filter_left_clicked = Signal(str)   # tag_name, from clicking an icon on the card itself
     filter_right_clicked = Signal(str)  # tag_name, ditto (block)
+    clicked = Signal(int, object)       # video_id, Qt.KeyboardModifiers -- parent handles selection
 
     def __init__(self, video: "library.Video", parent=None, highlight_enabled: bool = True,
                  font_scale: float = 1.0):
@@ -170,6 +171,7 @@ class VideoCard(QWidget):
         self._video = video
         self._highlight_enabled = highlight_enabled
         self._highlight_pixmap = resource_qpixmap("unedited_highlight_gradient.png")
+        self._selected = False
 
         settings = config_module.load()
         self._appearance = settings.appearance
@@ -330,6 +332,16 @@ class VideoCard(QWidget):
         self._highlight_enabled = enabled
         self.update()
 
+    def set_selected(self, selected: bool) -> None:
+        """Called by the grid's selection handling (_VideoGridTab) --
+        a selected card's border always wins over the unedited-highlight
+        one (see paintEvent), regardless of the video's edited state or
+        the "Highlight Unedited" toggle, since selection is a separate,
+        higher-priority concept from either."""
+        if selected != self._selected:
+            self._selected = selected
+            self.update()
+
     def _should_show_highlight(self) -> bool:
         # video.has_edit already IS a per-video "has this been trimmed
         # yet" flag, tracked in the DB and kept correct automatically by
@@ -341,7 +353,18 @@ class VideoCard(QWidget):
         return self._highlight_enabled and not self._video.has_edit
 
     def paintEvent(self, event) -> None:
-        if self._should_show_highlight():
+        if self._selected:
+            painter = QPainter(self)
+            # Plain flat gray fill, no gradient/multiply-darken -- a
+            # selection border is a UI-chrome indicator, not a
+            # brightness-tunable highlight like the unedited one, so it
+            # doesn't read from unedited_highlight_brightness at all.
+            painter.fillRect(self.rect(), QColor("#999999"))
+            border_width = self._appearance.unedited_selected_border_width
+            inner_rect = self.rect().adjusted(border_width, border_width, -border_width, -border_width)
+            painter.fillRect(inner_rect, self.palette().window())
+            painter.end()
+        elif self._should_show_highlight():
             painter = QPainter(self)
             painter.setRenderHint(QPainter.SmoothPixmapTransform)
             # Full-widget gradient first, then an inset fill in the
@@ -358,7 +381,7 @@ class VideoCard(QWidget):
                 gray = round(255 * (1 - darken_factor))
                 painter.setCompositionMode(QPainter.CompositionMode_Multiply)
                 painter.fillRect(self.rect(), QColor(gray, gray, gray))
-            border_width = self._appearance.unedited_highlight_width
+            border_width = self._appearance.unedited_selected_border_width
             inner_rect = self.rect().adjusted(border_width, border_width, -border_width, -border_width)
             painter.fillRect(inner_rect, self.palette().window())
             painter.end()
@@ -372,6 +395,11 @@ class VideoCard(QWidget):
         if pixmap.isNull():
             return _placeholder_pixmap()
         return pixmap.scaled(THUMB_SIZE, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
+
+    def mousePressEvent(self, event) -> None:
+        if event.button() == Qt.LeftButton:
+            self.clicked.emit(self.video_id, event.modifiers())
+        super().mousePressEvent(event)
 
     def mouseDoubleClickEvent(self, event) -> None:
         self.edit_requested.emit(self.video_id)

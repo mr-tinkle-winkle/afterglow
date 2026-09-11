@@ -107,7 +107,12 @@ class AppearanceSettings:
     # already have, and if so, whether only while it's the active page
     # or all the time.
     settings_border_mode: str = "only_settings"
-    unedited_highlight_width: int = 9
+    # Doubles as the selection border's thickness (a selected card's
+    # border replaces whatever it would otherwise show -- unedited
+    # gradient or nothing -- with a plain gray border at this same
+    # width), hence the name; was `unedited_highlight_width` before
+    # selection existed (see load()'s backward-compat shim).
+    unedited_selected_border_width: int = 9
     unedited_highlight_brightness: int = 100
     filter_icon_size: int = 54
     # Sidebar nav icon scale, as a 0-200 percent of the button's own
@@ -175,6 +180,9 @@ def load() -> AppSettings:
         # (the default was already False, matching "normal"), so a
         # missing or false value needs no conversion.
         appearance_raw["startup_window_mode"] = "fullscreen"
+    if "unedited_selected_border_width" not in appearance_raw and "unedited_highlight_width" in appearance_raw:
+        # Pre-selection config format -- same field, old name.
+        appearance_raw["unedited_selected_border_width"] = appearance_raw.pop("unedited_highlight_width")
     appearance = AppearanceSettings(**appearance_raw)
     top_level = {
         k: v for k, v in raw.items()

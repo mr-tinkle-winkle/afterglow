@@ -86,6 +86,21 @@ class FilterCheckBox(QCheckBox):
         self.state_changed.emit(self._tag_name, self._state)
 
 
+class _SelectionClearingContainer(QWidget):
+    """The grid's own container widget (holding the QGridLayout of
+    cards) -- a left-click that lands on it directly, rather than on a
+    card, means empty space was clicked (gaps between rows/columns,
+    or below the last row), which conventionally clears the current
+    multi-selection."""
+
+    background_clicked = Signal()
+
+    def mousePressEvent(self, event) -> None:
+        if event.button() == Qt.LeftButton:
+            self.background_clicked.emit()
+        super().mousePressEvent(event)
+
+
 class _VideoGridTab(QWidget):
     edit_requested = Signal(int)
 
@@ -106,6 +121,17 @@ class _VideoGridTab(QWidget):
         # does).
         self._cards: list[VideoCard] = []
         self._current_columns = 1
+        # Multi-select state: which video ids are selected, and the
+        # "anchor" index (position in self._cards) that shift-click
+        # range-selects from -- standard file-manager convention: plain
+        # click replaces the selection and moves the anchor here;
+        # ctrl-click toggles just this one and also moves the anchor;
+        # shift-click selects the contiguous range from the anchor to
+        # here, replacing the selection, without moving the anchor
+        # (so repeated shift-clicks keep extending/shrinking from the
+        # same starting point).
+        self._selected_ids: set[int] = set()
+        self._selection_anchor_index: int | None = None
 
         outer = QVBoxLayout(self)
 
@@ -143,7 +169,8 @@ class _VideoGridTab(QWidget):
         # ---- grid ----
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
-        self.grid_container = QWidget()
+        self.grid_container = _SelectionClearingContainer()
+        self.grid_container.background_clicked.connect(self._clear_selection)
         self.grid_layout = QGridLayout(self.grid_container)
         # Tightened from the 6px default -- this is on top of the
         # row-stretch fix in _relayout() below, which addresses the much
@@ -351,6 +378,12 @@ class _VideoGridTab(QWidget):
             if widget:
                 widget.deleteLater()
         self._cards = []
+        # The video list is about to be requeried (new order, possibly
+        # missing/added ids from filters or a search) -- last session's
+        # selection has no reliable meaning against it, so start clean
+        # rather than risk selected_ids referencing ids no longer shown.
+        self._selected_ids = set()
+        self._selection_anchor_index = None
 
         videos = library.list_videos(
             tag_filter=list(self._active_tags) or None,
@@ -374,9 +407,44 @@ class _VideoGridTab(QWidget):
             card.upload_requested.connect(self._handle_upload_request)
             card.filter_left_clicked.connect(self._on_icon_left_clicked)
             card.filter_right_clicked.connect(self._on_icon_right_clicked)
+            card.clicked.connect(self._on_card_clicked)
             self._cards.append(card)
 
         self._relayout(self._columns_for_width(self.scroll.viewport().width()))
+
+    # ------------------------------------------------------------ selection
+
+    def _on_card_clicked(self, video_id: int, modifiers) -> None:
+        try:
+            index = next(i for i, c in enumerate(self._cards) if c.video_id == video_id)
+        except StopIteration:
+            return  # card was clicked but is no longer in _cards (shouldn't happen)
+
+        if modifiers & Qt.ShiftModifier and self._selection_anchor_index is not None:
+            lo, hi = sorted((self._selection_anchor_index, index))
+            self._selected_ids = {self._cards[i].video_id for i in range(lo, hi + 1)}
+            # Anchor deliberately NOT moved -- lets a further shift-click
+            # extend/shrink the range from the same starting point.
+        elif modifiers & Qt.ControlModifier:
+            if video_id in self._selected_ids:
+                self._selected_ids.discard(video_id)
+            else:
+                self._selected_ids.add(video_id)
+            self._selection_anchor_index = index
+        else:
+            self._selected_ids = {video_id}
+            self._selection_anchor_index = index
+        self._apply_selection_visuals()
+
+    def _clear_selection(self) -> None:
+        if self._selected_ids:
+            self._selected_ids = set()
+            self._selection_anchor_index = None
+            self._apply_selection_visuals()
+
+    def _apply_selection_visuals(self) -> None:
+        for card in self._cards:
+            card.set_selected(card.video_id in self._selected_ids)
 
     def _columns_for_width(self, width: int) -> int:
         return max(1, width // _APPROX_CARD_WIDTH)
