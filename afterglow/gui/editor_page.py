@@ -26,7 +26,7 @@ from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QHBoxLayout, QPushButton,
     QCheckBox, QMessageBox, QLineEdit, QToolButton, QMenu, QWidgetAction,
-    QDialog, QDialogButtonBox,
+    QDialog, QDialogButtonBox, QDoubleSpinBox,
 )
 # QPushButton already imported above -- used for the toolbar Save/Undo
 # buttons and now also for the "+ Add Filter" item embedded in the
@@ -134,6 +134,18 @@ class EditorPage(QWidget):
         self._preview_start: float = 0.0
         self._preview_end: float = 0.0
 
+        # Prev/Next editor navigation -- set once by MainWindow via
+        # set_neighbor_provider() (a callable: video_id -> (prev_video,
+        # next_video), library.Video-or-None each), then queried fresh
+        # every time _refresh_display() runs, so it always reflects
+        # whichever Library tab's CURRENT sort/filter/search the video
+        # was actually opened from -- not a one-time snapshot taken back
+        # when Edit was first clicked, which could go stale if the
+        # Library's view changes while this video is open for editing.
+        self._neighbor_provider = None
+        self._prev_video_id: int | None = None
+        self._next_video_id: int | None = None
+
         layout = QVBoxLayout(self)
 
         # ---- title (editable) + filters, at the very top ----
@@ -163,7 +175,29 @@ class EditorPage(QWidget):
         # Play/pause is now click-the-video-or-press-space (see
         # MpvVideoWidget) instead of a dedicated button.
         self.video_widget.clicked.connect(self._toggle_play_pause)
-        layout.addWidget(self.video_widget, stretch=1)
+
+        # Prev/Next flank the video itself (not the transport row below)
+        # -- cycles to the previous/next video according to whatever the
+        # Library tab this video was opened from is CURRENTLY sorted/
+        # filtered/searched by (see set_neighbor_provider below), not a
+        # fixed/independent ordering of the Editor's own. Disabled with
+        # no tooltip at either end of that list, or if no video is
+        # loaded at all.
+        video_row = QHBoxLayout()
+        self.prev_video_btn = QToolButton()
+        self.prev_video_btn.setText("\u25c0")  # "◀"
+        self.prev_video_btn.setEnabled(False)
+        self.prev_video_btn.setToolButtonStyle(Qt.ToolButtonTextOnly)
+        self.prev_video_btn.clicked.connect(self._go_to_prev_video)
+        video_row.addWidget(self.prev_video_btn)
+        video_row.addWidget(self.video_widget, stretch=1)
+        self.next_video_btn = QToolButton()
+        self.next_video_btn.setText("\u25b6")  # "▶"
+        self.next_video_btn.setEnabled(False)
+        self.next_video_btn.setToolButtonStyle(Qt.ToolButtonTextOnly)
+        self.next_video_btn.clicked.connect(self._go_to_next_video)
+        video_row.addWidget(self.next_video_btn)
+        layout.addLayout(video_row, stretch=1)
 
         self.video_widget.position_changed.connect(self._on_position_changed)
         self.video_widget.duration_known.connect(self._on_duration_known)
@@ -202,6 +236,24 @@ class EditorPage(QWidget):
         layout.addLayout(volume_row)
 
         self.video_widget.set_volume(self.volume_bar.value)
+
+        speed_row = QHBoxLayout()
+        speed_row.addWidget(QLabel("Watch Speed:"))
+        self.speed_spin = QDoubleSpinBox()
+        self.speed_spin.setRange(0.05, 4.0)
+        self.speed_spin.setSingleStep(0.1)
+        self.speed_spin.setDecimals(2)
+        self.speed_spin.setValue(1.0)
+        self.speed_spin.setSuffix("x")
+        self.speed_spin.setToolTip(
+            "Preview-only playback speed (e.g. 0.1x = 10% speed) -- doesn't "
+            "affect the saved clip in any way. Resets to 1.00x whenever a "
+            "different video is loaded."
+        )
+        self.speed_spin.valueChanged.connect(self._on_speed_changed)
+        speed_row.addWidget(self.speed_spin)
+        speed_row.addStretch(1)
+        layout.addLayout(speed_row)
 
         coming_soon_label = QLabel(
             "The audio graph editor (per-segment volume/mute/trim/reposition) "
@@ -255,7 +307,26 @@ class EditorPage(QWidget):
     def load_video(self, video_id: int) -> None:
         self.current_video_id = video_id
         self._duration = 0.0
+        # Watch Speed is a live preview-only control, not a per-video
+        # setting -- reset it every time a (possibly different) video is
+        # loaded rather than carrying whatever speed was left over from
+        # whatever was being watched before, which would be surprising
+        # ("why is this playing at 2x?") for a video that was never
+        # explicitly set to that.
+        self.speed_spin.blockSignals(True)
+        self.speed_spin.setValue(1.0)
+        self.speed_spin.blockSignals(False)
+        self.video_widget.set_speed(1.0)
         self._refresh_display()
+
+    def set_neighbor_provider(self, provider) -> None:
+        """provider: (video_id: int) -> tuple[Video | None, Video | None],
+        the (previous, next) video according to whatever ordering the
+        video was actually opened from. Set once by MainWindow at
+        startup (see main_window.py) -- queried fresh on every
+        _refresh_display() call rather than cached, so Prev/Next always
+        reflect the CURRENT state of that ordering."""
+        self._neighbor_provider = provider
 
     def apply_scale(self, factor: float) -> None:
         self.trim_timeline.set_scale(factor)
@@ -283,6 +354,12 @@ class EditorPage(QWidget):
             self.trim_timeline.setEnabled(False)
             self.local_save_btn.setEnabled(False)
             self.save_upload_btn.setEnabled(False)
+            self.prev_video_btn.setEnabled(False)
+            self.prev_video_btn.setToolTip("")
+            self.next_video_btn.setEnabled(False)
+            self.next_video_btn.setToolTip("")
+            self._prev_video_id = None
+            self._next_video_id = None
             return
 
         video = library.get_video(self.current_video_id)
@@ -308,6 +385,16 @@ class EditorPage(QWidget):
         can_undo = video.has_edit and video.backup_path is not None
         self.undo_btn.setEnabled(can_undo)
         self.clear_backup_btn.setEnabled(can_undo)
+
+        prev_video = next_video = None
+        if self._neighbor_provider is not None:
+            prev_video, next_video = self._neighbor_provider(self.current_video_id)
+        self.prev_video_btn.setEnabled(prev_video is not None)
+        self.prev_video_btn.setToolTip(prev_video.title if prev_video else "")
+        self._prev_video_id = prev_video.id if prev_video else None
+        self.next_video_btn.setEnabled(next_video is not None)
+        self.next_video_btn.setToolTip(next_video.title if next_video else "")
+        self._next_video_id = next_video.id if next_video else None
 
     def _on_title_edited(self) -> None:
         if self.current_video_id is None:
@@ -424,6 +511,17 @@ class EditorPage(QWidget):
 
     def _on_volume_changed(self, value: int) -> None:
         self.video_widget.set_volume(value)
+
+    def _on_speed_changed(self, value: float) -> None:
+        self.video_widget.set_speed(value)
+
+    def _go_to_prev_video(self) -> None:
+        if self._prev_video_id is not None:
+            self.load_video(self._prev_video_id)
+
+    def _go_to_next_video(self) -> None:
+        if self._next_video_id is not None:
+            self.load_video(self._next_video_id)
 
     def _current_position(self) -> float:
         return self._current_pos

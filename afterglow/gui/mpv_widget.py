@@ -227,6 +227,13 @@ class MpvVideoWidget(QOpenGLWidget):
         video file, only how loud THIS preview plays back."""
         self._mpv.volume = max(0, min(100, value))
 
+    def set_speed(self, multiplier: float) -> None:
+        """Preview-only playback speed (e.g. 0.1 = 10% speed) -- a plain
+        property on the live mpv instance, same as volume above: affects
+        nothing about the saved file or any future trim/export, purely
+        how fast THIS preview plays back right now."""
+        self._mpv.speed = max(0.01, multiplier)
+
     # ------------------------------------------------------------ click/keyboard play-pause
 
     def mousePressEvent(self, event) -> None:

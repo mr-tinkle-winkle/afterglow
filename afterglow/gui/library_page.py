@@ -13,7 +13,7 @@ grid/search/filter wiring twice.
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal, QSize, QFileSystemWatcher, QTimer
-from PySide6.QtGui import QActionGroup
+from PySide6.QtGui import QActionGroup, QPainter, QIcon, QPixmap
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLineEdit, QToolButton,
     QMenu, QScrollArea, QLabel, QTabWidget, QTabBar, QMessageBox, QWidgetAction,
@@ -24,7 +24,7 @@ from .. import library
 from .. import config as config_module
 from .. import db as db_module
 from .video_card import VideoCard, THUMB_SIZE, FAVORITE_STAR
-from .resources import resource_qicon
+from .resources import resource_qpixmap
 from .pulse_animation import PulseAnimator
 
 # Approximate on-screen width of one card (thumbnail + its own internal
@@ -35,6 +35,28 @@ _APPROX_CARD_WIDTH = THUMB_SIZE.width() + 24
 FILTER_STATE_NONE = "none"
 FILTER_STATE_INCLUDE = "include"
 FILTER_STATE_EXCLUDE = "exclude"
+
+
+def _composite_tab_icon(pixmap: QPixmap, target_size: int, canvas_size: int) -> QIcon:
+    """Scale `pixmap` to fit within target_size x target_size (preserving
+    aspect ratio), then center it on a transparent canvas_size x
+    canvas_size canvas and wrap that in a QIcon.
+
+    Why: QTabBar exposes only ONE shared iconSize for the whole bar, so
+    the Local and Uploaded tabs can't just each call setIconSize with
+    their own value -- but Qt's icon painting scales a QIcon's pixmap to
+    fit the tab bar's iconSize, so as long as BOTH tabs' underlying
+    pixmaps are exactly canvas_size already, no further scaling happens
+    at paint time and each tab's own (possibly smaller) icon content
+    stays at its own intended size, just centered within the same
+    bounding box the other tab's icon also occupies."""
+    scaled = pixmap.scaled(target_size, target_size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+    canvas = QPixmap(canvas_size, canvas_size)
+    canvas.fill(Qt.transparent)
+    painter = QPainter(canvas)
+    painter.drawPixmap((canvas_size - scaled.width()) // 2, (canvas_size - scaled.height()) // 2, scaled)
+    painter.end()
+    return QIcon(canvas)
 
 
 class FilterCheckBox(QCheckBox):
@@ -467,6 +489,23 @@ class _VideoGridTab(QWidget):
         for card in self._cards:
             card.set_selected(card.video_id in self._selected_ids)
 
+    def neighbors(self, video_id: int) -> tuple["library.Video | None", "library.Video | None"]:
+        """(previous, next) video relative to video_id in this tab's
+        CURRENT card order -- i.e. whatever this tab is presently
+        sorted/filtered/searched by, since self._cards is exactly that
+        (rebuilt by refresh() from the same library.list_videos() call
+        that order comes from). Used by the Editor's Prev/Next arrows.
+        Returns (None, None) if video_id isn't currently in this tab at
+        all (e.g. it was deleted, or a filter/search since applied
+        excludes it)."""
+        ids = [c.video_id for c in self._cards]
+        if video_id not in ids:
+            return None, None
+        index = ids.index(video_id)
+        prev_video = self._cards[index - 1]._video if index > 0 else None
+        next_video = self._cards[index + 1]._video if index < len(ids) - 1 else None
+        return prev_video, next_video
+
     def _columns_for_width(self, width: int) -> int:
         return max(1, width // _APPROX_CARD_WIDTH)
 
@@ -589,25 +628,38 @@ class LibraryPage(QWidget):
         ))
         self.local_tab = _VideoGridTab(uploaded_only=False, local_only=True)
         self.uploaded_tab = _VideoGridTab(uploaded_only=True, local_only=False)
-        self.local_tab.edit_requested.connect(self.edit_requested.emit)
-        self.uploaded_tab.edit_requested.connect(self.edit_requested.emit)
+        # Tracks which tab most recently asked to open a video in the
+        # Editor -- neighbors_for() below uses it to answer "prev/next
+        # relative to THIS tab's current order", since a video could in
+        # principle appear reachable from either tab's own edit_requested
+        # depending on which one the person actually clicked from.
+        self._last_edit_tab: "_VideoGridTab | None" = None
+        self.local_tab.edit_requested.connect(
+            lambda vid: self._on_tab_edit_requested(self.local_tab, vid)
+        )
+        self.uploaded_tab.edit_requested.connect(
+            lambda vid: self._on_tab_edit_requested(self.uploaded_tab, vid)
+        )
 
         # Icon-only tabs (no text) -- the floppy disk / wifi icons stand in
-        # for Local / Uploaded. 4.5x the style's own default tab-bar icon
-        # size: originally set to 3x (default_icon_size * 3), then asked
-        # to be 1.5x that current size on top -- 3 * 1.5 = 4.5x the
-        # original style default, queried at runtime rather than assumed.
-        # Stored so apply_scale() below can rescale it later -- this
-        # wasn't being done at all before, so the tab icons stayed fixed
-        # regardless of window size while everything else around them
-        # scaled.
+        # for Local / Uploaded. Base size is 4.5x the style's own default
+        # tab-bar icon size: originally set to 3x (default_icon_size * 3),
+        # then asked to be 1.5x that current size on top -- 3 * 1.5 = 4.5x
+        # the original style default, queried at runtime rather than
+        # assumed. Stored so apply_scale() below can rescale it later --
+        # this wasn't being done at all before, so the tab icons stayed
+        # fixed regardless of window size while everything else around
+        # them scaled. The two tabs' actual on-screen icon sizes can now
+        # differ (Saved Videos Icon Size / Uploaded Videos Icon Size in
+        # Settings > General) despite QTabBar's single shared iconSize --
+        # see _composite_tab_icon's docstring for how.
         self._base_tab_icon_size = round(
             self.tabs.style().pixelMetric(QStyle.PM_TabBarIconSize) * 4.5
         )
         self._current_tab_icon_size = self._base_tab_icon_size
-        self.tabs.setIconSize(QSize(self._base_tab_icon_size, self._base_tab_icon_size))
-        self.tabs.addTab(self.local_tab, resource_qicon("local_videos.png"), "")
-        self.tabs.addTab(self.uploaded_tab, resource_qicon("uploaded_videos.png"), "")
+        self.tabs.addTab(self.local_tab, "")
+        self.tabs.addTab(self.uploaded_tab, "")
+        self._rebuild_tab_icons()
         self.tabs.setTabToolTip(0, "Local")
         self.tabs.setTabToolTip(1, "Uploaded")
         self._fix_tab_bar_height()
@@ -671,6 +723,21 @@ class LibraryPage(QWidget):
     def clear_status_message(self) -> None:
         self.status_bar.setVisible(False)
 
+    def _on_tab_edit_requested(self, tab: "_VideoGridTab", video_id: int) -> None:
+        self._last_edit_tab = tab
+        self.edit_requested.emit(video_id)
+
+    def neighbors_for(self, video_id: int) -> tuple["library.Video | None", "library.Video | None"]:
+        """(previous, next) video relative to video_id, according to
+        whichever tab's edit_requested most recently fired for it -- see
+        _VideoGridTab.neighbors() for what "relative to" actually means.
+        Passed to EditorPage as its neighbor_provider (see main_window.py)
+        and queried fresh on every Editor refresh, not just once when
+        Edit was first clicked."""
+        if self._last_edit_tab is None:
+            return None, None
+        return self._last_edit_tab.neighbors(video_id)
+
     def refresh(self) -> None:
         """Called by MainWindow whenever the Library page becomes visible,
         so edits/deletes made from the Editor page are reflected, and any
@@ -690,6 +757,26 @@ class LibraryPage(QWidget):
                   f"that had been mistakenly listed as library entries.")
         self.local_tab.refresh()
         self.uploaded_tab.refresh()
+
+    def _rebuild_tab_icons(self) -> None:
+        """(Re)composite the Local/Uploaded tab icons at their own
+        independent sizes (Saved Videos Icon Size / Uploaded Videos Icon
+        Size in Settings > General), against self._current_tab_icon_size
+        as the 100% baseline -- see _composite_tab_icon's docstring for
+        how two different sizes coexist despite QTabBar's single shared
+        iconSize. Called at construction and from apply_scale() whenever
+        the baseline changes; NOT called by the click-pulse animation
+        itself, which only calls tabs.setIconSize() directly to scale
+        the already-composited icons uniformly (see PulseAnimator's
+        apply_size callback below)."""
+        appearance = config_module.load().appearance
+        base = self._current_tab_icon_size
+        local_target = max(1, round(base * appearance.saved_videos_icon_size / 100))
+        uploaded_target = max(1, round(base * appearance.uploaded_videos_icon_size / 100))
+        shared = max(local_target, uploaded_target, 1)
+        self.tabs.setIconSize(QSize(shared, shared))
+        self.tabs.setTabIcon(0, _composite_tab_icon(resource_qpixmap("local_videos.png"), local_target, shared))
+        self.tabs.setTabIcon(1, _composite_tab_icon(resource_qpixmap("uploaded_videos.png"), uploaded_target, shared))
 
     def _fix_tab_bar_height(self) -> None:
         """Lock the tab bar's own height to its natural size at the
@@ -720,5 +807,5 @@ class LibraryPage(QWidget):
         # everything else scaled -- now rescaled live alongside them.
         size = max(round(self._base_tab_icon_size * factor), 8)
         self._current_tab_icon_size = size
-        self.tabs.setIconSize(QSize(size, size))
+        self._rebuild_tab_icons()
         self._fix_tab_bar_height()

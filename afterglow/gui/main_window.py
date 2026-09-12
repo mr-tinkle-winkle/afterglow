@@ -106,8 +106,9 @@ class _ScalingIconButton(QToolButton):
     ICON_PADDING = 14
 
     def __init__(self, icon_name: str, tooltip: str, appearance: "config_module.AppearanceSettings",
-                 parent=None, size_basis: str = "min", gradient_image_name: str | None = None,
-                 border_mode: str = "always"):
+                 icon_size_percent: int, parent=None, size_basis: str = "min",
+                 gradient_image_name: str | None = None, border_mode: str = "always",
+                 border_brightness_multiplier: int = 100):
         super().__init__(parent)
         self.setToolTip(tooltip)
         self.setCheckable(True)
@@ -134,10 +135,19 @@ class _ScalingIconButton(QToolButton):
         # the same width was being drawn underneath for both.
         self._active_border_width = appearance.active_border_width
         self._inactive_border_width = appearance.inactive_border_width
-        self._active_darken_factor = 1 - (appearance.active_border_brightness / 100.0)
-        self._inactive_darken_factor = 1 - (appearance.inactive_border_brightness / 100.0)
+        # This button's own multiplier applied on top of the shared
+        # active/inactive brightness settings -- clamped to [0, 100]
+        # since the multiply-blend darkening technique below can only
+        # ever darken a color, never brighten one past "no darkening at
+        # all" (darken_factor == 0), so a multiplier over 100% just caps
+        # there instead of doing anything further.
+        mult = border_brightness_multiplier / 100.0
+        effective_active_brightness = max(0.0, min(100.0, appearance.active_border_brightness * mult))
+        effective_inactive_brightness = max(0.0, min(100.0, appearance.inactive_border_brightness * mult))
+        self._active_darken_factor = 1 - (effective_active_brightness / 100.0)
+        self._inactive_darken_factor = 1 - (effective_inactive_brightness / 100.0)
         self._border_mode = border_mode  # "always" | "only_active" | "disabled"
-        self._icon_scale = appearance.library_icon_size / 100.0
+        self._icon_scale = icon_size_percent / 100.0
 
         normal_pixmap = resource_qpixmap(icon_name)
         self._normal_icon = QIcon(normal_pixmap)
@@ -287,10 +297,14 @@ class MainWindow(QMainWindow):
         self.nav_group.setExclusive(True)
 
         self.library_nav_btn = _ScalingIconButton(
-            "library.png", "Library", appearance, gradient_image_name="library_bg_gradient.png"
+            "library.png", "Library", appearance, appearance.library_icon_size,
+            gradient_image_name="library_bg_gradient.png",
+            border_brightness_multiplier=appearance.library_border_brightness_multiplier,
         )
         self.editor_nav_btn = _ScalingIconButton(
-            "editor.png", "Editor", appearance, gradient_image_name="editor_bg_gradient.png"
+            "editor.png", "Editor", appearance, appearance.editor_icon_size,
+            gradient_image_name="editor_bg_gradient.png",
+            border_brightness_multiplier=appearance.editor_border_brightness_multiplier,
         )
         # size_basis="width": Settings has a small FIXED height (below),
         # so sizing its icon off min(width, height) like the other two
@@ -304,8 +318,10 @@ class MainWindow(QMainWindow):
             "disabled": "disabled", "always": "always", "only_settings": "only_active",
         }.get(appearance.settings_border_mode, "only_active")
         self.settings_nav_btn = _ScalingIconButton(
-            "settings.png", "Settings", appearance, size_basis="width",
+            "settings.png", "Settings", appearance, appearance.settings_icon_size,
+            size_basis="width",
             gradient_image_name=_SETTINGS_GRADIENT_IMAGE, border_mode=settings_border_mode,
+            border_brightness_multiplier=appearance.settings_border_brightness_multiplier,
         )
 
         # Library and Editor stretch to fill most of the sidebar's
@@ -339,6 +355,10 @@ class MainWindow(QMainWindow):
         # Double-click / context-menu "Edit" in the Library routes here to
         # the Editor page (and loads that video into it).
         self.library_page.edit_requested.connect(self._open_in_editor)
+        # Prev/Next arrows in the Editor -- see EditorPage.set_neighbor_provider
+        # and LibraryPage.neighbors_for's own docstrings for how this stays
+        # live rather than being a one-time snapshot of the video list.
+        self.editor_page.set_neighbor_provider(self.library_page.neighbors_for)
 
         self.library_nav_btn.setChecked(True)
         self.stack.setCurrentIndex(_LIBRARY_INDEX)

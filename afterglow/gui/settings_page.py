@@ -218,6 +218,30 @@ class SettingsPage(QWidget):
         self.active_border_brightness_spin.setValue(a.active_border_brightness)
         form.addRow("Active Border Brightness:", self.active_border_brightness_spin)
 
+        # Per-button multiplier ON TOP OF the two shared brightness
+        # settings above -- 100% = no change from the shared value for
+        # that button; e.g. 50% here darkens this ONE button further
+        # still, while values above 100% only get back toward "no
+        # darkening at all" rather than actually brightening past it
+        # (see _ScalingIconButton's own comment on why).
+        self.library_border_brightness_mult_spin = QSpinBox()
+        self.library_border_brightness_mult_spin.setRange(0, 200)
+        self.library_border_brightness_mult_spin.setSuffix("%")
+        self.library_border_brightness_mult_spin.setValue(a.library_border_brightness_multiplier)
+        form.addRow("Library Border Brightness Multiplier:", self.library_border_brightness_mult_spin)
+
+        self.editor_border_brightness_mult_spin = QSpinBox()
+        self.editor_border_brightness_mult_spin.setRange(0, 200)
+        self.editor_border_brightness_mult_spin.setSuffix("%")
+        self.editor_border_brightness_mult_spin.setValue(a.editor_border_brightness_multiplier)
+        form.addRow("Editor Border Brightness Multiplier:", self.editor_border_brightness_mult_spin)
+
+        self.settings_border_brightness_mult_spin = QSpinBox()
+        self.settings_border_brightness_mult_spin.setRange(0, 200)
+        self.settings_border_brightness_mult_spin.setSuffix("%")
+        self.settings_border_brightness_mult_spin.setValue(a.settings_border_brightness_multiplier)
+        form.addRow("Settings Border Brightness Multiplier:", self.settings_border_brightness_mult_spin)
+
         self.settings_border_combo = QComboBox()
         self.settings_border_combo.addItem("Disabled", "disabled")
         self.settings_border_combo.addItem("Only when on the settings page", "only_settings")
@@ -243,11 +267,42 @@ class SettingsPage(QWidget):
         self.filter_icon_size_spin.setValue(a.filter_icon_size)
         form.addRow("Filter Icons Size:", self.filter_icon_size_spin)
 
+        # Replaces the old single "Library Page Icons Size" -- that one
+        # setting was actually wired to all three sidebar nav buttons at
+        # once (a bug) and had no effect at all on the Library page's own
+        # tab icons, despite the name. Five independent settings now:
+        # three for the sidebar nav buttons (Library/Editor/Settings),
+        # two for the Library page's own Local ("Saved Videos")/Uploaded
+        # tab icons.
         self.library_icon_size_spin = QSpinBox()
         self.library_icon_size_spin.setRange(10, 200)
         self.library_icon_size_spin.setSuffix("%")
         self.library_icon_size_spin.setValue(a.library_icon_size)
-        form.addRow("Library Page Icons Size:", self.library_icon_size_spin)
+        form.addRow("Library Icon Size (sidebar):", self.library_icon_size_spin)
+
+        self.editor_icon_size_spin = QSpinBox()
+        self.editor_icon_size_spin.setRange(10, 200)
+        self.editor_icon_size_spin.setSuffix("%")
+        self.editor_icon_size_spin.setValue(a.editor_icon_size)
+        form.addRow("Editor Icon Size (sidebar):", self.editor_icon_size_spin)
+
+        self.settings_icon_size_spin = QSpinBox()
+        self.settings_icon_size_spin.setRange(10, 200)
+        self.settings_icon_size_spin.setSuffix("%")
+        self.settings_icon_size_spin.setValue(a.settings_icon_size)
+        form.addRow("Settings Icon Size (sidebar):", self.settings_icon_size_spin)
+
+        self.saved_videos_icon_size_spin = QSpinBox()
+        self.saved_videos_icon_size_spin.setRange(10, 200)
+        self.saved_videos_icon_size_spin.setSuffix("%")
+        self.saved_videos_icon_size_spin.setValue(a.saved_videos_icon_size)
+        form.addRow("Saved Videos Icon Size (Library tab):", self.saved_videos_icon_size_spin)
+
+        self.uploaded_videos_icon_size_spin = QSpinBox()
+        self.uploaded_videos_icon_size_spin.setRange(10, 200)
+        self.uploaded_videos_icon_size_spin.setSuffix("%")
+        self.uploaded_videos_icon_size_spin.setValue(a.uploaded_videos_icon_size)
+        form.addRow("Uploaded Videos Icon Size (Library tab):", self.uploaded_videos_icon_size_spin)
 
         # A combo box rather than a checkbox pair (Fullscreen + Maximized)
         # deliberately -- two independent checkboxes could both end up
@@ -372,11 +427,18 @@ class SettingsPage(QWidget):
         a.inactive_border_brightness = self.inactive_border_brightness_spin.value()
         a.active_border_width = self.active_border_width_spin.value()
         a.active_border_brightness = self.active_border_brightness_spin.value()
+        a.library_border_brightness_multiplier = self.library_border_brightness_mult_spin.value()
+        a.editor_border_brightness_multiplier = self.editor_border_brightness_mult_spin.value()
+        a.settings_border_brightness_multiplier = self.settings_border_brightness_mult_spin.value()
         a.settings_border_mode = self.settings_border_combo.currentData()
         a.unedited_selected_border_width = self.unedited_selected_border_width_spin.value()
         a.unedited_highlight_brightness = self.unedited_highlight_brightness_spin.value()
         a.filter_icon_size = self.filter_icon_size_spin.value()
         a.library_icon_size = self.library_icon_size_spin.value()
+        a.editor_icon_size = self.editor_icon_size_spin.value()
+        a.settings_icon_size = self.settings_icon_size_spin.value()
+        a.saved_videos_icon_size = self.saved_videos_icon_size_spin.value()
+        a.uploaded_videos_icon_size = self.uploaded_videos_icon_size_spin.value()
         a.startup_window_mode = self.startup_window_mode_combo.currentData()
 
         config_module.save(self._settings)

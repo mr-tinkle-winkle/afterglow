@@ -115,10 +115,36 @@ class AppearanceSettings:
     unedited_selected_border_width: int = 9
     unedited_highlight_brightness: int = 100
     filter_icon_size: int = 54
-    # Sidebar nav icon scale, as a 0-200 percent of the button's own
+    # Sidebar nav icon scale, as a 0-200 percent of each button's own
     # available space (matches _ScalingIconButton.SCALE, previously a
-    # hardcoded 0.85 i.e. 85%).
+    # hardcoded 0.85 i.e. 85%). Three SEPARATE fields, one per sidebar
+    # button -- library_icon_size used to (incorrectly) drive all three
+    # at once; see load()'s backward-compat shim for how an old config's
+    # single value becomes the starting point for the two new ones too.
     library_icon_size: int = 85
+    editor_icon_size: int = 85
+    settings_icon_size: int = 85
+    # The Library page's OWN Local ("Saved Videos") / Uploaded tab
+    # icons -- entirely distinct from the three sidebar fields above
+    # (this is what "Library Page Icons Size" was actually supposed to
+    # mean before the mis-wiring). 100 = the existing fixed baseline
+    # size (style's default tab-bar icon size * 4.5, see
+    # LibraryPage.__init__), not a fresh arbitrary default -- these two
+    # settings didn't exist before, so 100% preserves the prior
+    # (unaffected-by-any-setting) look for anyone upgrading.
+    saved_videos_icon_size: int = 100
+    uploaded_videos_icon_size: int = 100
+    # Per-sidebar-button multiplier (0-200%, 100 = no change) applied ON
+    # TOP of the shared active_border_brightness/inactive_border_brightness
+    # above -- e.g. 50% here on top of the shared 65% inactive brightness
+    # gives this ONE button an effective 32.5% (darker still), while a
+    # value above 100% only gets you back toward "no darkening at all"
+    # (capped there), never actually brighter -- the underlying multiply-
+    # blend darkening technique (_darken_pixmap-style) can only darken,
+    # not lighten, a color; see _ScalingIconButton's own comment on this.
+    library_border_brightness_multiplier: int = 100
+    editor_border_brightness_multiplier: int = 100
+    settings_border_brightness_multiplier: int = 100
     # "normal" | "maximized" | "fullscreen" -- replaces the old
     # top-level default_to_fullscreen bool (see load()'s backward-compat
     # shim), moved here from the Clipping tab into General since it's
@@ -196,6 +222,19 @@ def load() -> AppSettings:
     if "unedited_selected_border_width" not in appearance_raw and "unedited_highlight_width" in appearance_raw:
         # Pre-selection config format -- same field, old name.
         appearance_raw["unedited_selected_border_width"] = appearance_raw.pop("unedited_highlight_width")
+    if "editor_icon_size" not in appearance_raw and "library_icon_size" in appearance_raw:
+        # Pre-split config format -- library_icon_size used to
+        # (incorrectly) drive ALL THREE sidebar nav buttons at once, so
+        # an old config's single value becomes the starting point for
+        # the two new sidebar-only fields too, preserving the old
+        # visual size. saved_videos_icon_size/uploaded_videos_icon_size
+        # are NOT backfilled from it -- those two are a different
+        # setting entirely (the Library page's own tab icons, which
+        # this bug never actually touched), so they just take their own
+        # fresh defaults.
+        shared = appearance_raw["library_icon_size"]
+        appearance_raw.setdefault("editor_icon_size", shared)
+        appearance_raw.setdefault("settings_icon_size", shared)
     appearance = AppearanceSettings(**appearance_raw)
     top_level = {
         k: v for k, v in raw.items()
