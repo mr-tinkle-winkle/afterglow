@@ -242,6 +242,26 @@ class SettingsPage(QWidget):
         self.settings_border_brightness_mult_spin.setValue(a.settings_border_brightness_multiplier)
         form.addRow("Settings Border Brightness Multiplier:", self.settings_border_brightness_mult_spin)
 
+        # Shared across all three sidebar buttons (see
+        # AppearanceSettings.sidebar_border_image_path's own comment for
+        # why this one isn't per-button like the multipliers above).
+        sidebar_image_row = QHBoxLayout()
+        self.sidebar_border_image_edit = QLineEdit(a.sidebar_border_image_path)
+        self.sidebar_border_image_edit.setPlaceholderText("(use the built-in gradient)")
+        sidebar_image_browse = QPushButton("Browse...")
+        sidebar_image_browse.clicked.connect(
+            lambda: self._browse_border_image(self.sidebar_border_image_edit)
+        )
+        sidebar_image_row.addWidget(self.sidebar_border_image_edit)
+        sidebar_image_row.addWidget(sidebar_image_browse)
+        form.addRow("Sidebar Border Image:", sidebar_image_row)
+
+        self.sidebar_border_hue_shift_spin = QSpinBox()
+        self.sidebar_border_hue_shift_spin.setRange(0, 359)
+        self.sidebar_border_hue_shift_spin.setSuffix("\u00b0")
+        self.sidebar_border_hue_shift_spin.setValue(a.sidebar_border_hue_shift)
+        form.addRow("Sidebar Border Hue Shift:", self.sidebar_border_hue_shift_spin)
+
         self.settings_border_combo = QComboBox()
         self.settings_border_combo.addItem("Disabled", "disabled")
         self.settings_border_combo.addItem("Only when on the settings page", "only_settings")
@@ -260,6 +280,23 @@ class SettingsPage(QWidget):
         self.unedited_highlight_brightness_spin.setSuffix("%")
         self.unedited_highlight_brightness_spin.setValue(a.unedited_highlight_brightness)
         form.addRow("Unedited Highlight Brightness:", self.unedited_highlight_brightness_spin)
+
+        unedited_image_row = QHBoxLayout()
+        self.unedited_border_image_edit = QLineEdit(a.unedited_border_image_path)
+        self.unedited_border_image_edit.setPlaceholderText("(use the built-in gradient)")
+        unedited_image_browse = QPushButton("Browse...")
+        unedited_image_browse.clicked.connect(
+            lambda: self._browse_border_image(self.unedited_border_image_edit)
+        )
+        unedited_image_row.addWidget(self.unedited_border_image_edit)
+        unedited_image_row.addWidget(unedited_image_browse)
+        form.addRow("Unedited Border Image:", unedited_image_row)
+
+        self.unedited_border_hue_shift_spin = QSpinBox()
+        self.unedited_border_hue_shift_spin.setRange(0, 359)
+        self.unedited_border_hue_shift_spin.setSuffix("\u00b0")
+        self.unedited_border_hue_shift_spin.setValue(a.unedited_border_hue_shift)
+        form.addRow("Unedited Border Hue Shift:", self.unedited_border_hue_shift_spin)
 
         self.filter_icon_size_spin = QSpinBox()
         self.filter_icon_size_spin.setRange(8, 200)
@@ -337,6 +374,13 @@ class SettingsPage(QWidget):
         )
         if path:
             self.default_sound_edit.setText(path)
+
+    def _browse_border_image(self, edit: QLineEdit) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Choose Border Image", "", "Image Files (*.png *.jpg *.jpeg *.bmp *.webp);;All Files (*)"
+        )
+        if path:
+            edit.setText(path)
 
     def _open_advanced_sound_dialog(self) -> None:
         from .advanced_sound_dialog import AdvancedSoundDialog
@@ -430,6 +474,10 @@ class SettingsPage(QWidget):
         a.library_border_brightness_multiplier = self.library_border_brightness_mult_spin.value()
         a.editor_border_brightness_multiplier = self.editor_border_brightness_mult_spin.value()
         a.settings_border_brightness_multiplier = self.settings_border_brightness_mult_spin.value()
+        a.sidebar_border_image_path = self.sidebar_border_image_edit.text().strip()
+        a.sidebar_border_hue_shift = self.sidebar_border_hue_shift_spin.value()
+        a.unedited_border_image_path = self.unedited_border_image_edit.text().strip()
+        a.unedited_border_hue_shift = self.unedited_border_hue_shift_spin.value()
         a.settings_border_mode = self.settings_border_combo.currentData()
         a.unedited_selected_border_width = self.unedited_selected_border_width_spin.value()
         a.unedited_highlight_brightness = self.unedited_highlight_brightness_spin.value()

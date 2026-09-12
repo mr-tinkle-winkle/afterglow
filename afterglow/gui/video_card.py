@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
 
 from .. import library, thumbnails, config as config_module
 from .resources import resource_qpixmap
+from .pixmap_effects import resolve_border_pixmap, hue_shift_pixmap_cached
 
 THUMB_SIZE = QSize(400, 224)  # 16:9, doubled from the original 200x112
 FAVORITE_STAR = "\u2605"  # "★"
@@ -126,7 +127,24 @@ class VideoCard(QWidget):
         self.video_id = video.id
         self._video = video
         self._highlight_enabled = highlight_enabled
-        self._highlight_pixmap = resource_qpixmap("unedited_highlight_gradient.png")
+        settings = config_module.load()
+        self._appearance = settings.appearance
+        # A custom image (Settings > General) takes the place of the
+        # built-in gradient for the unedited-clip highlight -- one
+        # shared setting for this border type (see
+        # AppearanceSettings.unedited_border_image_path's own comment).
+        # hue_shift_pixmap_cached rather than the plain version: this
+        # constructor runs once per VIDEO in the grid, so without the
+        # cache a non-default hue shift's cost would multiply by however
+        # many cards are on screen instead of happening once.
+        _highlight_base = resolve_border_pixmap(
+            self._appearance.unedited_border_image_path,
+            resource_qpixmap("unedited_highlight_gradient.png"),
+        )
+        self._highlight_pixmap = hue_shift_pixmap_cached(
+            self._appearance.unedited_border_image_path or "unedited_highlight_gradient.png",
+            _highlight_base, self._appearance.unedited_border_hue_shift,
+        )
         self._selected = False
         # Both optional and both supplied together by _VideoGridTab (see
         # its refresh()) -- let the right-click context menu act on the
@@ -139,9 +157,6 @@ class VideoCard(QWidget):
         # other selection in place while acting on the newly-clicked one.
         self._get_selected_ids = get_selected_ids
         self._ensure_selected = ensure_selected
-
-        settings = config_module.load()
-        self._appearance = settings.appearance
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)

@@ -39,6 +39,7 @@ from .library_page import LibraryPage
 from .editor_page import EditorPage
 from .resources import resource_qicon, resource_qpixmap
 from .scaling import compute_scale
+from .pixmap_effects import resolve_border_pixmap, hue_shift_pixmap_cached
 from .pulse_animation import PulseAnimator
 
 # Indices into self.stack -- fixed at construction time (see __init__).
@@ -162,7 +163,22 @@ class _ScalingIconButton(QToolButton):
         # min() would size its icon off that instead of matching the
         # other two buttons' actual (width-driven) icon size.
         self._size_basis = size_basis
-        self._gradient_pixmap = resource_qpixmap(gradient_image_name) if gradient_image_name else None
+        self._gradient_pixmap = None
+        if gradient_image_name:
+            base_pixmap = resource_qpixmap(gradient_image_name)
+            # A custom image (Settings > General) takes the place of the
+            # built-in gradient entirely for ALL sidebar borders alike --
+            # this is one shared setting per border TYPE, not per button
+            # (see AppearanceSettings.sidebar_border_image_path's own
+            # comment for why). Same stretch-to-fill-then-clip-to-ring
+            # rendering as the built-in gradients get in paintEvent below
+            # either way -- an unusual aspect ratio in the chosen image
+            # will just stretch like the built-in ones already do.
+            base_pixmap = resolve_border_pixmap(appearance.sidebar_border_image_path, base_pixmap)
+            self._gradient_pixmap = hue_shift_pixmap_cached(
+                appearance.sidebar_border_image_path or gradient_image_name,
+                base_pixmap, appearance.sidebar_border_hue_shift,
+            )
         if self._gradient_pixmap is not None:
             # Border width/visibility depends on checked state (see
             # paintEvent) -- repaint immediately when that changes, not

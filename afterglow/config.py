@@ -145,6 +145,18 @@ class AppearanceSettings:
     library_border_brightness_multiplier: int = 100
     editor_border_brightness_multiplier: int = 100
     settings_border_brightness_multiplier: int = 100
+    # Custom-image replacement + hue shift, for BOTH border types
+    # (sidebar nav buttons and the unedited-video-clip highlight) --
+    # unlike the per-button brightness multipliers above, these are
+    # each ONE shared setting per border TYPE, not per individual
+    # sidebar button, since the original ask phrased these two as "any
+    # border"/"all borders" rather than "each" one. An empty image path
+    # means "keep using the built-in gradient"; a hue shift of 0 means
+    # no shift.
+    sidebar_border_image_path: str = ""
+    sidebar_border_hue_shift: int = 0
+    unedited_border_image_path: str = ""
+    unedited_border_hue_shift: int = 0
     # "normal" | "maximized" | "fullscreen" -- replaces the old
     # top-level default_to_fullscreen bool (see load()'s backward-compat
     # shim), moved here from the Clipping tab into General since it's

@@ -267,6 +267,50 @@ include a full Advanced Sound feature partway through. In order:
     than assuming it. Verified the darken-factor math directly at
     100%/50%/200%, and a full Settings-page save/load round trip.
 
+11. **Border image-replacement + hue shift** (the other two thirds of
+    the border customization suite, completed after all -- Max asked
+    to continue on it while away from his PC, so the "needs a real
+    display to confirm" concern from "Next up" got resolved with
+    judgment calls instead, clearly flagged below rather than silently
+    assumed). New shared `afterglow/gui/pixmap_effects.py`:
+    `resolve_border_pixmap()` (an existing custom image file, if set
+    and it still exists, in place of the built-in gradient -- silently
+    falls back to the built-in one if the path is empty or the file's
+    gone missing) and `hue_shift_pixmap()` (a genuine per-pixel HSV hue
+    rotation, skipping fully-transparent and fully-achromatic pixels,
+    confirmed correct with red-shifted-180-degrees-is-cyan and similar
+    direct checks). Four new `AppearanceSettings` fields --
+    `sidebar_border_image_path`/`sidebar_border_hue_shift` and
+    `unedited_border_image_path`/`unedited_border_hue_shift` -- each
+    ONE shared setting per border TYPE (not per sidebar button, unlike
+    item 10's multipliers), matching how the original ask phrased
+    these two specifically as "any border"/"all borders" rather than
+    "each" one; a judgment call, reversible if that reading's wrong
+    (see "Open questions"). The custom image reuses the EXACT same
+    stretch-to-fill-then-clip-to-ring rendering the built-in gradients
+    already get, rather than introducing tiling or aspect-aware
+    scaling -- so an odd-aspect-ratio custom image will stretch the
+    same way the built-in gradients already do; this was itself a
+    judgment call (see "Open questions" for the alternative).
+    Performance mattered here in a way it hadn't for anything else in
+    this session: hue-shifting is a real per-pixel Python loop (no
+    numpy dependency exists in this project's flake to vectorize it),
+    measured directly at roughly half a second for a 512x512 image --
+    fine as a ONE-TIME cost, but `VideoCard.__init__` runs once per
+    video shown in the grid, so without caching, a non-default
+    unedited-border hue shift would have re-paid that cost for every
+    single card. Added `hue_shift_pixmap_cached()` (memoized by
+    `(cache_key, degrees)`) specifically to prevent that, and verified
+    directly: building a `LibraryPage` with 5 unedited-video cards and
+    a non-zero hue shift produces exactly ONE cache entry, not five.
+    Also verified: `resolve_border_pixmap`'s three cases (empty path,
+    missing file, real custom image) directly; the sidebar buttons
+    correctly sharing one cached result when they share the same
+    custom image path, and correctly falling back to their own
+    distinct built-in gradients (with their own separate cache
+    entries) when no custom image is set; and a full Settings-page
+    save/load round trip for all four new fields.
+
 ### Two sessions ago
 All four items carried over from that session's "next up" list,
 implemented and verified (not just compiled -- see the offscreen
@@ -457,50 +501,19 @@ widget-level testing note above):
   not attempted since their checkbox semantics actually differ (one
   toggles tag-on-video, the other toggles include/exclude-from-search).
 
-## Next up -- explicitly asked for, not yet started
-Two-thirds of one item left, from the original four -- watch speed,
-editor arrows, and per-sidebar-border brightness are all done (see
-"This session" above). Remaining:
-
-1. **Border image-replacement + hue shift** (the other two thirds of
-   the border customization suite -- scoped to sidebar borders and
-   unedited-video borders specifically, not the newer selection
-   border):
-   - Replace any border (sidebar OR unedited-video) with a custom
-     image of the user's choosing, instead of the current gradient/
-     flat-color rendering. This is a bigger change than it sounds:
-     both border types currently render via a fixed gradient PNG
-     (`library_bg_gradient.png` etc. for sidebar buttons,
-     `unedited_highlight_gradient.png` for video cards) drawn through
-     a clip region shaped like the border ring -- swapping in an
-     arbitrary user image means loading it as a `QPixmap` (new file
-     path settings, presumably per-border-type or even per-button/
-     per-context) and deciding how it should fill a ring shape that
-     varies in aspect ratio depending on the widget's current size
-     (tile? stretch? scale-and-crop?) -- worth deciding the fill
-     behavior explicitly rather than guessing, since the wrong choice
-     could look obviously bad on some widget's actual aspect ratio.
-   - Hue shift for both border types -- an HSV rotation applied to
-     the rendered border pixmap/color before it's drawn. Straightforward
-     mechanically (Qt's `QImage`/`QColor` support HSV access directly),
-     but needs new settings for how much shift, and needs to compose
-     sensibly with the brightness/darken-factor logic that already
-     exists for both border types (apply hue shift before or after the
-     multiply-blend darken step? probably before, so darkening still
-     behaves the same way afterward, but worth confirming once there's
-     something to actually look at).
-
-   Given no way to see the actual rendered result without a real
-   display (this sandbox is headless), and that both of these are
-   more genuinely novel rendering work than the multiplier that WAS
-   done this session (which was a small, well-contained addition on
-   top of existing, already-tested rendering code), it felt like the
-   right call to stop here and let a session with Max actually present
-   confirm the fill-behavior/composition-order decisions above before
-   writing the rendering code, rather than guess at both and risk
-   shipping something that looks wrong with no way to catch it.
+## Next up
+Nothing outstanding from an explicit ask right now -- all four items
+from the border/icon-size/speed/navigation backlog are done (see "This
+session" above). See "Open questions" below for a few judgment calls
+made along the way that are worth Max confirming when he's back,
+though none of them block anything from working.
 
 ## Architecture pointers
+- `afterglow/gui/pixmap_effects.py` -- NEW this session.
+  `resolve_border_pixmap()`, `hue_shift_pixmap()`, and
+  `hue_shift_pixmap_cached()` (the caching matters -- see item 11
+  above for why an uncached hue shift would have been a real per-card
+  performance problem). Shared by `main_window.py` and `video_card.py`.
 - `afterglow/gui/mpv_widget.py` -- `MpvVideoWidget.set_speed()`, new
   this session, mirrors the existing `set_volume()`'s pattern exactly
   (a plain property set on the live mpv instance, no persistence).
@@ -601,8 +614,27 @@ editor arrows, and per-sidebar-border brightness are all done (see
   sidebar (Settings' own `settings_border_mode` combo would stay as
   ​is), and adjust `_ScalingIconButton` accordingly.
 - Border image-replacement + hue shift's fill behavior and composition
-  order (see "Next up" above) -- genuinely needs a decision, not a
-  guess, before writing the rendering code.
+  order -- resolved with judgment calls rather than left open (see
+  item 11 above): the custom image stretches to fill exactly like the
+  built-in gradients already do (no tiling/aspect-aware cropping), and
+  hue shift is applied once at load time to whichever pixmap (built-in
+  or custom) ends up in use, BEFORE the multiply-blend darken step
+  runs at paint time -- so darkening still behaves the same way
+  afterward regardless of hue. Worth Max actually looking at once
+  there's a real display, same as anything else visual from this
+  session -- if the stretch behavior looks bad with a real image he
+  picks, aspect-aware scale-and-crop would be the fix, in
+  `resolve_border_pixmap` or wherever it's consumed.
+- **Border image path / hue shift granularity** -- like the brightness
+  multiplier, implemented as ONE shared setting per border TYPE
+  (`sidebar_border_image_path`/`sidebar_border_hue_shift`, covering all
+  three sidebar buttons at once) rather than per-individual-button.
+  Unlike the multiplier, this was based on the original wording using
+  "any"/"all" rather than "each" for these two specifically -- but if
+  per-button granularity was actually wanted for these too, the same
+  three-separate-fields rework as the multiplier's alternative above
+  would apply, plus giving `_ScalingIconButton` its own custom image
+  path parameter instead of resolving one from a single shared field.
 - The two now-parallel Filters-checkbox-menu implementations
   (`VideoCard._build_filters_menu` vs. `_VideoGridTab.
   _rebuild_filters_menu`) could probably share more code -- worth a
