@@ -26,7 +26,7 @@ from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QHBoxLayout, QPushButton,
     QCheckBox, QMessageBox, QLineEdit, QToolButton, QMenu, QWidgetAction,
-    QDialog, QDialogButtonBox, QDoubleSpinBox,
+    QDialog, QDialogButtonBox, QDoubleSpinBox, QSizePolicy,
 )
 # QPushButton already imported above -- used for the toolbar Save/Undo
 # buttons and now also for the "+ Add Filter" item embedded in the
@@ -175,6 +175,20 @@ class EditorPage(QWidget):
         # Play/pause is now click-the-video-or-press-space (see
         # MpvVideoWidget) instead of a dedicated button.
         self.video_widget.clicked.connect(self._toggle_play_pause)
+        # MpvVideoWidget's own default size policy is Preferred/Preferred,
+        # not Expanding -- previously harmless, since addWidget(widget,
+        # stretch=1) directly on the outer QVBoxLayout obeys an explicit
+        # stretch factor regardless of the widget's own policy. Once the
+        # video moved into its own nested video_row QHBoxLayout below (for
+        # the prev/next arrows), that stopped being true: a *sub-layout*
+        # added via addLayout(..., stretch=1) only actually claims extra
+        # vertical space from the outer layout if something inside it
+        # reports wanting to expand -- neither the arrow buttons
+        # (Fixed/Fixed) nor video_widget (Preferred/Preferred) did, so the
+        # whole row collapsed to a short band near the top with all the
+        # window's remaining height left empty below it. Setting this
+        # explicitly is what actually fixes it.
+        self.video_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
         # Prev/Next flank the video itself (not the transport row below)
         # -- cycles to the previous/next video according to whatever the

@@ -9,18 +9,28 @@ machines. Recent sessions have focused on Library filtering/display
 features and app-wide appearance tuning rather than the Editor itself.
 
 All files compile and import cleanly as of this handoff. This
-session covered a lot of ground and corrected two of its own earlier
-claims after more rigorous testing (see below) -- both real bugs that
+session covered a lot of ground and corrected three of its own earlier
+claims after more rigorous testing (see below) -- all real bugs that
 compiled fine and passed a shallower test, caught only by testing
 through the *actual* mechanism (real Qt event dispatch, a real
-`QTabWidget` layout pass, a real `QContextMenuEvent`) instead of
-calling the handler function directly. That pattern held up well
-enough this session that it's worth calling out explicitly for next
-time: **calling a handler method directly proves the method's logic
-works; it does NOT prove the method actually gets called, or that Qt's
-surrounding machinery behaves the way the code assumes.** Prefer
-`QTest`/real event dispatch, and a real widget actually shown in a
-real layout, wherever plausible.
+`QTabWidget` layout pass, a real `QContextMenuEvent`, real widget
+geometry measured after a real layout pass) instead of calling the
+handler function directly or only checking that a signal fired/a value
+got set. That pattern held up well enough this session -- three
+separate times -- that it's worth stating plainly for next time:
+**calling a handler method directly proves the method's logic works;
+it does NOT prove the method actually gets called, that Qt's
+surrounding machinery behaves the way the code assumes, or that the
+result actually LOOKS right once laid out.** A test asserting
+"signal X fired" or "field Y equals Z" can pass while the actual
+on-screen rendering/geometry is completely broken (see item 8's
+addendum below -- video_widget claiming ~20% of window height instead
+of ~80%, first NOTICED from a screenshot, not caught by this session's
+own "verified end-to-end" testing of that same feature). Prefer
+`QTest`/real event dispatch, a real widget actually shown in a real
+layout, AND explicitly checking the resulting geometry/proportions
+when a change touches layout at all -- not just that construction
+didn't crash and the pieces exist.
 
 ## Currently being worked on
 Seven consecutive batches of Library/Settings/appearance
@@ -213,6 +223,39 @@ include a full Advanced Sound feature partway through. In order:
    and confirming Watch Speed changes propagate to the (mocked) mpv
    instance's real `speed` property and reset correctly on video
    change.
+
+   **Bug found afterward (Max caught it from a screenshot, not this
+   session's own testing):** wrapping `video_widget` in `video_row` for
+   the arrows broke the Editor's whole layout -- the video collapsed to
+   a short band near the top (~20% of window height) with all the
+   remaining space left empty below it, pushing the trim timeline and
+   everything else down into a huge dead zone. Root cause:
+   `MpvVideoWidget`'s own default size policy is Preferred/Preferred,
+   not Expanding. That was harmless as long as `video_widget` was added
+   directly to the outer `QVBoxLayout` via `addWidget(widget,
+   stretch=1)` -- an explicit numeric stretch factor on a widget added
+   straight to a box layout is obeyed regardless of that widget's own
+   size policy. Once it moved into its own nested `video_row`
+   `QHBoxLayout` (added to the outer layout via `addLayout(video_row,
+   stretch=1)`), that stopped being true: whether a *sub-layout* can
+   actually claim extra space from its parent layout depends on
+   aggregating whether anything inside it reports wanting to expand,
+   and neither the arrow buttons (Fixed/Fixed) nor `video_widget`
+   (Preferred/Preferred) did -- so the row just sat at its natural
+   minimum height. Fixed with one line,
+   `self.video_widget.setSizePolicy(QSizePolicy.Expanding,
+   QSizePolicy.Expanding)`, set explicitly right where `video_widget`
+   is constructed. This is exactly the kind of bug this file's own
+   top-of-page lesson warns about -- it compiled fine and every
+   existing test (including this item's own "verified end-to-end"
+   above) still passed, because none of them checked actual on-screen
+   geometry/proportions, only that signals fired and values were set
+   correctly. Re-verified this time by measuring `video_widget`'s real
+   height as a fraction of the window at two different window sizes
+   (2560x1440 and 1600x900) -- was 21%/unknown-but-visibly-broken
+   before the fix, is 81%/70% after it -- and reran every other
+   existing test suite from this session to confirm nothing else
+   regressed.
 
 9. **Icon size settings split -- the confirmed "Library Page Icons
    Size does the wrong thing" bug, fixed.** `AppearanceSettings.
