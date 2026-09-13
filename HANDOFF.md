@@ -354,6 +354,36 @@ include a full Advanced Sound feature partway through. In order:
     entries) when no custom image is set; and a full Settings-page
     save/load round trip for all four new fields.
 
+12. **Clear-hotkey button.** A small "\u2715" `QToolButton` next to
+    "Record..." in each Clip Options row (Settings > Clip Capture) --
+    `ClipConfigRow._clear_hotkey()` just empties `hotkey_edit` and fires
+    the same `changed` signal a normal edit would, so it goes through
+    the exact same save path as everything else in that row. A no-op
+    (doesn't re-emit `changed`) if the hotkey's already empty. Verified
+    directly against a real `ClipConfigRow`.
+
+13. **Selection border swapped from flat gray to a gold/white
+    gradient image**, per an image Max provided directly (now bundled
+    as `afterglow/gui/resources/selected_border_gradient.png`).
+    `VideoCard.paintEvent`'s selected branch now `drawPixmap`s this
+    (stretched to fill, same technique as the unedited-highlight
+    branch) instead of `fillRect`-ing `#999999`. Given `resolve_border_
+    pixmap`/the custom-image-override pattern already existed from item
+    11, extended it here too for consistency: new
+    `AppearanceSettings.selected_border_image_path` (empty = use the
+    new bundled default), with a matching Settings > General field --
+    but deliberately NO hue-shift field for this one, since that
+    wasn't part of what was asked. Verified: the default pixmap is
+    genuinely the new bundled image (not the old gray), a SELECTED
+    card's actual rendered pixel is a non-gray color matching the
+    gradient (not `#999999`), a custom override path takes effect, and
+    a full Settings-page save/load round trip. Also had to fix a
+    since-stale assertion in an earlier session's own test (it checked
+    for a neutral gray pixel, which this change correctly broke on
+    purpose) -- a good reminder that "does the border still render"
+    tests need to stay honest about WHAT they're checking for as the
+    actual visual design keeps changing, not just keep passing.
+
 ### Two sessions ago
 All four items carried over from that session's "next up" list,
 implemented and verified (not just compiled -- see the offscreen
@@ -552,6 +582,11 @@ made along the way that are worth Max confirming when he's back,
 though none of them block anything from working.
 
 ## Architecture pointers
+- `afterglow/gui/resources/selected_border_gradient.png` -- NEW this
+  session, the gold/white image Max provided directly, now the
+  selection border's bundled default.
+- `afterglow/gui/clip_config_row.py` -- `clear_hotkey_btn`/
+  `_clear_hotkey()`, new this session.
 - `afterglow/gui/pixmap_effects.py` -- NEW this session.
   `resolve_border_pixmap()`, `hue_shift_pixmap()`, and
   `hue_shift_pixmap_cached()` (the caching matters -- see item 11

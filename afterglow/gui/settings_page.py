@@ -298,6 +298,17 @@ class SettingsPage(QWidget):
         self.unedited_border_hue_shift_spin.setValue(a.unedited_border_hue_shift)
         form.addRow("Unedited Border Hue Shift:", self.unedited_border_hue_shift_spin)
 
+        selected_image_row = QHBoxLayout()
+        self.selected_border_image_edit = QLineEdit(a.selected_border_image_path)
+        self.selected_border_image_edit.setPlaceholderText("(use the built-in gold/white gradient)")
+        selected_image_browse = QPushButton("Browse...")
+        selected_image_browse.clicked.connect(
+            lambda: self._browse_border_image(self.selected_border_image_edit)
+        )
+        selected_image_row.addWidget(self.selected_border_image_edit)
+        selected_image_row.addWidget(selected_image_browse)
+        form.addRow("Selected Border Image:", selected_image_row)
+
         self.filter_icon_size_spin = QSpinBox()
         self.filter_icon_size_spin.setRange(8, 200)
         self.filter_icon_size_spin.setSuffix(" px")
@@ -478,6 +489,7 @@ class SettingsPage(QWidget):
         a.sidebar_border_hue_shift = self.sidebar_border_hue_shift_spin.value()
         a.unedited_border_image_path = self.unedited_border_image_edit.text().strip()
         a.unedited_border_hue_shift = self.unedited_border_hue_shift_spin.value()
+        a.selected_border_image_path = self.selected_border_image_edit.text().strip()
         a.settings_border_mode = self.settings_border_combo.currentData()
         a.unedited_selected_border_width = self.unedited_selected_border_width_spin.value()
         a.unedited_highlight_brightness = self.unedited_highlight_brightness_spin.value()

@@ -145,6 +145,14 @@ class VideoCard(QWidget):
             self._appearance.unedited_border_image_path or "unedited_highlight_gradient.png",
             _highlight_base, self._appearance.unedited_border_hue_shift,
         )
+        # Selection border: a bundled gold/white gradient by default
+        # (selected_border_gradient.png), overridable the same way as
+        # the unedited highlight above -- no hue-shift for this one,
+        # since that wasn't asked for.
+        self._selected_border_pixmap = resolve_border_pixmap(
+            self._appearance.selected_border_image_path,
+            resource_qpixmap("selected_border_gradient.png"),
+        )
         self._selected = False
         # Both optional and both supplied together by _VideoGridTab (see
         # its refresh()) -- let the right-click context menu act on the
@@ -337,11 +345,14 @@ class VideoCard(QWidget):
     def paintEvent(self, event) -> None:
         if self._selected:
             painter = QPainter(self)
-            # Plain flat gray fill, no gradient/multiply-darken -- a
-            # selection border is a UI-chrome indicator, not a
-            # brightness-tunable highlight like the unedited one, so it
-            # doesn't read from unedited_highlight_brightness at all.
-            painter.fillRect(self.rect(), QColor("#999999"))
+            painter.setRenderHint(QPainter.SmoothPixmapTransform)
+            # Gold/white gradient image (selected_border_gradient.png by
+            # default, or a custom override) stretched to fill, same
+            # technique as the unedited-highlight branch below -- no
+            # brightness/multiply-darken step here, since a selection
+            # border is a UI-chrome indicator rather than a
+            # brightness-tunable highlight like the unedited one.
+            painter.drawPixmap(self.rect(), self._selected_border_pixmap)
             border_width = self._appearance.unedited_selected_border_width
             inner_rect = self.rect().adjusted(border_width, border_width, -border_width, -border_width)
             painter.fillRect(inner_rect, self.palette().window())

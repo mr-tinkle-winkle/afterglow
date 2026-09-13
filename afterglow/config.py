@@ -157,6 +157,12 @@ class AppearanceSettings:
     sidebar_border_hue_shift: int = 0
     unedited_border_image_path: str = ""
     unedited_border_hue_shift: int = 0
+    # The selection border's own image override -- defaults to empty,
+    # meaning "use the bundled selected_border_gradient.png" (a gold/
+    # white diagonal streak, chosen directly by Max to replace the
+    # original flat gray selection fill). No hue-shift field for this
+    # one -- wasn't asked for, unlike the other two border types.
+    selected_border_image_path: str = ""
     # "normal" | "maximized" | "fullscreen" -- replaces the old
     # top-level default_to_fullscreen bool (see load()'s backward-compat
     # shim), moved here from the Clipping tab into General since it's

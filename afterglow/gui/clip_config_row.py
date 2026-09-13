@@ -81,8 +81,13 @@ class ClipConfigRow(QFrame):
         self.hotkey_edit.setPlaceholderText("(no hotkey set)")
         record_btn = QPushButton("Record...")
         record_btn.clicked.connect(self._record_hotkey)
+        self.clear_hotkey_btn = QToolButton()
+        self.clear_hotkey_btn.setText("\u2715")  # "✕"
+        self.clear_hotkey_btn.setToolTip("Clear hotkey")
+        self.clear_hotkey_btn.clicked.connect(self._clear_hotkey)
         hotkey_row.addWidget(self.hotkey_edit)
         hotkey_row.addWidget(record_btn)
+        hotkey_row.addWidget(self.clear_hotkey_btn)
         form.addRow("Hotkey:", hotkey_row)
 
         outer.addWidget(self.body)
@@ -122,6 +127,11 @@ class ClipConfigRow(QFrame):
             except ComboError:
                 return
             self.hotkey_edit.setText(dialog.result_combo)
+            self._on_any_change()
+
+    def _clear_hotkey(self) -> None:
+        if self.hotkey_edit.text():
+            self.hotkey_edit.setText("")
             self._on_any_change()
 
     # ------------------------------------------------------------ data access
