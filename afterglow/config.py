@@ -163,6 +163,33 @@ class AppearanceSettings:
     # original flat gray selection fill). No hue-shift field for this
     # one -- wasn't asked for, unlike the other two border types.
     selected_border_image_path: str = ""
+    # ---- UI update (Phase 1: design-system foundation) ----
+    # "Rounded Corners" (Settings > General) -- a single on/off toggle
+    # plus one shared radius (px) for every rounded element (cards,
+    # nested card boxes, sidebar borders, tab icons, text boxes, the
+    # video player) -- not a per-element radius, per how it was asked
+    # for ("a customizable radius next to the toggle", singular).
+    rounded_corners_enabled: bool = True
+    rounded_corner_radius: int = 12
+    # "Custom Buttons" (Settings > General) -- whether buttons across
+    # the app are custom-painted (via the new theme system below)
+    # instead of left as native Qt/KDE-styled widgets. Independent of
+    # Afterglow Theme: with this on and Afterglow Theme off, buttons
+    # are still custom-painted, just in colors sampled from the live
+    # KDE/Qt palette instead of the fixed hex codes below.
+    custom_buttons_enabled: bool = True
+    # "Afterglow Theme" (Settings > General for the toggle, Settings >
+    # Advanced for the actual hex values) -- overrides the color
+    # SOURCE custom-painted elements read from (KDE palette -> these
+    # fixed hex codes); it doesn't do anything on its own if
+    # custom_buttons_enabled is off, since there's nothing custom-
+    # painted left to recolor. Chosen directly by Max:
+    # blue/dark-desaturated-blue/super-dark-desaturated-blue/turquoise.
+    afterglow_theme_enabled: bool = True
+    afterglow_color_accent: str = "#257fff"
+    afterglow_color_card_background: str = "#34588c"
+    afterglow_color_app_background: str = "#2d3949"
+    afterglow_color_library: str = "#2ee0a6"
     # "normal" | "maximized" | "fullscreen" -- replaces the old
     # top-level default_to_fullscreen bool (see load()'s backward-compat
     # shim), moved here from the Clipping tab into General since it's

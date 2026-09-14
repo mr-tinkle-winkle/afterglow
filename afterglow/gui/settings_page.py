@@ -18,8 +18,9 @@ from __future__ import annotations
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QGroupBox, QLineEdit,
     QSpinBox, QDoubleSpinBox, QPushButton, QFileDialog, QLabel, QScrollArea,
-    QMessageBox, QTabWidget, QCheckBox, QComboBox,
+    QMessageBox, QTabWidget, QCheckBox, QComboBox, QColorDialog,
 )
+from PySide6.QtGui import QColor
 
 from .. import config as config_module
 from .. import clips
@@ -58,6 +59,13 @@ class SettingsPage(QWidget):
 
         self.filters_settings_page = FiltersSettingsPage()
         tabs.addTab(self.filters_settings_page, "Filters")
+
+        advanced_page = QWidget()
+        advanced_layout = QVBoxLayout(advanced_page)
+        advanced_layout.addWidget(self._build_afterglow_theme_group())
+        advanced_layout.addStretch(1)
+        tabs.addTab(advanced_page, "Advanced")
+
         outer.addWidget(tabs, stretch=1)
 
         save_row = QHBoxLayout()
@@ -187,6 +195,34 @@ class SettingsPage(QWidget):
         group = QGroupBox("Appearance")
         form = QFormLayout(group)
         a = self._settings.appearance
+
+        # ---- UI update (Phase 1) ----
+        self.rounded_corners_check = QCheckBox()
+        self.rounded_corners_check.setChecked(a.rounded_corners_enabled)
+        form.addRow("Rounded Corners:", self.rounded_corners_check)
+
+        self.rounded_corner_radius_spin = QSpinBox()
+        self.rounded_corner_radius_spin.setRange(0, 100)
+        self.rounded_corner_radius_spin.setSuffix(" px")
+        self.rounded_corner_radius_spin.setValue(a.rounded_corner_radius)
+        form.addRow("Corner Radius:", self.rounded_corner_radius_spin)
+
+        self.custom_buttons_check = QCheckBox()
+        self.custom_buttons_check.setChecked(a.custom_buttons_enabled)
+        self.custom_buttons_check.setToolTip(
+            "Custom-painted buttons matching your KDE theme's colors, in "
+            "place of plain native/KDE-styled buttons."
+        )
+        form.addRow("Custom Buttons:", self.custom_buttons_check)
+
+        self.afterglow_theme_check = QCheckBox()
+        self.afterglow_theme_check.setChecked(a.afterglow_theme_enabled)
+        self.afterglow_theme_check.setToolTip(
+            "Overrides Custom Buttons' color source with fixed colors instead "
+            "of your live KDE theme -- edit the actual colors under Settings > "
+            "Advanced."
+        )
+        form.addRow("Afterglow Theme:", self.afterglow_theme_check)
 
         self.resize_text_check = QCheckBox()
         self.resize_text_check.setChecked(a.resize_text_to_fit)
@@ -393,6 +429,52 @@ class SettingsPage(QWidget):
         if path:
             edit.setText(path)
 
+    # ------------------------------------------------------------ Afterglow Theme group
+
+    def _build_afterglow_theme_group(self) -> QGroupBox:
+        group = QGroupBox("Afterglow Theme")
+        form = QFormLayout(group)
+        a = self._settings.appearance
+
+        accent_row, self.afterglow_accent_edit = self._build_color_row(a.afterglow_color_accent)
+        form.addRow("Accent (buttons, card info box):", accent_row)
+
+        card_bg_row, self.afterglow_card_bg_edit = self._build_color_row(a.afterglow_color_card_background)
+        form.addRow("Card Background:", card_bg_row)
+
+        app_bg_row, self.afterglow_app_bg_edit = self._build_color_row(a.afterglow_color_app_background)
+        form.addRow("App Background:", app_bg_row)
+
+        library_row, self.afterglow_library_edit = self._build_color_row(a.afterglow_color_library)
+        form.addRow("Library Pages:", library_row)
+
+        note = QLabel(
+            "These only take effect when both Custom Buttons and Afterglow "
+            "Theme are on (Settings > General)."
+        )
+        note.setWordWrap(True)
+        form.addRow(note)
+
+        return group
+
+    def _build_color_row(self, initial_hex: str) -> tuple[QHBoxLayout, QLineEdit]:
+        row = QHBoxLayout()
+        edit = QLineEdit(initial_hex)
+        edit.setMaxLength(9)  # "#RRGGBB" or "#AARRGGBB"
+        pick_btn = QPushButton("Pick...")
+        pick_btn.clicked.connect(lambda: self._pick_color(edit))
+        row.addWidget(edit)
+        row.addWidget(pick_btn)
+        return row, edit
+
+    def _pick_color(self, edit: QLineEdit) -> None:
+        current = QColor(edit.text().strip())
+        if not current.isValid():
+            current = QColor("#ffffff")
+        color = QColorDialog.getColor(current, self, "Choose Color")
+        if color.isValid():
+            edit.setText(color.name())
+
     def _open_advanced_sound_dialog(self) -> None:
         from .advanced_sound_dialog import AdvancedSoundDialog
         dialog = AdvancedSoundDialog(
@@ -477,6 +559,10 @@ class SettingsPage(QWidget):
         self._settings.default_error_sound_path = self._pending_default_error_sound
 
         a = self._settings.appearance
+        a.rounded_corners_enabled = self.rounded_corners_check.isChecked()
+        a.rounded_corner_radius = self.rounded_corner_radius_spin.value()
+        a.custom_buttons_enabled = self.custom_buttons_check.isChecked()
+        a.afterglow_theme_enabled = self.afterglow_theme_check.isChecked()
         a.resize_text_to_fit = self.resize_text_check.isChecked()
         a.inactive_border_width = self.inactive_border_width_spin.value()
         a.inactive_border_brightness = self.inactive_border_brightness_spin.value()
@@ -500,6 +586,24 @@ class SettingsPage(QWidget):
         a.saved_videos_icon_size = self.saved_videos_icon_size_spin.value()
         a.uploaded_videos_icon_size = self.uploaded_videos_icon_size_spin.value()
         a.startup_window_mode = self.startup_window_mode_combo.currentData()
+
+        for label, edit in (
+            ("Accent", self.afterglow_accent_edit),
+            ("Card Background", self.afterglow_card_bg_edit),
+            ("App Background", self.afterglow_app_bg_edit),
+            ("Library Pages", self.afterglow_library_edit),
+        ):
+            if not QColor(edit.text().strip()).isValid():
+                QMessageBox.warning(
+                    self, "Invalid Color",
+                    f"'{edit.text()}' isn't a valid color for Afterglow Theme's {label} -- "
+                    f"use a hex code like #257fff.",
+                )
+                return
+        a.afterglow_color_accent = self.afterglow_accent_edit.text().strip()
+        a.afterglow_color_card_background = self.afterglow_card_bg_edit.text().strip()
+        a.afterglow_color_app_background = self.afterglow_app_bg_edit.text().strip()
+        a.afterglow_color_library = self.afterglow_library_edit.text().strip()
 
         config_module.save(self._settings)
         self.filters_settings_page.save()

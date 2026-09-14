@@ -8,6 +8,225 @@ Library pages are solid and confirmed working across multiple
 machines. Recent sessions have focused on Library filtering/display
 features and app-wide appearance tuning rather than the Editor itself.
 
+## MAJOR EPIC: UI Update + Editor Update (multi-session, in progress)
+Max handed over a huge combined spec for a UI overhaul AND a full
+Editor rebuild (tracks, segments, filters, transitions -- effectively
+a new NLE). Explicitly told to expect "many sessions with minor
+changes." **We are doing the UI Update first; the Editor Update below
+hasn't been started at all.** Read this whole section before touching
+anything in this epic -- it's the actual spec plus every clarifying
+decision made so far, not just a changelog.
+
+**Backend decision (asked, answered):** staying on PySide6/QWidgets
+rather than porting to Qt Quick/QML or another toolkit. Reasoning:
+everything asked for is achievable in QWidgets (custom `QPainterPath`
+corners, custom-painted buttons, animated popovers, `QGraphicsBlurEffect`
+for blur); mpv embedding already works and is fragile enough
+infrastructure that re-embedding it in a different framework would be
+its own multi-session risk; the NixOS flake already pins PySide6.
+Building a proper internal design-system layer (rounded-corner/theme
+utilities, custom button base classes) instead of one-off styling.
+
+### UI Update -- full spec (condensed, all decisions folded in)
+
+**Rounded Corners** (Settings > General, on by default, radius in px
+next to the toggle, default 12px -- Max said "whatever you think
+works"):
+- Applies to: sidebar borders, Library page tab icons (specifically
+  the non-touching edges -- e.g. Local's top-left, Uploaded's
+  top-right, since they're adjacent), video borders (the Library
+  card's unedited/selected highlight border, AND once the card
+  restructure below lands, ALL of its nested boxes: outer background
+  box, inner info box, and the video player itself), text boxes if
+  feasible, the video/audio segments in the future Editor (skip for
+  now -- segments don't exist yet), the corners of the app window
+  itself (Max said to SKIP this entirely -- window rounding should
+  just be whatever the KDE/window-manager theme already does, not a
+  custom frameless-window implementation).
+- "Apple style" clarified by Max: just means smooth/eased into the
+  curve, NOT literally circular -- does NOT need true superellipse/
+  squircle math. Implemented via a tuned cubic-Bezier approximation
+  (see Architecture pointers).
+- Two touching corners (e.g. adjacent sidebar buttons, adjacent tab
+  icons) should NOT be rounded on the touching side.
+- "Assume rounded unless there's a reason not to" -- default to
+  applying this broadly as it gets built out, not narrowly.
+
+**Video padding** -- a setting controlling both the space between
+Library cards AND the space between cards and the grid's own edges
+(one shared value, not two separate settings).
+
+**Custom Buttons** (Settings > General, on by default) -- replace
+native/KDE-styled buttons (Filters, Sort By, Info, refresh, many in
+Settings) with custom-painted ones. Colors come from the LIVE KDE
+theme by default (Qt's `QApplication.palette()` already reflects the
+active Plasma color scheme, confirmed nothing in this app currently
+overrides `setStyle()`) -- independent of Afterglow Theme below.
+
+**Afterglow Theme** (Settings > General for the on/off toggle, on by
+default; Settings > Advanced for the actual editable hex values) --
+overrides Custom Buttons' color SOURCE from the live KDE palette to
+these fixed colors (confirmed by Max: Afterglow Theme on literally
+overrides the KDE-sampled colors). Does nothing if Custom Buttons is
+off. Exact hex codes, from Max directly:
+- `#257fff` (blue) -- most buttons (Filters, Sort By, Info), and the
+  card info box (holds filters/info/title).
+- `#34588c` (dark desaturated blue) -- the card background portrusion
+  behind videos.
+- `#2d3949` (super dark desaturated blue) -- the app's own background.
+- `#2ee0a6` (turquoise) -- the Library pages (Local and Uploaded)
+  themselves.
+- Pre-existing gradients (sidebar borders, unedited-video highlight)
+  stay as-is in shape/border, but with Afterglow Theme on: the
+  background behind a sidebar button becomes a darkened/desaturated
+  version of that button's own border gradient. For the unedited-video
+  highlight specifically: confirmed by Max it's BOTH a border around
+  the video player itself AND a background overlay on the card's
+  background box, rendered BEHIND both the video player and the info
+  box (not replacing the video image itself). The background box needs
+  enough padding around its nested video-player + info-box children
+  that a sliver of the background portrusion is visible on every side,
+  everywhere on the card, not just in corners/gaps.
+- Light shading is planned for later (subtle gradients replacing some
+  flat fills) -- Max confirmed this doesn't need a redesign as long as
+  color application is centralized (it now is -- see Theme class).
+
+**Card restructure** (Library grid) -- **DONE as of "This session" item
+16 below, except the two explicitly-deferred pieces marked below:**
+- Centered names under clips. -- done (title_label was already
+  center-aligned; confirmed still true after the restructure).
+- Outer "background" box (portrusion, per above) containing an inner
+  "info" box (portrusion) which holds filters + info + title, plus the
+  video player/thumbnail as its own element alongside the info box
+  within the outer box. -- done (`_InfoBox` + `video_box`).
+- ALL clips normalized to the same size. -- done, and verified to
+  actually be the fix for the bug below, not just a restyle.
+- **Confirmed bug, FIXED** (see "Currently being worked on" below):
+  spam-clicking the sidebar Library button or the per-tab Refresh
+  button left stale, still-visible orphaned card widgets on screen
+  from `deleteLater()`'s deferred deletion not actually hiding them
+  first -- this WAS the "duplicate clips / messed-up sizing" bug,
+  confirmed by direct reproduction, not a guess.
+- Clicking the **info box** opens a separate, smaller preview player
+  (confirmed by Max: "similar to Medal, a separate smaller video
+  player" -- NOT the same as the full Editor, and NOT the same as the
+  hover-autoplay-in-grid feature below; three distinct playback
+  contexts once this all exists). **NOT YET BUILT** -- see "Next up".
+  What clicking the **thumbnail/video player part** itself does,
+  specifically, still isn't pinned down -- currently unchanged
+  (whole-card select/double-click-to-edit) --
+  worth confirming when this phase actually starts (current selection/
+  double-click-to-edit behavior might just carry over unchanged, but
+  should be confirmed rather than assumed).
+
+**Comfy UI** (Settings > General, on by default) -- enlarges smaller
+chrome elements (filters, sort by, info, text boxes, etc.). Confirmed
+by Max: stacks MULTIPLICATIVELY with the existing window-size-based
+scale system (`scaling.py`), rather than being an independent
+fixed-size override.
+
+**Video Info settings tab** (Settings > General) -- per-info-type font
+size (video length, etc., plus two new info types below).
+
+**Info list additions** (both on by default): video title, video
+thumbnail.
+
+**Search bubble** -- replace the current search box with a magnifying-
+glass icon; clicking it expands a text box DOWNWARD (confirmed
+direction) below the icon without displacing other layout, ideally
+with a speech-bubble-style visual connector between icon and box.
+Ctrl+F opens it.
+
+**Hamburger menu** -- replaces the Filters/Sort By/Info buttons with
+one hamburger icon that opens a floating (not a new page) panel split
+into three vertical columns (Filters | Sort By | Info), each spanning
+the full height of the panel. Confirmed: clicking outside it closes it
+(standard popover dismissal).
+
+**Hover-autoplay-in-grid** (separate settings toggle, confirmed
+distinct from the info-box preview player above): hovering a card
+starts a muted-by-default autoplay preview; click toggles pause/
+resume; small volume meter bottom-left (same icon as the Editor's) and
+fullscreen button bottom-right (icon TBD, Max providing); an Edit
+button (editor icon); loops from the beginning once it reaches the end
+rather than stopping.
+
+**Middle-click** anywhere in the Library deselects the whole current
+multi-selection.
+
+**Ctrl+R** -- in the Library, does what the Refresh button does; in
+the Editor, closes and reopens the Editor with the same video loaded,
+prompting "Would you like to save?" first if there are unsaved
+changes.
+
+**Icons Max is providing later** (build with placeholder icons for
+now, swap in real assets once dropped): magnifying glass (search),
+refresh, a fullscreen-button icon (for the small preview player), a
+hamburger-menu icon, a drag-handle icon (for reordering something
+draggable -- see Editor Update's track reordering), a lock icon (for
+the future Editor's segment-locking).
+
+### Editor Update -- full spec (NOT STARTED, reference only)
+A complete Editor rebuild into a track-based NLE, opened via a
+bottom-right "Advanced Editor" entry point (with a "Always Open
+Advanced Editor" General setting to skip straight to it). Kept in full
+detail here since it's a much later phase and easy to lose track of
+otherwise:
+- Classic playhead: drag-to-scrub, click-to-move, scroll-to-adjust-
+  timestep, Space to play/pause, red vertical line with a "bulky head"
+  indicator.
+- Multi-select: Ctrl toggles individual segments; Shift selects
+  everything between two segments on the same track, or (if the two
+  are on different tracks) everything between them on every track in
+  between, inclusive.
+- An "Import" button left of the name field -- edit any arbitrary
+  file; saving makes an `xxxxxxxxx-edited.<ext>` copy of the original
+  rather than overwriting it.
+- Multiple vertical-scrollable tracks (4 shown at once by default).
+  Track 2-from-top is video, 2-from-bottom is audio, by default; top
+  and bottom tracks are otherwise untouched UNLESS something gets
+  dragged onto them, which creates a new track past it (above for the
+  top track, below for the bottom). Tracks reorderable via a 3-line
+  handle on the left (a General > Editor setting flips it to the
+  right instead). No audio/video track type distinction -- either can
+  go on any track.
+- Audio segments render as a volume-over-time graph: a center line,
+  drag vertically to set volume (0%-200%), or start typing a number
+  while holding it to type an exact percent; the graph itself is a
+  waveform.
+- Video segments render as a film-strip of tiled screenshots centered
+  on each strip's timestamp (exact tile size/count left to
+  implementation, Max will give feedback once it's visible).
+- `S` splits, `C` combines (segments must be touching). Combining a
+  video and an audio segment does an inclusive merge (e.g. long audio
+  + short video = black footage with audio once the video runs out),
+  with a visible/clickable split marker wherever that merge boundary
+  falls.
+- Snapping: segment starts/ends snap to other segments and to the
+  playhead; the playhead snaps (lightly) to segments.
+- Overlap handling: placing a segment where it'd overlap another kicks
+  it to the nearest fully-open track on its respective side instead.
+- Right-click context menu per track/segment. Segments can be: Locked
+  (`L` -- gray border + gray overlay + a lock icon centered over it),
+  Muted (`M`), visibility-toggled (`V`), Copied (`Ctrl+C`), Pasted at
+  the playhead (`Ctrl+V`). Tracks can be collapsed.
+- Additions: zoom filter (configurable zoom-in/zoom-out timing per
+  segment); on-screen elements (text with font choice, pictures, gifs
+  -- all resizable, shown in the track as a transparent-background
+  segment labeled with the element's name or, for text, the actual
+  text); arbitrary audio file overlay anywhere in the video.
+- Segment properties panel (opens on the right when a segment is
+  selected): fade-in time, fade-out time.
+- Transitions between back-to-back segments: cross-fade, blur/focus,
+  slide [destination/original/both] from [top/right/bottom/left], fade
+  [destination/original/both] from [top/right/bottom/left].
+- Undo/redo. Drag-and-drop files directly into the timeline, if
+  feasible.
+- Heavy inspiration from Filmora/Premiere Pro/Final Cut Pro for
+  feature set and rough organization.
+- Rounded-corners rule specific to this: segments/tracks get rounded
+  corners UNLESS snapped to another segment.
+
 All files compile and import cleanly as of this handoff. This
 session covered a lot of ground and corrected three of its own earlier
 claims after more rigorous testing (see below) -- all real bugs that
@@ -384,6 +603,161 @@ include a full Advanced Sound feature partway through. In order:
     tests need to stay honest about WHAT they're checking for as the
     actual visual design keeps changing, not just keep passing.
 
+14. **UI Update epic kicked off -- Phase 1 (design-system foundation)
+    done.** See the new "MAJOR EPIC" section near the top of this file
+    for the full spec and every clarifying decision. This session's
+    actual work:
+    - `afterglow/gui/rounded_rect.py` -- `rounded_rect_path()`, a
+      smooth (Bezier-based, tuned flatter than a true quarter-circle
+      per Max's "smooth, not immediately circular" clarification)
+      rounded-rect path builder with per-corner skip flags for touching
+      edges. Not yet APPLIED to anything real -- that's later phases --
+      but its geometry is fully verified: a rounded corner's exact tip
+      is excluded from the filled path, a skipped corner's is included,
+      radius clamps sanely when it exceeds half the rect's smaller
+      dimension, and the overall bounding box stays correct throughout.
+    - `afterglow/gui/theme.py` -- `Theme`, the single source of truth
+      for every themed color (`accent()`, `card_background()`,
+      `app_background()`, `library_background()`, `button_color()`,
+      `button_text_color()`), reading either the live `QApplication`
+      palette or Afterglow Theme's fixed hex codes depending on
+      settings, with a computed-contrast text color rather than a
+      fixed one. Cheap to construct fresh wherever needed, same pattern
+      as `config_module.load()` elsewhere in this codebase.
+    - Six new `AppearanceSettings` fields (`rounded_corners_enabled`,
+      `rounded_corner_radius`, `custom_buttons_enabled`,
+      `afterglow_theme_enabled`, and the four `afterglow_color_*` hex
+      fields) with Settings UI: three new toggles/spinbox in General,
+      and a brand new **Advanced** settings tab holding the four color
+      fields (each a hex `QLineEdit` + a "Pick..." button opening
+      `QColorDialog`, kept in sync both ways). Invalid hex input blocks
+      saving with a warning rather than silently corrupting the config.
+    - Verified: the full settings round trip for all six new fields,
+      the color-picker dialog updating its line edit, and invalid-hex
+      rejection -- all against a real `SettingsPage`.
+
+15. **Spam-click library bug -- found and fixed, not guessed at.**
+    Max gave exact repro steps (spam-click the sidebar Library button,
+    or the per-tab Refresh button) this time, which made this
+    straightforward to actually reproduce rather than search blind.
+    Root cause: `_VideoGridTab.refresh()` clears old cards via
+    `layout.takeAt(0)` + `widget.deleteLater()` -- `takeAt()` stops the
+    LAYOUT from managing the widget, but doesn't hide it, and
+    `deleteLater()`'s actual deletion is a low-priority event Qt only
+    processes once its queue is otherwise idle. A burst of clicks
+    arriving faster than that -- an ordinary spam-click -- stacks up
+    multiple generations of old, still-alive, still-VISIBLE card
+    widgets sitting at stale positions, all overlapping the newest
+    generation. This WAS the reported "duplicate clips / messed-up
+    sizing," confirmed by direct reproduction (5 rapid `refresh()`
+    calls left 15 stale-but-visible orphaned cards on screen alongside
+    the 3 real ones) rather than assumed. Fix: `widget.hide()` right
+    alongside the existing `deleteLater()`, so a stale card disappears
+    immediately regardless of how many refreshes stack up before Qt
+    gets around to actually deleting it. Verified: the exact
+    reproduction above now shows zero visible orphans; confirmed
+    synchronously (no `processEvents()` call at all) that stale widgets
+    are hidden immediately rather than merely "eventually correct once
+    the event loop catches up"; and reran the full existing suite to
+    confirm this didn't disturb anything else.
+
+16. **UI Update Phase 2: card restructure.** See "MAJOR EPIC" section
+    for the spec. `afterglow/gui/video_card.py` had its whole layout
+    construction and `paintEvent` rewritten:
+    - **Size normalization (the actual "all clips should be the same
+      size" fix, not just a restyle).** Root cause of the reported
+      inconsistent sizing: (1) the title label word-wrapped, so a long
+      title produced a taller card than a short one; (2) optional rows
+      (info/date lines, filter icon row, tag-name line) were only
+      created when THIS video's own data was non-empty, so e.g. a
+      video with 0 matching tags produced a shorter card than one with
+      tags, even under identical settings. Fixed both: title is now
+      permanently single-line with `QFontMetrics.elidedText()` as a
+      hard backstop (Resize Text to Fit's existing font-shrinking still
+      runs FIRST when enabled, elision only kicks in if shrinking to
+      its 6pt floor still doesn't fit); every optional row is now
+      created whenever its GLOBAL setting is on, using a single-space
+      placeholder when this particular video's data is missing, so the
+      row's HEIGHT is always reserved regardless of per-video content.
+      `_build_icon_row` specifically reserves `appearance.
+      filter_icon_size` (the base setting) for its own height/width,
+      NOT the count-adjusted `icon_size` `_icon_size_for_count`
+      computes for how big the icons actually render within that
+      space -- using the adjusted value for the reservation itself
+      would have reintroduced the exact same bug (more tags -> smaller
+      icons -> smaller reserved row -> shorter card). Verified directly:
+      built cards for a 1-character-title/0-tag video, a long-wrapping-
+      title/3-tag video, and a third video, and confirmed all three
+      produce bit-for-bit identical `sizeHint()` -- both in isolation
+      and inside a real `LibraryPage` grid.
+    - **Nested box structure.** New `_InfoBox` class -- the inner box
+      holding title + info/date lines + below-location filter icons +
+      tag names, painted with its own rounded, `Theme.accent()`-colored
+      background. The video thumbnail got its own `video_box` wrapper
+      (`thumb_label` inset within it by `unedited_selected_border_
+      width` on all sides) so there's an actual gap to draw a border
+      into. `CARD_PADDING`/`BOX_GAP` (both 14px/10px) are the margins
+      between the outer card edge and its two children, and between
+      the two children themselves -- generous enough that the outer
+      background portrusion (`Theme.card_background()`) stays visible
+      on every side, everywhere, per Max's ask. Neither inner box's own
+      internal children reach far enough into ITS corners to need any
+      per-pixel child masking for the rounding to look right -- the
+      padding itself keeps everything clear of the curved areas, which
+      is what let this be done with plain clip-path-then-fill/draw
+      calls in `paintEvent`, no `QWidget.setMask()` or render-to-pixmap
+      tricks needed.
+    - **Unedited highlight redefined**, per Max's clarification: now
+      BOTH a background wash across the whole outer card (behind BOTH
+      the video box and info box -- was previously the only place the
+      highlight rendered at all) AND a separate border drawn
+      specifically into `video_box`'s own margin. Selection was
+      deliberately NOT redefined the same way (Max only asked for this
+      on the unedited highlight) -- it stays a ring around the whole
+      outer card, same as before, just now rounded-corner-aware.
+    - **Rounded corners actually applied for the first time** (Phase
+      1 built the math and the settings; nothing used it until now):
+      the outer card, the info box, and the video-box border region
+      all respect `rounded_corners_enabled`/`rounded_corner_radius`.
+      Caught and fixed a real bug while testing this: the selected-
+      border's inset fill used to unconditionally `fillRect(self.rect(),
+      ...)` under a clip that was only actually SET when rounding was
+      on -- with rounding off, that clip call never happened, so the
+      fill would have covered the ENTIRE card instead of just the ring's
+      inset area, erasing the border it was supposed to create a gap
+      for. Fixed by using a plain `fillRect(inner_rect, ...)` (no clip
+      needed at all) when rounding is off, and the clipped full-rect
+      fill only for the rounded-corner case.
+    - Verified extensively: `_InfoBox` genuinely paints `Theme.accent()`
+      (not a hardcoded color); the outer card genuinely paints `Theme.
+      card_background()`; the literal corner pixel is genuinely
+      excluded from the fill when rounding is on, and genuinely
+      included when it's off (this is also what caught the bug just
+      above -- an early version of this test used the literal corner
+      pixel as its sample point and got a false failure for the SAME
+      reason as `test_selected_border_image.py` below, which is a good
+      illustration of why "sample a point well clear of any corner
+      unless you're specifically testing the corner" matters); the
+      highlight wash and the video-box border both visibly differ from
+      plain `card_background()` on an unedited video, and don't appear
+      at all when highlighting is disabled; selection's inset-fill
+      correctly returns to plain `card_background()` just past the
+      border ring, both with rounding on and off. Also had to fix a
+      second, pre-existing test (`test_selected_border_image.py`) that
+      sampled the literal corner pixel and started failing now that
+      rounded corners default to on -- not a regression, the same
+      "corner pixel is legitimately excluded now" situation.
+    - **Not done yet, deferred:** the info-box-click-opens-a-separate-
+      smaller-preview-player feature (Max confirmed: distinct from both
+      the Editor and the future hover-autoplay), and what clicking the
+      thumbnail/video-box area itself should do now that it's visually
+      separated from the info box (current selection/double-click-to-
+      edit behavior was left exactly as-is, still bound to the whole
+      card via `mousePressEvent`/`mouseDoubleClickEvent`, since neither
+      was explicitly asked to change -- worth confirming rather than
+      assuming this is right once the preview player actually gets
+      built). Video padding setting also not done yet.
+
 ### Two sessions ago
 All four items carried over from that session's "next up" list,
 implemented and verified (not just compiled -- see the offscreen
@@ -575,23 +949,64 @@ widget-level testing note above):
   toggles tag-on-video, the other toggles include/exclude-from-search).
 
 ## Next up
-Nothing outstanding from an explicit ask right now -- all four items
-from the border/icon-size/speed/navigation backlog are done (see "This
-session" above). See "Open questions" below for a few judgment calls
-made along the way that are worth Max confirming when he's back,
-though none of them block anything from working.
+**Phase 2 (card restructure) is done** -- see item 16 above. Remaining
+for the UI Update epic, in order of what's most contained to what
+needs the most new plumbing:
+1. **Confirm what clicking the thumbnail/video-box should do now**
+   that it's visually separated from the info box (currently unchanged
+   -- still whole-card select/double-click-to-edit). Cheap to answer,
+   worth doing before building the preview player next, since that's
+   the other half of "what do the two boxes each do when clicked."
+2. **The info-box-click -> separate smaller preview player** (Medal-
+   style, confirmed distinct from both the Editor and hover-autoplay).
+   This is a real new feature (a second mpv-embedded player, this time
+   in a lightweight modal/dialog rather than a full page) -- probably
+   deserves to be scoped as its own sub-phase rather than a quick
+   add-on.
+3. **Wire `Theme`/Custom Buttons into the sidebar and toolbar buttons**
+   -- Phase 1 built the settings and color source, Phase 2 wired it
+   into the video card, but the sidebar nav buttons and Filters/Sort/
+   Info-style buttons still don't read from `Theme` at all yet.
+4. Video padding setting.
+5. Everything else in the UI Update spec not yet touched: Comfy UI,
+   Video Info settings tab, the search bubble, the hamburger popover,
+   hover-autoplay-in-grid, middle-click-deselects, Ctrl+R.
+
+Given how large this epic is, expect this list to keep growing/
+reordering as each phase actually lands -- treat it as "what's next,"
+not a fixed roadmap.
 
 ## Architecture pointers
-- `afterglow/gui/resources/selected_border_gradient.png` -- NEW this
-  session, the gold/white image Max provided directly, now the
-  selection border's bundled default.
+- `afterglow/gui/video_card.py` -- extensively rewritten this session
+  (Phase 2, item 16 above). New `_InfoBox` class; new `CARD_PADDING`/
+  `BOX_GAP`/`INFO_BOX_PADDING` constants; `video_box` (thumbnail's
+  bordered wrapper); `_full_title_text` (the un-elided source of truth
+  for the title, elision is applied only at display time in
+  `set_font_scale`, which now handles both font-shrinking AND eliding
+  together); `_build_icon_row` reserves constant space regardless of
+  per-video tag count; `paintEvent` fully rewritten around
+  `rounded_rect.py` + `theme.py`.
+- `afterglow/gui/rounded_rect.py` -- `rounded_rect_path()`, the smooth
+  rounded-corner path builder, now actually used by `video_card.py`
+  (Phase 1 built it, nothing read it until Phase 2).
+- `afterglow/gui/theme.py` -- `Theme`, now actually read by
+  `video_card.py`'s `_InfoBox` (accent) and `VideoCard.paintEvent`
+  (card_background) -- still not wired into sidebar/toolbar buttons.
+- `afterglow/gui/resources/selected_border_gradient.png` -- the
+  gold/white image Max provided directly, now the selection border's
+  bundled default.
 - `afterglow/gui/clip_config_row.py` -- `clear_hotkey_btn`/
-  `_clear_hotkey()`, new this session.
-- `afterglow/gui/pixmap_effects.py` -- NEW this session.
+  `_clear_hotkey()`.
+- `afterglow/gui/pixmap_effects.py` --
   `resolve_border_pixmap()`, `hue_shift_pixmap()`, and
   `hue_shift_pixmap_cached()` (the caching matters -- see item 11
   above for why an uncached hue shift would have been a real per-card
   performance problem). Shared by `main_window.py` and `video_card.py`.
+- `afterglow/gui/library_page.py` -- `_VideoGridTab.refresh()` now
+  calls `widget.hide()` before `deleteLater()` when clearing old cards
+  (item 15 above) -- if this pattern (remove-from-layout-then-defer-
+  delete) ever gets copy-pasted elsewhere in this codebase, the hide()
+  needs to come along with it.
 - `afterglow/gui/mpv_widget.py` -- `MpvVideoWidget.set_speed()`, new
   this session, mirrors the existing `set_volume()`'s pattern exactly
   (a plain property set on the live mpv instance, no persistence).

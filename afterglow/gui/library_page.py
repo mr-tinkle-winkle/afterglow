@@ -395,10 +395,26 @@ class _VideoGridTab(QWidget):
         # video, rename, tag change), so these are rebuilt from scratch
         # rather than reused. Resizing (_relayout below) is the cheaper
         # path that doesn't hit this.
+        #
+        # hide() before deleteLater(): removing a widget from a layout
+        # via takeAt() stops the LAYOUT from managing it, but doesn't
+        # hide it -- it stays visible, at wherever its last on-screen
+        # position was, until the deferred deletion actually runs.
+        # deleteLater()'s deletion is a low-priority event that Qt only
+        # processes once the event queue is otherwise idle, so a burst
+        # of refresh() calls arriving faster than that (e.g. spam-
+        # clicking Refresh or the sidebar Library button) can stack up
+        # several still-visible "orphaned" generations of old cards,
+        # all overlapping the newest one -- this is confirmed to be
+        # exactly what was reported as "spam-clicking the library
+        # duplicates/messes up clip sizing": the stale cards were real,
+        # still-alive, still-VISIBLE widgets sitting at old geometry,
+        # not a duplicate library entry or a sizing calculation bug.
         while self.grid_layout.count():
             item = self.grid_layout.takeAt(0)
             widget = item.widget()
             if widget:
+                widget.hide()
                 widget.deleteLater()
         self._cards = []
         # The video list is about to be requeried (new order, possibly

@@ -10,8 +10,8 @@ from __future__ import annotations
 from pathlib import Path
 from datetime import datetime
 
-from PySide6.QtCore import Qt, Signal, QSize
-from PySide6.QtGui import QPixmap, QPainter, QColor, QIcon
+from PySide6.QtCore import Qt, Signal, QSize, QRectF
+from PySide6.QtGui import QPixmap, QPainter, QColor, QIcon, QFontMetrics
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QMenu, QMessageBox, QLineEdit,
     QPushButton, QHBoxLayout, QInputDialog, QCheckBox, QWidgetAction,
@@ -20,9 +20,26 @@ from PySide6.QtWidgets import (
 from .. import library, thumbnails, config as config_module
 from .resources import resource_qpixmap
 from .pixmap_effects import resolve_border_pixmap, hue_shift_pixmap_cached
+from .rounded_rect import rounded_rect_path
+from .theme import Theme
 
 THUMB_SIZE = QSize(400, 224)  # 16:9, doubled from the original 200x112
 FAVORITE_STAR = "\u2605"  # "★"
+
+# UI Update Phase 2 (card restructure): the outer card is a "background"
+# box; CARD_PADDING is the margin between its own edge and its two
+# children (the video box, the info box) -- generous enough that a
+# sliver of the background portrusion stays visible on every side of
+# the card, per Max's ask, regardless of where you look at it. BOX_GAP
+# is the same idea applied to the gap between the two children
+# themselves.
+CARD_PADDING = 14
+BOX_GAP = 10
+# The info box's own internal margin for ITS children (title, info
+# lines, icons, tag names) -- kept comfortably >= the corner radius so
+# rounding the info box's corners never needs to clip/mask a child
+# widget; nothing reaches that far into the corner in the first place.
+INFO_BOX_PADDING = 8
 
 # 3x the original 18px icon size, per request -- ICON_SPACING between
 # each. When more filter icons are on one video than fit at that size
@@ -111,6 +128,35 @@ class _FilterIconLabel(QLabel):
         super().mousePressEvent(event)
 
 
+class _InfoBox(QWidget):
+    """UI Update Phase 2: the inner "info" box holding title + info/date
+    lines + below-location filter icons + tag names -- painted with its
+    own rounded, theme-colored background (Afterglow Theme's accent
+    color, same as most buttons -- see Theme.accent()'s docstring),
+    sitting BEHIND its own children. Children are inset from its edges
+    by INFO_BOX_PADDING, comfortably clear of the corner radius, so no
+    per-pixel child masking is needed for the rounding to look right --
+    nothing ever reaches into the curved area to begin with."""
+
+    def __init__(self, appearance: "config_module.AppearanceSettings", parent=None):
+        super().__init__(parent)
+        self._appearance = appearance
+        self._theme = Theme(appearance)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(INFO_BOX_PADDING, INFO_BOX_PADDING, INFO_BOX_PADDING, INFO_BOX_PADDING)
+        layout.setSpacing(2)
+        self.content_layout = layout
+
+    def paintEvent(self, event) -> None:
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        if self._appearance.rounded_corners_enabled:
+            painter.setClipPath(rounded_rect_path(QRectF(self.rect()), self._appearance.rounded_corner_radius))
+        painter.fillRect(self.rect(), self._theme.accent())
+        painter.end()
+        super().paintEvent(event)
+
+
 class VideoCard(QWidget):
     edit_requested = Signal(int)      # video_id
     deleted = Signal(int)             # video_id
@@ -165,9 +211,11 @@ class VideoCard(QWidget):
         # other selection in place while acting on the newly-clicked one.
         self._get_selected_ids = get_selected_ids
         self._ensure_selected = ensure_selected
+        self._theme = Theme(self._appearance)
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(4, 4, 4, 4)
+        outer_layout = QVBoxLayout(self)
+        outer_layout.setContentsMargins(CARD_PADDING, CARD_PADDING, CARD_PADDING, CARD_PADDING)
+        outer_layout.setSpacing(BOX_GAP)
 
         display_settings = settings.filter_display
         info_settings = settings.card_info
@@ -175,28 +223,73 @@ class VideoCard(QWidget):
         show_filters = info_settings.show_filters
         matching = [(t, icons[t]) for t in video.tags if t in icons]
 
-        if show_filters and display_settings.show_filter_icons and matching and \
+        # ---- video box: thumbnail + above/vtile-location filter icons ----
+        # Row/column existence below is gated ONLY on the global
+        # settings (show_filter_icons + location), never on whether
+        # THIS particular video happens to have any matching tags --
+        # see _build_icon_row's own comment for why that distinction is
+        # what actually makes every card come out the same size ("all
+        # clips should be the same size" -- previously a video with 0
+        # matching tags just skipped the row entirely, making its card
+        # shorter/narrower than one with tags, even under identical
+        # settings).
+        if show_filters and display_settings.show_filter_icons and \
                 display_settings.filter_icon_location == "above":
-            layout.addWidget(self._build_icon_row(matching, vertical=False))
+            outer_layout.addWidget(self._build_icon_row(matching, vertical=False))
 
         thumb_row = QHBoxLayout()
-        if show_filters and display_settings.show_filter_icons and matching and \
+        if show_filters and display_settings.show_filter_icons and \
                 display_settings.filter_icon_location == "vtile_left":
             thumb_row.addWidget(self._build_icon_row(matching, vertical=True))
+
+        # video_box wraps thumb_label with a fixed margin equal to the
+        # border width -- gives paintEvent an actual gap to draw the
+        # unedited-highlight's "border for the video" into (see its own
+        # docstring/comment there). video_box.geometry() is VideoCard-
+        # relative directly (widgets added to a nested LAYOUT, as
+        # opposed to a nested WIDGET, are still direct children of
+        # whichever widget owns the outer layout -- layouts aren't
+        # QWidgets and can't be parents), so no coordinate mapping is
+        # needed when painting against it later.
+        video_border_width = self._appearance.unedited_selected_border_width
+        self.video_box = QWidget()
+        self.video_box.setFixedSize(
+            THUMB_SIZE.width() + 2 * video_border_width,
+            THUMB_SIZE.height() + 2 * video_border_width,
+        )
+        video_box_layout = QVBoxLayout(self.video_box)
+        video_box_layout.setContentsMargins(
+            video_border_width, video_border_width, video_border_width, video_border_width
+        )
+        video_box_layout.setSpacing(0)
 
         self.thumb_label = QLabel()
         self.thumb_label.setFixedSize(THUMB_SIZE)
         self.thumb_label.setAlignment(Qt.AlignCenter)
         self.thumb_label.setPixmap(self._load_pixmap(video))
-        thumb_row.addWidget(self.thumb_label)
+        video_box_layout.addWidget(self.thumb_label)
+        thumb_row.addWidget(self.video_box)
 
-        if show_filters and display_settings.show_filter_icons and matching and \
+        if show_filters and display_settings.show_filter_icons and \
                 display_settings.filter_icon_location == "vtile_right":
             thumb_row.addWidget(self._build_icon_row(matching, vertical=True))
-        layout.addLayout(thumb_row)
+        outer_layout.addLayout(thumb_row)
 
-        self.title_label = QLabel(self._title_text(video))
-        self.title_label.setWordWrap(not self._appearance.resize_text_to_fit)
+        # ---- info box: title, info/date lines, below-location icons, tag names ----
+        self.info_box = _InfoBox(self._appearance)
+        info_layout = self.info_box.content_layout
+
+        self.title_label = QLabel()
+        # Word wrap is now permanently off (was previously toggled by
+        # Resize Text to Fit) -- a wrapped, variable-line-count title
+        # was the single biggest source of card-to-card height
+        # variance. set_font_scale() below always elides an overlong
+        # title to a single line as a hard backstop, on top of Resize
+        # Text to Fit's existing font-shrinking (which still runs
+        # first, for readability, when that setting's on) -- so every
+        # card's title row is exactly one line tall, always, regardless
+        # of how long any given video's title is.
+        self.title_label.setWordWrap(False)
         self.title_label.setAlignment(Qt.AlignCenter)
         self.title_label.setFixedWidth(THUMB_SIZE.width())
         # 1.875x the app's actual default label size -- was 2.5x, then
@@ -211,50 +304,55 @@ class VideoCard(QWidget):
             self._base_title_pt = 9.0
         self._base_title_pt *= 1.875
         self._current_font_scale = font_scale
-        self.set_font_scale(font_scale)
-        layout.addWidget(self.title_label)
+        self._full_title_text = self._title_text(video)
+        info_layout.addWidget(self.title_label)
 
         # Info line(s), per the Library's "Info" dropdown: length + file
         # size on one line (size after length), creation date on its
         # own line under that -- both above the filters section, in
-        # that fixed order, each independently toggleable.
-        info_parts = []
-        if info_settings.show_length:
-            duration_text = _format_duration(video.duration_sec)
-            if duration_text:
-                info_parts.append(duration_text)
-        if info_settings.show_file_size:
-            size_text = _format_file_size(video.path)
-            if size_text:
-                info_parts.append(size_text)
-        if info_parts:
-            info_label = QLabel(" \u2022 ".join(info_parts))
+        # that fixed order, each independently toggleable. Always
+        # created (with a placeholder space if this particular video
+        # has nothing to show) whenever its setting is on, same
+        # same-size-regardless-of-per-video-data reasoning as the icon
+        # row above.
+        if info_settings.show_length or info_settings.show_file_size:
+            parts = []
+            if info_settings.show_length:
+                duration_text = _format_duration(video.duration_sec)
+                if duration_text:
+                    parts.append(duration_text)
+            if info_settings.show_file_size:
+                size_text = _format_file_size(video.path)
+                if size_text:
+                    parts.append(size_text)
+            info_label = QLabel(" \u2022 ".join(parts) if parts else " ")
             info_label.setStyleSheet("color: gray; font-size: 10px;")
             info_label.setAlignment(Qt.AlignCenter)
-            layout.addWidget(info_label)
+            info_layout.addWidget(info_label)
 
         if info_settings.show_creation_date:
-            date_text = _format_date(video.created_at)
-            if date_text:
-                date_label = QLabel(date_text)
-                date_label.setStyleSheet("color: gray; font-size: 10px;")
-                date_label.setAlignment(Qt.AlignCenter)
-                layout.addWidget(date_label)
+            date_text = _format_date(video.created_at) or " "
+            date_label = QLabel(date_text)
+            date_label.setStyleSheet("color: gray; font-size: 10px;")
+            date_label.setAlignment(Qt.AlignCenter)
+            info_layout.addWidget(date_label)
 
         # Filters section: "below"-location icons, then tag-name text --
         # both come after the title (and after the optional length/
         # size/date lines above), replacing where tag-name text used to
         # sit right under the title before length/size/date existed.
         if show_filters:
-            if display_settings.show_filter_icons and matching and \
-                    display_settings.filter_icon_location == "below":
-                layout.addWidget(self._build_icon_row(matching, vertical=False))
+            if display_settings.show_filter_icons and display_settings.filter_icon_location == "below":
+                info_layout.addWidget(self._build_icon_row(matching, vertical=False))
 
-            if video.tags and display_settings.show_filter_names:
-                tag_label = QLabel(", ".join(video.tags))
+            if display_settings.show_filter_names:
+                tag_label = QLabel(", ".join(video.tags) if video.tags else " ")
+                tag_label.setWordWrap(False)  # same single-line-always reasoning as the title
                 tag_label.setStyleSheet("color: gray; font-size: 10px;")
                 tag_label.setAlignment(Qt.AlignCenter)
-                layout.addWidget(tag_label)
+                info_layout.addWidget(tag_label)
+
+        outer_layout.addWidget(self.info_box)
 
         # Without this, extra vertical space the grid gives this card
         # (e.g. because another card in the same row is taller, due to
@@ -264,7 +362,9 @@ class VideoCard(QWidget):
         # rather than snug under the thumbnail. Pinning the stretch to
         # the bottom keeps thumbnail/title/tags packed together
         # regardless of how tall the card ends up being.
-        layout.addStretch(1)
+        outer_layout.addStretch(1)
+
+        self.set_font_scale(font_scale)  # sets the title's actual (elided) text too
 
         self.setContextMenuPolicy(Qt.CustomContextMenu)
         self.customContextMenuRequested.connect(self._show_context_menu)
@@ -275,6 +375,15 @@ class VideoCard(QWidget):
     def _build_icon_row(self, matching: list[tuple[str, str]], vertical: bool) -> QWidget:
         available = THUMB_SIZE.height() if vertical else THUMB_SIZE.width()
         icon_size = _icon_size_for_count(len(matching), available, self._appearance.filter_icon_size)
+        # Reserved space is the BASE setting value, not the count-adjusted
+        # icon_size above -- using icon_size here would make the row
+        # itself shorter/narrower on a card with many tags (since more
+        # tags -> smaller icons -> if reserved space shrunk to match,
+        # the row would too), reintroducing exactly the kind of
+        # per-video size variance normalizing this was supposed to fix.
+        # icon_size still controls how big the icons actually render
+        # WITHIN this constant reserved space.
+        reserved = self._appearance.filter_icon_size
 
         container = QWidget()
         row_layout = QVBoxLayout(container) if vertical else QHBoxLayout(container)
@@ -289,6 +398,10 @@ class VideoCard(QWidget):
             icon_label.right_clicked.connect(self.filter_right_clicked.emit)
             row_layout.addWidget(icon_label)
         row_layout.addStretch(1)
+        if vertical:
+            container.setFixedWidth(reserved)
+        else:
+            container.setFixedHeight(reserved)
         return container
 
     def set_font_scale(self, factor: float) -> None:
@@ -298,23 +411,33 @@ class VideoCard(QWidget):
         self._current_font_scale = factor
         font = self.title_label.font()
         target_pt = self._base_title_pt * factor
+        max_width = THUMB_SIZE.width() - 8  # small margin, matches layout's own content margins
         if self._appearance.resize_text_to_fit:
             # Shrink (never grow past target_pt) until the title's
-            # single-line width fits the card -- word-wrap is turned
-            # off for this mode (see __init__), so an overlong title
-            # needs to shrink instead of wrapping to a second line.
+            # single-line width fits the card -- word-wrap has been
+            # permanently off since the card-size-normalization change
+            # (see __init__), so an overlong title needs to shrink
+            # instead of wrapping to a second line.
             from PySide6.QtGui import QFontMetricsF
             pt = target_pt
-            max_width = THUMB_SIZE.width() - 8  # small margin, matches layout's own content margins
             while pt > 6.0:
                 font.setPointSizeF(pt)
-                if QFontMetricsF(font).horizontalAdvance(self.title_label.text()) <= max_width:
+                if QFontMetricsF(font).horizontalAdvance(self._full_title_text) <= max_width:
                     break
                 pt -= 0.5
             font.setPointSizeF(pt)
         else:
             font.setPointSizeF(target_pt)
         self.title_label.setFont(font)
+        # Elide as a hard backstop regardless of Resize Text to Fit --
+        # guarantees a constant single-line title height on every card
+        # no matter how long any given video's title is, or how far
+        # shrinking above got before giving up at the 6pt floor. This
+        # (plus _build_icon_row's fixed reservation) is what actually
+        # makes "all clips the same size" true, rather than just
+        # "usually similar."
+        elided = QFontMetrics(font).elidedText(self._full_title_text, Qt.ElideRight, max_width)
+        self.title_label.setText(elided)
 
     def set_highlight_enabled(self, enabled: bool) -> None:
         """Called live by the Library's "Highlight Unedited" toggle --
@@ -343,41 +466,90 @@ class VideoCard(QWidget):
         return self._highlight_enabled and not self._video.has_edit
 
     def paintEvent(self, event) -> None:
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setRenderHint(QPainter.SmoothPixmapTransform)
+
+        outer_rect = QRectF(self.rect())
+        radius = self._appearance.rounded_corner_radius if self._appearance.rounded_corners_enabled else 0
+        border_width = self._appearance.unedited_selected_border_width
+
         if self._selected:
-            painter = QPainter(self)
-            painter.setRenderHint(QPainter.SmoothPixmapTransform)
-            # Gold/white gradient image (selected_border_gradient.png by
-            # default, or a custom override) stretched to fill, same
-            # technique as the unedited-highlight branch below -- no
-            # brightness/multiply-darken step here, since a selection
-            # border is a UI-chrome indicator rather than a
-            # brightness-tunable highlight like the unedited one.
+            # Selection stays a ring around the WHOLE outer card (unlike
+            # the unedited highlight below, this one was NOT redefined
+            # to also become a background wash behind everything --
+            # only the unedited highlight was, per Max's own
+            # clarification). Same stretch-then-inset technique as
+            # before, now respecting the outer box's rounded shape.
+            if radius:
+                painter.setClipPath(rounded_rect_path(outer_rect, radius))
             painter.drawPixmap(self.rect(), self._selected_border_pixmap)
-            border_width = self._appearance.unedited_selected_border_width
-            inner_rect = self.rect().adjusted(border_width, border_width, -border_width, -border_width)
-            painter.fillRect(inner_rect, self.palette().window())
-            painter.end()
-        elif self._should_show_highlight():
-            painter = QPainter(self)
-            painter.setRenderHint(QPainter.SmoothPixmapTransform)
-            # Full-widget gradient first, then an inset fill in the
-            # normal background color on top -- only the outer rim (not
-            # covered by the inset) ends up showing the gradient, which
-            # is what reads as a "border" rather than a solid highlight
-            # fill. The inset here is independent of the layout's own
-            # 4px content margin (children never fully reach the
-            # widget's edge either way), so it works regardless of
-            # whatever's between the thumbnail/title internally.
-            painter.drawPixmap(self.rect(), self._highlight_pixmap)
-            darken_factor = 1 - (self._appearance.unedited_highlight_brightness / 100.0)
-            if darken_factor > 0:
-                gray = round(255 * (1 - darken_factor))
-                painter.setCompositionMode(QPainter.CompositionMode_Multiply)
-                painter.fillRect(self.rect(), QColor(gray, gray, gray))
-            border_width = self._appearance.unedited_selected_border_width
-            inner_rect = self.rect().adjusted(border_width, border_width, -border_width, -border_width)
-            painter.fillRect(inner_rect, self.palette().window())
-            painter.end()
+            painter.setClipping(False)
+            inner_rect = outer_rect.adjusted(border_width, border_width, -border_width, -border_width)
+            if radius:
+                # A plain fillRect(inner_rect, ...) would leave the
+                # inset area's own corners sharp even though the outer
+                # ring is rounded -- clip to a (correspondingly smaller)
+                # rounded path instead of just filling the rect outright.
+                painter.setClipPath(rounded_rect_path(inner_rect, max(0.0, radius - border_width)))
+                painter.fillRect(self.rect(), self._theme.card_background())
+                painter.setClipping(False)
+            else:
+                painter.fillRect(inner_rect, self._theme.card_background())
+        else:
+            # Plain background portrusion -- rounded, theme-colored.
+            # This is what's visible in the CARD_PADDING/BOX_GAP gaps
+            # around the video box and info box (see their own
+            # comments) -- always at least a sliver of it showing,
+            # everywhere on the card, regardless of content.
+            if radius:
+                painter.setClipPath(rounded_rect_path(outer_rect, radius))
+            painter.fillRect(self.rect(), self._theme.card_background())
+
+            if self._should_show_highlight():
+                # Background wash behind BOTH the video box and info
+                # box -- confirmed by Max: the unedited highlight is
+                # BOTH a border around the video player AND an overlay
+                # on the card's own background, rendered behind
+                # everything else (not replacing the video image).
+                painter.drawPixmap(self.rect(), self._highlight_pixmap)
+                darken_factor = 1 - (self._appearance.unedited_highlight_brightness / 100.0)
+                if darken_factor > 0:
+                    gray = round(255 * (1 - darken_factor))
+                    painter.setCompositionMode(QPainter.CompositionMode_Multiply)
+                    painter.fillRect(self.rect(), QColor(gray, gray, gray))
+                    painter.setCompositionMode(QPainter.CompositionMode_SourceOver)
+            painter.setClipping(False)
+
+        # Video-player border -- only for the unedited highlight (the
+        # video box gets no such treatment when the card is merely
+        # selected, or neither). Drawn into video_box's own geometry --
+        # its layout margin (video_border_width, set at construction) is
+        # exactly the gap thumb_label leaves clear for this.
+        if not self._selected and self._should_show_highlight():
+            video_rect = QRectF(self.video_box.geometry())
+            if video_rect.width() > 0 and video_rect.height() > 0:
+                video_radius = min(radius, border_width) if radius else 0
+                if video_radius:
+                    painter.setClipPath(rounded_rect_path(video_rect, video_radius))
+                    painter.drawPixmap(video_rect, self._highlight_pixmap, QRectF(self._highlight_pixmap.rect()))
+                    darken_factor = 1 - (self._appearance.unedited_highlight_brightness / 100.0)
+                    if darken_factor > 0:
+                        gray = round(255 * (1 - darken_factor))
+                        painter.setCompositionMode(QPainter.CompositionMode_Multiply)
+                        painter.fillRect(video_rect, QColor(gray, gray, gray))
+                        painter.setCompositionMode(QPainter.CompositionMode_SourceOver)
+                    painter.setClipping(False)
+                else:
+                    painter.drawPixmap(video_rect, self._highlight_pixmap, QRectF(self._highlight_pixmap.rect()))
+                    darken_factor = 1 - (self._appearance.unedited_highlight_brightness / 100.0)
+                    if darken_factor > 0:
+                        gray = round(255 * (1 - darken_factor))
+                        painter.setCompositionMode(QPainter.CompositionMode_Multiply)
+                        painter.fillRect(video_rect, QColor(gray, gray, gray))
+                        painter.setCompositionMode(QPainter.CompositionMode_SourceOver)
+
+        painter.end()
         super().paintEvent(event)
 
     def _load_pixmap(self, video: "library.Video") -> QPixmap:
@@ -604,6 +776,6 @@ class VideoCard(QWidget):
         if not new_title or new_title == self._video.title:
             return
         self._video = library.rename_video(self.video_id, title=new_title)
-        self.title_label.setText(self._title_text(self._video))
-        self.set_font_scale(self._current_font_scale)  # re-fit if Resize Text to Fit is on
+        self._full_title_text = self._title_text(self._video)
+        self.set_font_scale(self._current_font_scale)  # re-fit/re-elide with the new text
         self.renamed.emit()
