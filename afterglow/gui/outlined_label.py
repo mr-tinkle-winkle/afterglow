@@ -4,11 +4,24 @@ colored fill, instead of QLabel's own plain (outline-less) rendering --
 the default styling for all on-card text (title, info/date lines, tag
 names), per Max's request for readable text over the info box's
 accent-colored background.
+
+Renders into a cached QPixmap rather than re-stroking the glyph path on
+every paintEvent -- reported directly as low frame rate during Library
+scrolling despite the scroll MOVEMENT itself being smooth, which points
+at per-frame repaint cost rather than the scroll animation itself.
+Every card has up to four of these (title, info/date lines, tag names),
+and building a QPainterPath from glyph outlines plus a double stroke+
+fill pass is real work to repeat on every single repaint a scrolling
+grid triggers, for text that never actually changes between refreshes.
+The cache is invalidated only on an actual content change (setText,
+set_colors) or a size change (picked up lazily in paintEvent, same
+"only recompute when something real changed" principle as
+VideoCard/_InfoBox's own background caching -- see video_card.py).
 """
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor, QFontMetrics, QPainter, QPainterPath, QPen
+from PySide6.QtGui import QColor, QFontMetrics, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import QLabel
 
 
@@ -20,18 +33,27 @@ class OutlinedLabel(QLabel):
         self._fill_color = QColor(fill_color)
         self._outline_color = QColor(outline_color)
         self._outline_width = outline_width
+        self._cache: QPixmap | None = None
 
     def set_colors(self, fill_color: str, outline_color: str, outline_width: float = 1.0) -> None:
         self._fill_color = QColor(fill_color)
         self._outline_color = QColor(outline_color)
         self._outline_width = outline_width
+        self._cache = None
         self.update()
 
-    def paintEvent(self, event) -> None:
+    def setText(self, text: str) -> None:  # noqa: N802 -- overriding Qt's own camelCase name
+        super().setText(text)
+        self._cache = None
+
+    def _render_cache(self) -> QPixmap | None:
         text = self.text()
         if not text or not text.strip():
-            return  # nothing to draw -- also avoids stroking a lone placeholder space visibly
-        painter = QPainter(self)
+            return None  # nothing to draw -- also avoids stroking a lone placeholder space visibly
+
+        pixmap = QPixmap(self.size())
+        pixmap.fill(Qt.transparent)
+        painter = QPainter(pixmap)
         painter.setRenderHint(QPainter.Antialiasing)
 
         fm = QFontMetrics(self.font())
@@ -88,6 +110,16 @@ class OutlinedLabel(QLabel):
         painter.setPen(Qt.NoPen)
         painter.setBrush(self._fill_color)
         painter.drawPath(path)
+        painter.end()
+        return pixmap
+
+    def paintEvent(self, event) -> None:
+        if self._cache is None or self._cache.size() != self.size():
+            self._cache = self._render_cache()
+        if self._cache is None:
+            return
+        painter = QPainter(self)
+        painter.drawPixmap(0, 0, self._cache)
         painter.end()
         # Deliberately NOT calling super().paintEvent() -- this fully
         # replaces QLabel's own text rendering rather than layering on

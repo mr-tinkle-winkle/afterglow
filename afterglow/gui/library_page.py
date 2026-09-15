@@ -13,12 +13,12 @@ grid/search/filter wiring twice.
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal, QSize, QFileSystemWatcher, QTimer, QRectF
-from PySide6.QtGui import QPainter, QIcon, QPixmap, QColor
+from PySide6.QtGui import QPainter, QPixmap, QColor
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
-    QScrollArea, QLabel, QTabWidget, QTabBar, QMessageBox,
+    QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLineEdit,
+    QScrollArea, QLabel, QStackedWidget, QMessageBox,
     QCheckBox, QStyle, QInputDialog, QPushButton, QGroupBox, QRadioButton,
-    QButtonGroup,
+    QButtonGroup, QAbstractButton, QApplication,
 )
 
 from .. import library
@@ -26,7 +26,6 @@ from .. import config as config_module
 from .. import db as db_module
 from .video_card import VideoCard, THUMB_SIZE, FAVORITE_STAR
 from .resources import resource_qpixmap
-from .pulse_animation import PulseAnimator
 from .theme import Theme
 from .rounded_rect import rounded_rect_path
 from .custom_button import CustomButton
@@ -44,44 +43,81 @@ FILTER_STATE_INCLUDE = "include"
 FILTER_STATE_EXCLUDE = "exclude"
 
 
-def _composite_tab_icon(pixmap: QPixmap, target_size: int, canvas_size: int,
-                         bg_color: "QColor | None" = None, radius: float = 0,
-                         top_left: bool = True, top_right: bool = True,
-                         bottom_left: bool = True, bottom_right: bool = True) -> QIcon:
-    """Scale `pixmap` to fit within target_size x target_size (preserving
-    aspect ratio), then center it on a canvas_size x canvas_size canvas
-    (filled with bg_color first if given -- turquoise, per Max, for the
-    Local/Uploaded tab icons specifically -- otherwise left transparent)
-    and wrap that in a QIcon. top_left/top_right/bottom_left/bottom_right
-    skip rounding that corner of the background fill, for the two tabs'
-    touching inner edge (see _rebuild_tab_icons).
+class _LibraryTabButton(QAbstractButton):
+    """Local/Uploaded's own custom page-switch button -- replaces
+    QTabWidget's default page-header behavior (asked to be replaced
+    several times; see HANDOFF.md). Two independent icon sizes are now
+    trivial (each button just gets its own set_icon_target_size() call)
+    since there's no more QTabBar single-shared-iconSize limitation to
+    work around via the old canvas-compositing trick.
 
-    Why a whole canvas rather than just drawing the icon: QTabBar
-    exposes only ONE shared iconSize for the whole bar, so the Local and
-    Uploaded tabs can't just each call setIconSize with their own value
-    -- but Qt's icon painting scales a QIcon's pixmap to fit the tab
-    bar's iconSize, so as long as BOTH tabs' underlying pixmaps are
-    exactly canvas_size already, no further scaling happens at paint
-    time and each tab's own (possibly smaller) icon content stays at
-    its own intended size, just centered within the same bounding box
-    the other tab's icon also occupies."""
-    scaled = pixmap.scaled(target_size, target_size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-    canvas = QPixmap(canvas_size, canvas_size)
-    canvas.fill(Qt.transparent)
-    painter = QPainter(canvas)
-    painter.setRenderHint(QPainter.Antialiasing)
-    if bg_color is not None:
+    Rounding matches the same "don't round a corner that's touching
+    another element" rule used everywhere else: the left (Local) button
+    rounds only its own left corners, the right (Uploaded) button only
+    its right corners -- the seam between them stays sharp on both."""
+
+    def __init__(self, icon_pixmap: QPixmap, position: str, parent=None):
+        super().__init__(parent)
+        self.setCheckable(True)
+        self.setCursor(Qt.PointingHandCursor)
+        self._icon_pixmap = icon_pixmap
+        self._position = position  # 'left' | 'right'
+        self._icon_target_size = 32
+        appearance = config_module.load().appearance
+        self._appearance = appearance
+        self._theme = Theme(appearance)
+
+    def set_icon_target_size(self, size: int) -> None:
+        self._icon_target_size = max(1, size)
+        self.updateGeometry()
+        self.update()
+
+    def sizeHint(self) -> QSize:
+        pad = 16
+        return QSize(self._icon_target_size + pad, self._icon_target_size + pad)
+
+    def paintEvent(self, event) -> None:
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setRenderHint(QPainter.SmoothPixmapTransform)
+
+        rect = QRectF(self.rect())
+        radius = self._appearance.rounded_corner_radius if self._appearance.rounded_corners_enabled else 0
+        is_left = self._position == "left"
+
+        bg = self._theme.turquoise()
+        if not self.isChecked():
+            bg = bg.darker(140)
+        if self.isDown():
+            bg = bg.darker(125)
+        elif self.underMouse():
+            bg = bg.lighter(112)
+
         if radius:
             path = rounded_rect_path(
-                QRectF(0, 0, canvas_size, canvas_size), radius,
-                top_left=top_left, top_right=top_right, bottom_left=bottom_left, bottom_right=bottom_right,
+                rect, radius,
+                top_left=is_left, bottom_left=is_left,
+                top_right=not is_left, bottom_right=not is_left,
             )
-            painter.fillPath(path, bg_color)
+            painter.fillPath(path, bg)
         else:
-            painter.fillRect(0, 0, canvas_size, canvas_size, bg_color)
-    painter.drawPixmap((canvas_size - scaled.width()) // 2, (canvas_size - scaled.height()) // 2, scaled)
-    painter.end()
-    return QIcon(canvas)
+            painter.fillRect(self.rect(), bg)
+
+        scaled = self._icon_pixmap.scaled(
+            self._icon_target_size, self._icon_target_size, Qt.KeepAspectRatio, Qt.SmoothTransformation
+        )
+        x = (self.width() - scaled.width()) // 2
+        y = (self.height() - scaled.height()) // 2
+        painter.drawPixmap(x, y, scaled)
+        painter.end()
+
+    def enterEvent(self, event) -> None:
+        self.update()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event) -> None:
+        self.update()
+        super().leaveEvent(event)
 
 
 class FilterCheckBox(QCheckBox):
@@ -198,53 +234,23 @@ class _VideoGridTab(QWidget):
 
         outer = QVBoxLayout(self)
 
-        # ---- search + filters row ----
-        top_row = QHBoxLayout()
-
-        # "Search" custom button -- opens a comic-speech-bubble-style
-        # popup attached directly under the button (SearchBubble), which
-        # owns the actual QLineEdit. self.search_edit still points at
-        # that same widget so the rest of this class (refresh's
-        # search=self.search_edit.text() call) doesn't need to know the
-        # field moved into a popup.
-        self.search_btn = CustomButton("Search")
-        self.search_btn.clicked.connect(self._toggle_search_bubble)
-        top_row.addWidget(self.search_btn)
-
-        self.search_bubble = SearchBubble(self)
-        self.search_edit = self.search_bubble.line_edit
-        # Bypasses refresh()'s own leading-edge debounce deliberately --
-        # that debounce exists for spam-clicked BUTTONS (Refresh, the
-        # sidebar Library nav), where dropping extra rapid triggers is
-        # exactly the point. Typing a search query is the opposite
-        # case: every keystroke SHOULD filter immediately, that's the
-        # whole feature, so this goes straight to the actual rebuild.
+        # ---- grid ----
+        # Search/Refresh/Sort now live once, shared, in LibraryPage's own
+        # header row (alongside the Local/Uploaded page buttons) instead
+        # of each tab having its own copy taking a whole separate row --
+        # per Max's direct instruction that the old per-tab row was
+        # "encroaching on the videos." This tab still owns all the
+        # underlying STATE (search text, active/excluded tags, sort
+        # order, highlight toggle) and the three popover-page builder
+        # methods below -- LibraryPage just calls into whichever tab is
+        # currently active rather than each tab having its own buttons.
+        # self.search_edit is a plain, never-shown QLineEdit purely for
+        # text storage + its existing textChanged wiring -- LibraryPage's
+        # single shared SearchBubble syncs its own visible line edit's
+        # text into whichever tab is currently active.
+        self.search_edit = QLineEdit()
         self.search_edit.textChanged.connect(self._do_refresh)
 
-        # All five of these are "Custom Buttons" per the UI Update spec
-        # -- text-only for now (none of them have a real custom icon
-        # asset yet; Refresh's previous native standard-library reload
-        # icon doesn't count as "already have one" for this purpose).
-        self.refresh_btn = CustomButton("Refresh")
-        self.refresh_btn.setToolTip("Refresh")
-        self.refresh_btn.clicked.connect(self.refresh)
-        top_row.addWidget(self.refresh_btn)
-
-        # Filters, Sort By, and Info are still ONE combined button,
-        # internally still called "sort_btn" (per Max's own naming) --
-        # "Sort" is a placeholder label until Max provides a real icon
-        # for it. Now opens a SortPopover (three horizontally-tiled
-        # custom pages) instead of a QMenu -- see _rebuild_toolbar_menu,
-        # called both here and on every refresh() since the Filters
-        # page's content depends on which tags currently exist.
-        self.sort_btn = CustomButton("Sort")
-        self.sort_popover = SortPopover(self)
-        self.sort_btn.clicked.connect(lambda: self.sort_popover.show_below(self.sort_btn))
-        self._rebuild_toolbar_menu()
-        top_row.addWidget(self.sort_btn)
-        outer.addLayout(top_row)
-
-        # ---- grid ----
         self.scroll = SmoothScrollArea()
         self.scroll.setWidgetResizable(True)
         self.grid_container = _SelectionClearingContainer()
@@ -304,20 +310,18 @@ class _VideoGridTab(QWidget):
 
     # ------------------------------------------------------------ filters menu
 
-    def _rebuild_toolbar_menu(self) -> None:
-        """Filters, Sort By, and Info are one combined button
-        (self.sort_btn, placeholder-labeled "Sort" until Max supplies a
-        real icon) opening a SortPopover -- three horizontally-tiled
-        custom pages rather than one long vertical QMenu. Rebuilt on
-        every refresh() (not just at construction) since the Filters
-        page's content depends on which tags currently exist -- the
-        Sort By and Info pages are static enough that rebuilding them
-        too is harmless, and keeping all three in one function avoids
-        the three separate rebuild call-sites silently drifting out of
-        sync with each other over time."""
-        self.sort_popover.set_page_widget(0, self._build_filters_page())
-        self.sort_popover.set_page_widget(1, self._build_sort_page())
-        self.sort_popover.set_page_widget(2, self._build_info_page())
+    def rebuild_sort_popover_pages(self, popover: SortPopover) -> None:
+        """Fills `popover`'s three pages with THIS tab's current
+        Filters/Sort By/Info state. Called lazily by LibraryPage right
+        before showing its one shared SortPopover -- not automatically
+        on every refresh() the way the old per-tab QMenu version was,
+        since the popover only needs to reflect reality at the moment
+        it's actually opened, and rebuilding it on every background
+        refresh (e.g. from the DB file watcher) would just be wasted
+        work most of the time nobody's even looking at it."""
+        popover.set_page_widget(0, self._build_filters_page())
+        popover.set_page_widget(1, self._build_sort_page())
+        popover.set_page_widget(2, self._build_info_page())
 
     def _build_filters_page(self) -> QWidget:
         page = QWidget()
@@ -490,19 +494,6 @@ class _VideoGridTab(QWidget):
         config_module.save(settings)
         self.refresh()
 
-    def _toggle_search_bubble(self) -> None:
-        """Opens the comic-bubble-style search popup attached under the
-        Search button (see SearchBubble). Qt.Popup already closes it on
-        an outside click, so a second click on this same button (which
-        counts as "outside" the popup, per Qt's own popup-grab
-        handling) will typically be seen as already-hidden by the time
-        this runs and just reopen it -- text isn't cleared either way,
-        so repeated toggling picks up right where it left off."""
-        if self.search_bubble.isVisible():
-            self.search_bubble.hide()
-        else:
-            self.search_bubble.show_below(self.search_btn)
-
     def _set_sort_by(self, sort_by: str) -> None:
         self._sort_by = sort_by
         self.refresh()
@@ -534,8 +525,6 @@ class _VideoGridTab(QWidget):
         self._refresh_debounce_active = False
 
     def _do_refresh(self) -> None:
-        self._rebuild_toolbar_menu()
-
         # Clear existing cards -- data may have changed (new/deleted
         # video, rename, tag change), so these are rebuilt from scratch
         # rather than reused. Resizing (_relayout below) is the cheaper
@@ -712,59 +701,6 @@ class _VideoGridTab(QWidget):
         )
 
 
-class _PulsingTabBar(QTabBar):
-    """A QTabBar that pulses its icon(s) on press/release and eases to a
-    slightly smaller size on hover, matching the sidebar nav buttons'
-    click/hover feel. QTabBar only exposes ONE iconSize for the whole
-    bar (not per-tab), so both Local/Uploaded icons move together
-    rather than just the one actually clicked/hovered -- an accepted
-    simplification given there are only ever the two of them, both
-    visible at once."""
-
-    def __init__(self, on_press, on_release, on_hover_enter, on_hover_leave, parent=None):
-        super().__init__(parent)
-        self._on_press = on_press
-        self._on_release = on_release
-        self._on_hover_enter = on_hover_enter
-        self._on_hover_leave = on_hover_leave
-        self._frozen_size_hint: QSize | None = None
-
-    def freeze_size_hint(self) -> None:
-        """Capture sizeHint() at the current (un-animated) icon size and
-        report that fixed value from sizeHint() from then on, regardless
-        of the pulse animation's per-frame setIconSize() calls.
-        QTabWidget's own internal layout sizes the tab bar vs. the page
-        content below it using the tab bar's sizeHint() -- NOT its
-        actual on-screen height -- so setFixedHeight() alone (which only
-        constrains the bar's own rendered size) wasn't enough: the
-        content area's height/position still visibly shifted every
-        animation frame, tracking sizeHint()'s shrink/grow instead."""
-        self._frozen_size_hint = QTabBar.sizeHint(self)
-
-    def sizeHint(self) -> QSize:
-        if self._frozen_size_hint is not None:
-            return self._frozen_size_hint
-        return super().sizeHint()
-
-    def mousePressEvent(self, event) -> None:
-        if event.button() == Qt.LeftButton and self.tabAt(event.pos()) != -1:
-            self._on_press()
-        super().mousePressEvent(event)
-
-    def mouseReleaseEvent(self, event) -> None:
-        if event.button() == Qt.LeftButton:
-            self._on_release(self.underMouse())
-        super().mouseReleaseEvent(event)
-
-    def enterEvent(self, event) -> None:
-        self._on_hover_enter()
-        super().enterEvent(event)
-
-    def leaveEvent(self, event) -> None:
-        self._on_hover_leave()
-        super().leaveEvent(event)
-
-
 class LibraryPage(QWidget):
     edit_requested = Signal(int)  # bubbled up from either tab, for MainWindow to route to Editor
 
@@ -780,15 +716,6 @@ class LibraryPage(QWidget):
         library.prune_missing_videos()
         library.remove_stray_orig_entries()
 
-        self.tabs = QTabWidget()
-        self._tab_pulse = PulseAnimator(
-            get_base_size=lambda: self._current_tab_icon_size,
-            apply_size=lambda size: self.tabs.setIconSize(QSize(size, size)),
-        )
-        self.tabs.setTabBar(_PulsingTabBar(
-            self._tab_pulse.press, self._tab_pulse.release,
-            self._tab_pulse.hover_enter, self._tab_pulse.hover_leave,
-        ))
         self.local_tab = _VideoGridTab(uploaded_only=False, local_only=True)
         self.uploaded_tab = _VideoGridTab(uploaded_only=True, local_only=False)
         # Tracks which tab most recently asked to open a video in the
@@ -804,29 +731,84 @@ class LibraryPage(QWidget):
             lambda vid: self._on_tab_edit_requested(self.uploaded_tab, vid)
         )
 
-        # Icon-only tabs (no text) -- the floppy disk / wifi icons stand in
-        # for Local / Uploaded. Base size is 4.5x the style's own default
-        # tab-bar icon size: originally set to 3x (default_icon_size * 3),
-        # then asked to be 1.5x that current size on top -- 3 * 1.5 = 4.5x
-        # the original style default, queried at runtime rather than
-        # assumed. Stored so apply_scale() below can rescale it later --
-        # this wasn't being done at all before, so the tab icons stayed
-        # fixed regardless of window size while everything else around
-        # them scaled. The two tabs' actual on-screen icon sizes can now
-        # differ (Saved Videos Icon Size / Uploaded Videos Icon Size in
-        # Settings > General) despite QTabBar's single shared iconSize --
-        # see _composite_tab_icon's docstring for how.
+        self._stack = QStackedWidget()
+        self._stack.addWidget(self.local_tab)
+        self._stack.addWidget(self.uploaded_tab)
+
+        # ---- header row: Local/Uploaded's own custom page buttons, the
+        # empty space next to them, then the shared Search/Refresh/Sort
+        # toolbar -- replaces BOTH the old QTabWidget default page-header
+        # behavior (asked to be replaced with real custom headers several
+        # times -- see HANDOFF.md) AND the old per-tab search/refresh/sort
+        # row that took its own separate space above the grid, per Max's
+        # direct instruction to put them "up top... in the empty space"
+        # instead of "having their own little space that encroaches on
+        # the videos."
+        header = QHBoxLayout()
+        header.setSpacing(0)
+
+        self.local_btn = _LibraryTabButton(resource_qpixmap("local_videos.png"), "left")
+        self.local_btn.setToolTip("Local")
+        self.uploaded_btn = _LibraryTabButton(resource_qpixmap("uploaded_videos.png"), "right")
+        self.uploaded_btn.setToolTip("Uploaded")
+        self._page_button_group = QButtonGroup(self)
+        self._page_button_group.setExclusive(True)
+        self._page_button_group.addButton(self.local_btn, 0)
+        self._page_button_group.addButton(self.uploaded_btn, 1)
+        self.local_btn.setChecked(True)
+        self._page_button_group.idClicked.connect(self._switch_page)
+        header.addWidget(self.local_btn)
+        header.addWidget(self.uploaded_btn)
+        header.addStretch(1)
+
+        # Search/Refresh/Sort are shared across both tabs now (one row,
+        # not one per tab) -- each acts on whichever tab is CURRENTLY
+        # showing (self._stack.currentWidget()), since Filters/Sort/Info
+        # state, and the search text itself, still live per-tab (see
+        # _VideoGridTab) even though the buttons/popups that control them
+        # are shared UI. Icon-only (per Max's provided icon set) rather
+        # than text-labeled placeholders now.
+        self._search_icon = resource_qpixmap("search_icon.png")
+        self._search_icon_active = resource_qpixmap("search_icon_active.png")
+        self.search_btn = CustomButton("Search")
+        self.search_btn.setToolTip("Search")
+        self.search_btn.set_icon_pixmap(self._search_icon)
+        self.search_btn.clicked.connect(self._toggle_search_bubble)
+        header.addWidget(self.search_btn)
+
+        self.refresh_btn = CustomButton("Refresh")
+        self.refresh_btn.setToolTip("Refresh")
+        self.refresh_btn.set_icon_pixmap(resource_qpixmap("refresh_icon.png"))
+        self.refresh_btn.clicked.connect(lambda: self._active_tab().refresh())
+        header.addWidget(self.refresh_btn)
+
+        self.sort_btn = CustomButton("Sort")
+        self.sort_btn.setToolTip("Sort")
+        self.sort_btn.set_icon_pixmap(resource_qpixmap("sort_icon.png"))
+        self.sort_btn.clicked.connect(self._open_sort_popover)
+        header.addWidget(self.sort_btn)
+
+        layout.addLayout(header)
+        layout.addWidget(self._stack, stretch=1)
+
+        # Shared popups -- one instance each, re-pointed at whichever tab
+        # is currently active rather than one per tab (see module-level
+        # comments on _VideoGridTab's own search_edit/rebuild_sort_
+        # popover_pages for why this is safe: only one tab is ever
+        # visible/interactive at a time).
+        self.search_bubble = SearchBubble(self)
+        self.search_bubble.line_edit.textChanged.connect(self._on_shared_search_changed)
+        self.sort_popover = SortPopover(self)
+
+        # Base size for the two page buttons' icons -- same "4.5x the
+        # style's own default tab-bar icon size" starting point as
+        # before, just no longer read off a QTabWidget's own style()
+        # since there isn't one anymore.
         self._base_tab_icon_size = round(
-            self.tabs.style().pixelMetric(QStyle.PM_TabBarIconSize) * 4.5
+            QApplication.style().pixelMetric(QStyle.PM_TabBarIconSize) * 4.5
         )
         self._current_tab_icon_size = self._base_tab_icon_size
-        self.tabs.addTab(self.local_tab, "")
-        self.tabs.addTab(self.uploaded_tab, "")
-        self._rebuild_tab_icons()
-        self.tabs.setTabToolTip(0, "Local")
-        self.tabs.setTabToolTip(1, "Uploaded")
-        self._fix_tab_bar_height()
-        layout.addWidget(self.tabs)
+        self._rebuild_tab_icon_sizes()
 
         # Shown when the Editor is opened with no video ever having been
         # selected -- MainWindow redirects here and calls
@@ -868,6 +850,66 @@ class LibraryPage(QWidget):
         self._refresh_debounce.setSingleShot(True)
         self._refresh_debounce.setInterval(400)
         self._refresh_debounce.timeout.connect(self.refresh)
+
+    # ------------------------------------------------------------ page switching
+
+    def _active_tab(self) -> "_VideoGridTab":
+        return self._stack.currentWidget()
+
+    def _switch_page(self, index: int) -> None:
+        self._stack.setCurrentIndex(index)
+        self._sync_search_bubble_for_active_tab()
+
+    # ------------------------------------------------------------ shared search bubble
+
+    def _toggle_search_bubble(self) -> None:
+        """Opens the comic-bubble-style search popup attached under the
+        Search button (see SearchBubble). Qt.Popup already closes it on
+        an outside click, so a second click on this same button (which
+        counts as "outside" the popup, per Qt's own popup-grab
+        handling) will typically be seen as already-hidden by the time
+        this runs and just reopen it -- text isn't cleared either way,
+        so repeated toggling picks up right where it left off."""
+        if self.search_bubble.isVisible():
+            self.search_bubble.hide()
+        else:
+            self._sync_search_bubble_for_active_tab()
+            self.search_bubble.show_below(self.search_btn)
+
+    def _on_shared_search_changed(self, text: str) -> None:
+        """The bubble's own line edit is the one visible search field,
+        shared across both tabs -- every keystroke writes straight into
+        whichever tab is CURRENTLY active's own (never-shown)
+        search_edit, which is what actually drives that tab's existing
+        textChanged -> _do_refresh wiring. Switching tabs re-syncs the
+        bubble's displayed text FROM the newly active tab instead (see
+        _sync_search_bubble_for_active_tab), so each tab's own search
+        query is preserved independently even though there's only one
+        visible text field."""
+        self._active_tab().search_edit.setText(text)
+        self._update_search_icon(text)
+
+    def _sync_search_bubble_for_active_tab(self) -> None:
+        text = self._active_tab().search_edit.text()
+        self.search_bubble.line_edit.blockSignals(True)
+        self.search_bubble.line_edit.setText(text)
+        self.search_bubble.line_edit.blockSignals(False)
+        self._update_search_icon(text)
+
+    def _update_search_icon(self, text: str) -> None:
+        """Swap the Search button's own icon for the "active search"
+        variant Max provided whenever the active tab's search box holds
+        actual text, per his direct instruction -- back to the plain
+        icon once it's empty again."""
+        self.search_btn.set_icon_pixmap(self._search_icon_active if text.strip() else self._search_icon)
+
+    # ------------------------------------------------------------ shared sort popover
+
+    def _open_sort_popover(self) -> None:
+        self._active_tab().rebuild_sort_popover_pages(self.sort_popover)
+        self.sort_popover.show_below(self.sort_btn)
+
+    # ------------------------------------------------------------ misc
 
     def _on_db_file_changed(self, path: str) -> None:
         # Some editors/writers replace rather than modify a watched file,
@@ -921,62 +963,20 @@ class LibraryPage(QWidget):
         self.local_tab.refresh()
         self.uploaded_tab.refresh()
 
-    def _rebuild_tab_icons(self) -> None:
-        """(Re)composite the Local/Uploaded tab icons at their own
+    def _rebuild_tab_icon_sizes(self) -> None:
+        """(Re)size the Local/Uploaded page buttons' own icons at their
         independent sizes (Saved Videos Icon Size / Uploaded Videos Icon
         Size in Settings > General), against self._current_tab_icon_size
-        as the 100% baseline -- see _composite_tab_icon's docstring for
-        how two different sizes coexist despite QTabBar's single shared
-        iconSize. Called at construction and from apply_scale() whenever
-        the baseline changes; NOT called by the click-pulse animation
-        itself, which only calls tabs.setIconSize() directly to scale
-        the already-composited icons uniformly (see PulseAnimator's
-        apply_size callback below)."""
+        as the 100% baseline. Called at construction and from
+        apply_scale() whenever the baseline changes. No more shared-
+        iconSize limitation to work around (see _LibraryTabButton) --
+        each button just gets its own target size directly."""
         appearance = config_module.load().appearance
         base = self._current_tab_icon_size
         local_target = max(1, round(base * appearance.saved_videos_icon_size / 100))
         uploaded_target = max(1, round(base * appearance.uploaded_videos_icon_size / 100))
-        shared = max(local_target, uploaded_target, 1)
-        self.tabs.setIconSize(QSize(shared, shared))
-        # Turquoise background per tab (Max: "the page buttons, such as
-        # local and uploaded") -- rounded on the OUTER corners only,
-        # matching the general "don't round a corner that's touching
-        # another element" rule from the rounded-corners spec: Local's
-        # right edge touches Uploaded's left edge, so those two inner
-        # corners (top+bottom) stay sharp on both tabs while the three
-        # remaining outer corners round normally.
-        theme = Theme(appearance)
-        turquoise = theme.turquoise()
-        radius = appearance.rounded_corner_radius if appearance.rounded_corners_enabled else 0
-        self.tabs.setTabIcon(0, _composite_tab_icon(
-            resource_qpixmap("local_videos.png"), local_target, shared,
-            bg_color=turquoise, radius=radius, top_right=False, bottom_right=False,
-        ))
-        self.tabs.setTabIcon(1, _composite_tab_icon(
-            resource_qpixmap("uploaded_videos.png"), uploaded_target, shared,
-            bg_color=turquoise, radius=radius, top_left=False, bottom_left=False,
-        ))
-
-    def _fix_tab_bar_height(self) -> None:
-        """Lock the tab bar's own height to its natural size at the
-        current (un-animated) icon size, so the click-pulse's per-frame
-        setIconSize() calls -- which would otherwise shrink/grow the
-        tab bar itself, since QTabBar derives its height from icon
-        size -- only change how big the icon renders inside a
-        constant-height bar, instead of pushing the search bar and
-        video grid below it up and down. Re-called from apply_scale()
-        whenever the base icon size legitimately changes; the pulse
-        animation itself never touches this.
-
-        freeze_size_hint() first: setFixedHeight() alone constrains the
-        bar's own rendered height, but QTabWidget's internal layout
-        positions the page content below the bar using the bar's
-        sizeHint() (not its actual height), which the animation's
-        setIconSize() calls still changed every frame -- see
-        freeze_size_hint()'s docstring."""
-        bar = self.tabs.tabBar()
-        bar.freeze_size_hint()
-        bar.setFixedHeight(bar.sizeHint().height())
+        self.local_btn.set_icon_target_size(local_target)
+        self.uploaded_btn.set_icon_target_size(uploaded_target)
 
     def apply_scale(self, factor: float) -> None:
         self.local_tab.apply_scale(factor)
@@ -986,5 +986,4 @@ class LibraryPage(QWidget):
         # everything else scaled -- now rescaled live alongside them.
         size = max(round(self._base_tab_icon_size * factor), 8)
         self._current_tab_icon_size = size
-        self._rebuild_tab_icons()
-        self._fix_tab_bar_height()
+        self._rebuild_tab_icon_sizes()

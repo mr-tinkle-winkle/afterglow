@@ -29,10 +29,22 @@ class CustomButton(QToolButton):
         appearance = config_module.load().appearance
         self._appearance = appearance
         self._theme = Theme(appearance)
+        self._icon_pixmap = None  # QPixmap | None -- drawn instead of text when set
+
+    def set_icon_pixmap(self, pixmap) -> None:
+        """Draw `pixmap` (scaled, centered, with a small margin) instead
+        of the button's text label. Pass None to go back to text.
+        Distinct from QToolButton's own setIcon()/setIconSize() -- this
+        button fully replaces native painting (see paintEvent's own
+        comment), so a plain setIcon() call would have nothing left to
+        actually render it."""
+        self._icon_pixmap = pixmap
+        self.update()
 
     def paintEvent(self, event) -> None:
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
+        painter.setRenderHint(QPainter.SmoothPixmapTransform)
 
         rect = QRectF(self.rect())
         radius = self._appearance.rounded_corner_radius if self._appearance.rounded_corners_enabled else 0
@@ -55,8 +67,18 @@ class CustomButton(QToolButton):
         painter.fillRect(self.rect(), bg)
         painter.setClipping(False)
 
-        painter.setPen(self._theme.button_text_color())
-        painter.drawText(self.rect(), Qt.AlignCenter, self.text())
+        if self._icon_pixmap is not None and not self._icon_pixmap.isNull():
+            margin = max(4, round(min(self.width(), self.height()) * 0.2))
+            target = self.rect().adjusted(margin, margin, -margin, -margin)
+            scaled = self._icon_pixmap.scaled(
+                target.width(), target.height(), Qt.KeepAspectRatio, Qt.SmoothTransformation
+            )
+            x = target.x() + (target.width() - scaled.width()) // 2
+            y = target.y() + (target.height() - scaled.height()) // 2
+            painter.drawPixmap(x, y, scaled)
+        else:
+            painter.setPen(self._theme.button_text_color())
+            painter.drawText(self.rect(), Qt.AlignCenter, self.text())
         painter.end()
         # Deliberately NOT calling super().paintEvent() -- this fully
         # replaces QToolButton's native/KDE-styled rendering rather than

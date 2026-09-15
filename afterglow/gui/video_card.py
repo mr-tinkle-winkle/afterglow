@@ -145,13 +145,28 @@ class _InfoBox(QWidget):
         )
         layout.setSpacing(2)
         self.content_layout = layout
+        self._bg_cache: QPixmap | None = None
 
     def paintEvent(self, event) -> None:
+        # Cached rather than rebuilt (rounded-rect path construction +
+        # fill) on every repaint -- this box's own appearance never
+        # changes after construction, only its SIZE (once, when the
+        # layout first settles), so there's nothing to gain by redoing
+        # this work on every scroll-triggered repaint. See video_card.py's
+        # matching comment on VideoCard's own background cache for the
+        # full reasoning (reported directly as low scroll frame rate).
+        if self._bg_cache is None or self._bg_cache.size() != self.size():
+            pixmap = QPixmap(self.size())
+            pixmap.fill(Qt.transparent)
+            painter = QPainter(pixmap)
+            painter.setRenderHint(QPainter.Antialiasing)
+            if self._appearance.rounded_corners_enabled:
+                painter.setClipPath(rounded_rect_path(QRectF(self.rect()), self._appearance.rounded_corner_radius))
+            painter.fillRect(self.rect(), self._theme.accent())
+            painter.end()
+            self._bg_cache = pixmap
         painter = QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing)
-        if self._appearance.rounded_corners_enabled:
-            painter.setClipPath(rounded_rect_path(QRectF(self.rect()), self._appearance.rounded_corner_radius))
-        painter.fillRect(self.rect(), self._theme.accent())
+        painter.drawPixmap(0, 0, self._bg_cache)
         painter.end()
         super().paintEvent(event)
 
@@ -199,6 +214,7 @@ class VideoCard(QWidget):
             resource_qpixmap("selected_border_gradient.png"),
         )
         self._selected = False
+        self._bg_cache: QPixmap | None = None
         # Both optional and both supplied together by _VideoGridTab (see
         # its refresh()) -- let the right-click context menu act on the
         # WHOLE current multi-selection instead of just this one card.
@@ -547,7 +563,31 @@ class VideoCard(QWidget):
         return self._highlight_enabled and not self._video.has_edit
 
     def paintEvent(self, event) -> None:
+        # Cached rather than rebuilt (several rounded-rect paths, a
+        # gradient-pixmap draw, a multiply-blend composite) on every
+        # repaint -- reported directly as low frame rate while
+        # scrolling despite the scroll MOVEMENT itself being smooth,
+        # which points at per-frame repaint cost rather than the scroll
+        # animation. None of this actually changes except on a real
+        # resize, a selection change, or a highlight-enabled toggle --
+        # all three are covered by cache_key below, so scrolling itself
+        # (which changes only the widget's POSITION, not its size or
+        # state) now just blits one already-rendered pixmap instead of
+        # redoing this whole paintEvent's work every frame.
+        cache_key = (self.size().width(), self.size().height(), self._selected, self._should_show_highlight())
+        if self._bg_cache is None or self._bg_cache_key != cache_key:
+            self._bg_cache = self._render_background(cache_key)
+            self._bg_cache_key = cache_key
         painter = QPainter(self)
+        painter.drawPixmap(0, 0, self._bg_cache)
+        painter.end()
+        super().paintEvent(event)
+
+    def _render_background(self, cache_key) -> QPixmap:
+        _width, _height, selected, show_highlight = cache_key
+        pixmap = QPixmap(self.size())
+        pixmap.fill(Qt.transparent)
+        painter = QPainter(pixmap)
         painter.setRenderHint(QPainter.Antialiasing)
         painter.setRenderHint(QPainter.SmoothPixmapTransform)
 
@@ -555,7 +595,7 @@ class VideoCard(QWidget):
         radius = self._appearance.rounded_corner_radius if self._appearance.rounded_corners_enabled else 0
         border_width = self._appearance.unedited_selected_border_width
 
-        if self._selected:
+        if selected:
             # Selection stays a ring around the WHOLE outer card (unlike
             # the unedited highlight below, this one was NOT redefined
             # to also become a background wash behind everything --
@@ -615,7 +655,7 @@ class VideoCard(QWidget):
             # of the rect's own width/height is smaller, which is the
             # only clamp actually needed to keep the shape valid.
             video_radius = radius
-            if not self._selected and self._should_show_highlight():
+            if not selected and show_highlight:
                 if video_radius:
                     painter.setClipPath(rounded_rect_path(video_rect, video_radius))
                 painter.drawPixmap(video_rect, self._highlight_pixmap, QRectF(self._highlight_pixmap.rect()))
@@ -650,7 +690,7 @@ class VideoCard(QWidget):
                     painter.fillRect(video_rect, self._theme.app_background())
 
         painter.end()
-        super().paintEvent(event)
+        return pixmap
 
     def _load_pixmap(self, video: "library.Video") -> QPixmap:
         thumb_path = thumbnails.get_thumbnail(video.id, Path(video.path))

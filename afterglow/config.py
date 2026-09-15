@@ -224,17 +224,17 @@ class AppearanceSettings:
     # (computed derivations, etc.) are documented in this file's git
     # history / HANDOFF.md rather than here now that this is simply a
     # literal value he specified.
-    afterglow_color_accent: str = "#1d61b5"
-    afterglow_color_card_background: str = "#1f3a5f"
+    afterglow_color_accent: str = "#152c4f"
+    afterglow_color_card_background: str = "#152c4f"
     # Given directly by Max, most recently -- meant to eventually
     # become the actual app-wide background (not yet wired everywhere
     # -- see HANDOFF.md).
     afterglow_color_app_background: str = "#0d1621"
-    afterglow_color_library: str = "#1d2c3d"
+    afterglow_color_library: str = "#152c4f"
     # Used for the Local/Uploaded tab icons' own background
     # specifically (not the library page background above, despite the
     # similar name -- see Theme.turquoise()'s own docstring for why).
-    afterglow_color_turquoise: str = "#05a4b9"
+    afterglow_color_turquoise: str = "#0c8ea0"
     # "normal" | "maximized" | "fullscreen" -- replaces the old
     # top-level default_to_fullscreen bool (see load()'s backward-compat
     # shim), moved here from the Clipping tab into General since it's
@@ -361,6 +361,21 @@ def load() -> AppSettings:
     if appearance_raw.get("afterglow_color_app_background") == "#142232":
         appearance_raw["afterglow_color_app_background"] = AppearanceSettings.afterglow_color_app_background
     if appearance_raw.get("afterglow_color_turquoise") == "#12b5c8":
+        appearance_raw["afterglow_color_turquoise"] = AppearanceSettings.afterglow_color_turquoise
+    # New palette given directly by Max this session: accent,
+    # card_background, and library_background were all set to the SAME
+    # hex (#152c4f) and turquoise moved to #0c8ea0 -- app_background is
+    # untouched ("keep the current app background color"). Same
+    # stale-default reasoning as every migration above: only resets a
+    # config still holding the immediately-previous default, never a
+    # genuinely custom value.
+    if appearance_raw.get("afterglow_color_accent") == "#1d61b5":
+        appearance_raw["afterglow_color_accent"] = AppearanceSettings.afterglow_color_accent
+    if appearance_raw.get("afterglow_color_card_background") == "#1f3a5f":
+        appearance_raw["afterglow_color_card_background"] = AppearanceSettings.afterglow_color_card_background
+    if appearance_raw.get("afterglow_color_library") == "#1d2c3d":
+        appearance_raw["afterglow_color_library"] = AppearanceSettings.afterglow_color_library
+    if appearance_raw.get("afterglow_color_turquoise") == "#05a4b9":
         appearance_raw["afterglow_color_turquoise"] = AppearanceSettings.afterglow_color_turquoise
     if appearance_raw.get("unedited_selected_border_width") in (9, 18, 36):
         # Doubled three times in quick succession (9 -> 18 -> 36 -> 72),

@@ -328,6 +328,145 @@ Seven consecutive batches of Library/Settings/appearance
 features/bug fixes, given together each time. Newest first.
 
 ### This session
+Direct follow-up feedback on last session's four items, plus one more
+long-queued item (Local/Uploaded's own custom page headers) finally
+tackled. Seven pieces, given together:
+
+1. **Search/Refresh/Sort moved into the header row.** Per Max's direct
+   instruction ("place the search, refresh, and sort up top with the
+   pages in the empty space instead of having their own little space
+   that enroaches on the videos"), these three buttons no longer have
+   their own per-tab row above the grid -- they're now shared, living
+   once in `LibraryPage`'s own header alongside the new Local/Uploaded
+   buttons (see item 2), in the empty space next to them. Necessitated
+   restructuring how search text and the Sort popover's content get
+   attached: `_VideoGridTab` still owns ALL the underlying state
+   (search text, active/excluded tags, sort order, highlight toggle,
+   card-info fields) and the three popover-page-builder methods, but no
+   longer creates its own buttons/popups -- `LibraryPage` now owns one
+   shared `SearchBubble` and one shared `SortPopover`, each re-pointed
+   at whichever tab (`self._stack.currentWidget()`) is currently
+   active. `_VideoGridTab.search_edit` is now a plain, never-shown
+   `QLineEdit` used purely for text storage + its existing
+   `textChanged` wiring; the shared bubble's own visible line edit
+   syncs into/out of whichever tab is active on every tab switch
+   (`_sync_search_bubble_for_active_tab`), so each tab's search query
+   stays independent even though there's only one visible text field.
+   The Sort popover's content is now rebuilt LAZILY, only right before
+   it's shown (`_open_sort_popover` -> `_VideoGridTab.
+   rebuild_sort_popover_pages()`), not on every refresh() the way the
+   old per-tab version did -- a nice side effect of the ask itself,
+   since a popover that isn't even open doesn't need to be kept in
+   sync with every background DB-watcher refresh.
+2. **Local/Uploaded got their own custom page headers** -- asked for
+   multiple times per HANDOFF's own "Next up" list, finally done. New
+   `_LibraryTabButton(QAbstractButton)` in library_page.py replaces
+   `QTabWidget`/`QTabBar`/`_PulsingTabBar` entirely with two plain
+   custom buttons + a `QStackedWidget`. This incidentally also solves
+   the OTHER half of item 1 above (nowhere left to put a corner widget
+   even if `QTabWidget.setCornerWidget()` had been used instead -- a
+   fully custom header was needed either way to get search/refresh/
+   sort into the tab bar's own row). Each button now gets a genuinely
+   independent icon size directly (`set_icon_target_size()`) -- the old
+   `_composite_tab_icon()` canvas-compositing workaround for QTabBar's
+   single shared iconSize is gone completely, deleted along with the
+   function itself, since there's no more QTabBar to work around.
+   Corner rounding verified pixel-level after the refactor (by
+   comparing the corner's color against the button's own plain fill
+   color, not alpha -- LibraryPage isn't a translucent top-level popup
+   the way SortPopover/SearchBubble are, so a `.grab()` of it always
+   comes back opaque and alpha alone can't tell "rounded away" from
+   "opaque"): Local's outer top-left corner reads as whatever's behind
+   it, not turquoise; the seam corners on both buttons read as solid
+   turquoise all the way to the edge. Deliberately scoped down from
+   HANDOFF's original ask, flagged as a gap for later: the press/hover
+   PULSE animation `_PulsingTabBar` had (matching the sidebar nav
+   buttons) was NOT reimplemented -- these two buttons only lighten
+   slightly on hover and darken slightly on press, like `CustomButton`.
+   `neighbors_for`/`_last_edit_tab`/prev-next-tab-tracking all carried
+   over unchanged, since `self.local_tab`/`self.uploaded_tab` still
+   exist as real `_VideoGridTab` instances, just displayed via a
+   `QStackedWidget` instead of `QTabWidget` pages now.
+3. **Real icons for Search/Refresh/Sort**, replacing the text-label
+   placeholders. `CustomButton` gained `set_icon_pixmap()` (draws a
+   centered, aspect-ratio-preserved icon instead of the text label when
+   set) since the button already fully replaces native painting and
+   had nothing to hang a normal `setIcon()` off of. The four icons Max
+   provided are bundled as `afterglow/gui/resources/{search,refresh,
+   sort,search_icon_active}.png` (also covered by pyproject.toml's
+   existing `gui/resources/*.png` package-data glob, so no packaging
+   change needed).
+4. **Search button swaps to the "active search" icon whenever the
+   active tab's search box holds text**, back to the plain icon once
+   it's empty -- `LibraryPage._update_search_icon()`, called from both
+   the shared bubble's `textChanged` and on every tab switch (so
+   switching to a tab with its own leftover search text immediately
+   shows the right icon, not just after the next keystroke).
+5. **Search bubble outline/tail redesign**, per three direct
+   corrections on the previous version:
+   - The outline used to visibly continue through the tail as if the
+     tail and body had separate outlines. Root cause: the tail's flat
+     base sat exactly COINCIDENT with the body's top edge (touching,
+     not overlapping) -- `QPainterPath.united()`'s boolean-op result
+     can leave a stray seam exactly where two shapes only share an
+     edge rather than genuinely overlapping. Fixed by extending the
+     tail's base `_TAIL_OVERLAP` (8px) PAST the body's top edge, into
+     its interior, so that seam sits fully inside the united region
+     and never becomes part of what Qt actually strokes. Verified
+     pixel-level: sampled the pixel just inside the body's nominal top
+     edge, directly under the tail's center, and confirmed it reads as
+     the FILL color (card_background), not the outline color (accent)
+     -- an outline-colored pixel there would mean the seam was still
+     leaking through.
+   - The tail is now a curved shape (two cubic Beziers meeting at a
+     narrow, rounded tip) instead of a straight-edged triangle, and
+     wider at its base (`_TAIL_WIDTH` 44px, "attach to more of the text
+     bubble").
+   - The bubble now centers itself directly under the anchor button
+     (`show_below` computes the anchor's horizontal CENTER and centers
+     the bubble on that) instead of left-aligning to it, which is what
+     was actually causing "below it and to the side" with a bubble
+     wider than the button.
+6. **New color palette given directly by Max**: accent, card_background,
+   and library_background all set to the SAME hex (`#152c4f`);
+   turquoise moved to `#0c8ea0`; app_background explicitly left alone
+   ("keep the current app background color"). Same stale-default
+   migration pattern as every previous palette change in this file --
+   added four new `if appearance_raw.get(...)  == <previous default>`
+   entries so a config still holding any of the immediately-previous
+   values (`#1d61b5` / `#1f3a5f` / `#1d2c3d` / `#05a4b9`) gets bumped
+   forward automatically, without touching a genuinely custom value.
+7. **Scroll frame-rate fix.** Reported directly: "the scrolling is low
+   frame rate, but the movement is smooth" -- i.e. last session's
+   SmoothScrollArea animation itself was fine, but something per-frame
+   was expensive. Diagnosis matched Max's own suggestion exactly
+   (video cards only need to change on resize; thumbnails only on
+   refresh): `VideoCard.paintEvent`, `_InfoBox.paintEvent`, and
+   `OutlinedLabel.paintEvent` were all reconstructing rounded-rect
+   paths / gradient composites / glyph-outline paths from scratch on
+   EVERY repaint, including the ones scrolling triggers purely from a
+   widget's position changing, not its actual appearance. All three
+   now render into a cached `QPixmap` once and just blit it on
+   subsequent paints, invalidated only by an actual change: `VideoCard`
+   keys its cache on `(size, selected, should_show_highlight)` (checked
+   fresh every paintEvent, so no separate invalidation calls needed
+   anywhere selection/highlight state changes -- the key comparison
+   itself catches it); `_InfoBox` and `OutlinedLabel` invalidate on a
+   size change or, for the label, an actual `setText`/`set_colors`
+   call. Verified three ways, not just "it still renders correctly":
+   (1) the exact same cache object (`is`, not just equal) survives an
+   unrelated repaint; (2) it's replaced after a real selection change
+   or resize; (3) a rough timing comparison (20-iteration average) of
+   a cold `_render_background()` call vs. a warm cached repaint showed
+   roughly a 4x cost reduction per card, per frame.
+
+Two smaller items from last session remain genuinely open (not
+touched this round, still flagged in "Next up"): whether the Stats
+tab's three length rows should show a percent after all, and whether
+the Sort popover's own tabs want hover/press pulse. This session ADDS
+a third: the Local/Uploaded buttons' own pulse animation (see item 2).
+
+### Previous session
 Four more items, given together: smooth scrolling, a new Settings >
 Stats tab, the Sort popover's horizontal-tabs-as-pages redesign, and
 the search bubble redesign (the last of these was flagged as not-yet-
@@ -1770,22 +1909,14 @@ widget-level testing note above):
 ## Next up
 **Explicitly queued and re-requested this round, in the order Max gave
 them:**
-1. **Replace Local/Uploaded's `QTabWidget`/`QTabBar` with two
-   `CustomButton`s + a page-switching mechanism.** Asked for again this
-   round ("you still didn't make the saved and uploaded their own
-   custom tabs, they still use the default page header behavior, and
-   still have the bugs associated with it") -- deliberately deferred
-   twice now given its size, but next up for real. The biggest
-   remaining piece of the "Custom Buttons" work specifically, since
-   it's an architecture change, not just a repaint -- needs
-   `_PulsingTabBar`'s click-pulse/hover animation, the tab-icon
-   compositing trick (independent Local/Uploaded icon sizes despite
-   one shared native property), and the prev-next-navigation
-   tab-tracking (`_last_edit_tab`) all reimplemented on top of two
-   plain buttons + probably a `QStackedWidget`, rather than inheriting
-   them for free from `QTabWidget`. Max's own framing suggests he
-   expects this to also incidentally fix whatever tab-related bugs he
-   hasn't bothered separately reporting.
+1. **DONE this session (see "This session" above): Local/Uploaded's own
+   custom page headers**, replacing `QTabWidget`/`QTabBar` with
+   `_LibraryTabButton` + a `QStackedWidget`. One piece deliberately
+   scoped down and still open: `_PulsingTabBar`'s click-pulse/hover
+   animation was NOT reimplemented on the two new buttons -- they only
+   lighten on hover / darken on press, like `CustomButton`. Worth a
+   quick confirm whether Max wants the fuller pulse-animation parity or
+   is fine with the simpler feedback now that it's shipped.
 2. **Lazy-load the grid**: load the first ~36 videos so the app opens
    immediately, then load more as the user scrolls further down,
    rather than building every card synchronously up front. Explicitly
@@ -1797,6 +1928,13 @@ them:**
 3. **Custom scroll bar**: turquoise handle, app-background track,
    outlined in the video-card color. A new `QScrollBar` subclass with
    custom paint, swapped in via `QScrollArea.setVerticalScrollBar()`.
+
+**Two more open questions from recent sessions, still unconfirmed:**
+- Whether the Stats tab's three length rows (average/longest/shortest)
+  should show some form of percent despite not being a video-count
+  subset.
+- Whether the Sort popover's own tab buttons want the same pulse
+  animation as item 1 above.
 
 **Everything else, unordered:**
 - **Confirm what clicking the thumbnail/video-box should do now**
@@ -1838,6 +1976,48 @@ reordering as each phase actually lands -- treat it as "what's next,"
 not a fixed roadmap.
 
 ## Architecture pointers
+- **New this session:**
+  - `afterglow/gui/library_page.py` -- `_composite_tab_icon()` and
+    `_PulsingTabBar` are GONE (deleted, not deprecated) -- replaced by
+    `_LibraryTabButton(QAbstractButton)`, a genuinely independent-
+    icon-size custom button. `LibraryPage` no longer has a `self.tabs`
+    (`QTabWidget`) at all; it has `self._stack` (`QStackedWidget`,
+    still holding the same `self.local_tab`/`self.uploaded_tab`
+    `_VideoGridTab` instances as before) and `self.local_btn`/
+    `self.uploaded_btn`. `_VideoGridTab.search_edit` is now a plain,
+    never-added-to-any-layout `QLineEdit` (text storage only); the
+    tab no longer creates its own `search_btn`/`refresh_btn`/
+    `sort_btn`/`search_bubble`/`sort_popover` -- those are all
+    `LibraryPage`-level now (`self.search_btn` etc.), shared across
+    both tabs. `_VideoGridTab._rebuild_toolbar_menu()` was renamed to
+    `rebuild_sort_popover_pages(popover)` (now takes the popover as a
+    parameter rather than owning one) and is no longer called from
+    `_do_refresh()` -- only lazily, right before `LibraryPage` shows
+    the shared popover.
+  - `afterglow/gui/custom_button.py` -- `CustomButton.set_icon_pixmap()`
+    is new: draws a centered, aspect-preserved pixmap instead of the
+    text label when set (`None` reverts to text). Search/Refresh/Sort
+    all use this now instead of text labels.
+  - `afterglow/gui/search_bubble.py` -- rewritten. Tail is now two
+    cubic Beziers (`_build_path()`), not a `QPolygonF` triangle;
+    `_TAIL_OVERLAP` (8px) is the fix for the stray-outline-seam bug --
+    see "This session" above for the full reasoning. `show_below()`
+    now centers the bubble on the anchor's horizontal midpoint instead
+    of left-aligning to it.
+  - `afterglow/gui/video_card.py` -- `VideoCard` gained `_bg_cache`/
+    `_bg_cache_key` and `_render_background(cache_key)` (the old
+    `paintEvent` body, now cache-key-gated); `_InfoBox` gained
+    `_bg_cache` the same way. `afterglow/gui/outlined_label.py` --
+    `OutlinedLabel` gained `_cache` (invalidated by `setText`/
+    `set_colors`, or a size change caught lazily in `paintEvent`).
+    None of these need explicit invalidation calls scattered around
+    the codebase for state that already funnels through their own
+    existing setters -- see each one's own comment for exactly what
+    its cache key covers.
+  - `afterglow/config.py` -- new migration entries for the four
+    color fields' immediately-previous defaults (`#1d61b5` /
+    `#1f3a5f` / `#1d2c3d` / `#05a4b9`), same pattern as every earlier
+    palette migration in this file.
 - `afterglow/gui/custom_button.py` -- `CustomButton` (`QToolButton`
   subclass, fully custom rounded/theme-colored paint), used by the
   Library's Search/Refresh/Sort row. Subclasses `QToolButton`
@@ -1846,8 +2026,7 @@ not a fixed roadmap.
   painting is replaced. `sort_btn` no longer uses that popup-menu path
   as of this session (see `sort_popover.py` below) -- it's now a plain
   `clicked` connection opening a `SortPopover` instead. NOT yet used
-  for the sidebar nav buttons or the Local/Uploaded tab icons (see
-  "Next up").
+  for the sidebar nav buttons (see "Next up").
 - `afterglow/gui/smooth_scroll_area.py` -- NEW this session.
   `SmoothScrollArea(QScrollArea)`, animates wheel-scroll instead of
   jumping per-notch. Swapped in for `_VideoGridTab.scroll`; nothing
