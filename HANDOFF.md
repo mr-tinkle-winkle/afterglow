@@ -109,19 +109,23 @@ earlier in this section's own history)**:
   this specific darkened-gradient-background piece for sidebar buttons
   hasn't been built, only the video-card side of the highlight
   redesign below.
-  For the unedited-video highlight specifically: confirmed by Max it's
-  BOTH a border around the video player itself AND a background
-  overlay on the card's background box, rendered BEHIND both the video
-  player and the info box (not replacing the video image itself) --
-  DONE (two sessions ago). The background box needs enough padding
-  around its nested video-player + info-box children that a sliver of
-  the background portrusion is visible on every side, everywhere on
-  the card, not just in corners/gaps -- DONE, this is what `ui_padding`
-  (the "Padding" setting) provides. Separately, Max also confirmed
-  wanting an ALWAYS-ON (not just for unedited videos) thin outline
-  around every thumbnail specifically for visual contrast against the
-  card background -- DONE, distinct from and additional to the
-  highlight's own conditional border.
+  For the unedited-video highlight specifically: **REVISED again in
+  item 18 below (this session) -- read that for the current, correct
+  behavior.** Two sessions ago, per Max's clarification at the time, it
+  was BOTH a border around the video player AND a background overlay
+  on the card's own background box, rendered behind everything. After
+  actually seeing it rendered, Max asked for that background-overlay
+  part to be removed -- the card's own background is now ALWAYS plain
+  `card_background()`, and the gradient shows ONLY as the video
+  thumbnail's own border. The separate "always-on thin outline for
+  contrast" item mentioned below this session's earlier item 17 has
+  also been absorbed into that same border -- it's not a separate
+  layer anymore, it's the plain-color fallback for whenever the
+  gradient doesn't apply (edited videos, highlighting disabled, or a
+  selected card). The background box's generous padding (from
+  `ui_padding`) is still relevant on its own merits -- it's what keeps
+  a sliver of the (now-always-plain) card background visible around
+  the video box and info box regardless of content.
 - Light shading is planned for later (subtle gradients replacing some
   flat fills) -- Max confirmed this doesn't need a redesign as long as
   color application is centralized (it now is -- see Theme class).
@@ -934,6 +938,74 @@ include a full Advanced Sound feature partway through. In order:
       framing (explicitly optional this round): turquoise applied to
       filters as well as the Local/Uploaded tabs.
 
+18. **Follow-up from a second screenshot** (Max: turquoise showing up
+    in the wrong places, thumbnails not visibly rounded, and a
+    deliberate redesign of the unedited-highlight).
+    - **Investigated the turquoise/rounding reports first, before
+      changing anything** -- both turned out to be verifiably CORRECT
+      in the actual code, not bugs:
+      - `Theme.accent()`/`card_background()`/`library_background()`/
+        `turquoise()` were each tested directly against a completely
+        FRESH config (no pre-existing saved settings) and produced
+        exactly the right hex values, and a real rendered `VideoCard`'s
+        info box and a real `LibraryPage`'s grid background both
+        sampled back the EXACT correct colors pixel-for-pixel. Given
+        `AppearanceSettings`' color fields have been reassigned twice
+        now across sessions (turquoise moved from library-background to
+        tab-icon-background just last session), and dataclass DEFAULT
+        changes never retroactively update a value already written to
+        an existing `config.toml`, the most likely explanation for
+        what Max is seeing is a config file on his end still holding
+        color values saved under an OLDER assignment -- worth checking
+        Settings > Advanced directly to see what's actually saved
+        there now, since editing/re-saving those fields (or deleting
+        the relevant lines from the config file to fall back to the
+        current code defaults) would resolve it either way. Flagged as
+        a real open question below rather than guessed at further,
+        since there's no way to inspect Max's actual local config file
+        from here.
+      - Thumbnail rounding: `round_pixmap_corners()` was verified
+        directly against a real 16:9 test clip's actual generated
+        thumbnail (not the placeholder, and not the earlier session's
+        SQUARE synthetic test clips, which produce a misleadingly
+        square/cropped result under `KeepAspectRatioByExpanding` and
+        gave a false signal during this exact investigation) -- the
+        resulting pixmap's corner pixels are genuinely transparent
+        (alpha 0), confirming the rounding IS being applied correctly
+        at the pixmap level in this sandbox. Since this can't be
+        cross-checked against Max's actual on-screen KDE/Wayland
+        rendering, this is flagged as unverified-on-real-hardware
+        rather than "definitely fine" -- but there's no bug found in
+        the actual rounding code itself.
+    - **The redesign Max asked for outright (not a bug -- a deliberate
+      change from what was confirmed two sessions ago): the unedited-
+      highlight background wash is REMOVED.** The card's own background
+      is now ALWAYS plain `card_background()`, regardless of edit
+      state -- the wash that used to cover the whole outer card for
+      unedited videos is gone. The unedited-highlight gradient now
+      shows ONLY as the video-thumbnail's own border (reusing the
+      existing fill-video_box-then-let-thumb_label-cover-the-center
+      technique from two sessions ago, unchanged). This also
+      absorbed/replaced last session's separate "always-on plain
+      contrast outline" -- the two were doing conceptually overlapping
+      jobs (both bordering the thumbnail), so they're now ONE mutually
+      exclusive choice per card: the gradient for an unedited,
+      highlighted, unselected video, or the plain
+      `card_text_outline_color` stroke for everything else (edited,
+      highlighting disabled, or selected). Selection's own ring around
+      the whole outer card is unchanged either way.
+    - Verified: an unedited+highlighted video's card background samples
+      as plain `card_background()` (not the gradient) while its video-
+      box border samples as the gradient; an edited video's (or
+      highlighting-disabled) border samples as the plain outline color
+      instead. Updated two other tests
+      (`test_card_paint_layers.py`, `test_session_visual_features.py`)
+      whose sample points were written against the OLD design (the
+      whole-card wash, and the outline stroke's old position at the
+      inset boundary rather than `video_box`'s own outer edge) --
+      correct, expected updates given the design actually changed, not
+      regressions.
+
 ### Two sessions ago
 All four items carried over from that session's "next up" list,
 implemented and verified (not just compiled -- see the offscreen
@@ -1290,6 +1362,17 @@ not a fixed roadmap.
   for Auto Add Filter's multi-select; `refresh_dynamic_lists()`.
 
 ## Open questions / pending decisions
+- **Turquoise/dark-blue/etc. possibly still showing wrong colors on
+  Max's machine.** Investigated directly this session -- the code's
+  color mapping is verified correct against a fresh config (see item
+  18 above) -- so if this persists after this build, the most likely
+  cause is his ACTUAL `config.toml` still holding color values saved
+  under an earlier session's (different) field assignment, since a
+  code-side default change never retroactively updates an
+  already-saved settings file. Worth him checking Settings > Advanced
+  directly to see what's actually saved, or deleting/editing those
+  specific lines in the config file, rather than assuming it's a fresh
+  code bug if it recurs.
 - Whether the README rewrite (anonymizing the whole changelog, not
   just new sections) should happen as its own dedicated pass.
 - Whether categories need their own rename/delete UI.

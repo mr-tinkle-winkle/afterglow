@@ -528,78 +528,47 @@ class VideoCard(QWidget):
                 painter.fillRect(inner_rect, self._theme.card_background())
         else:
             # Plain background portrusion -- rounded, theme-colored.
-            # This is what's visible in the CARD_PADDING/BOX_GAP gaps
-            # around the video box and info box (see their own
-            # comments) -- always at least a sliver of it showing,
-            # everywhere on the card, regardless of content.
+            # This is what's visible in the padding gaps around the
+            # video box and info box (see their own comments) -- always
+            # at least a sliver of it showing, everywhere on the card,
+            # regardless of content. NO highlight wash here anymore --
+            # per Max, after actually seeing it rendered: the unedited
+            # highlight should be JUST a border around the video
+            # thumbnail, not something that takes over the whole card's
+            # own background color (this used to also do the latter).
             if radius:
                 painter.setClipPath(rounded_rect_path(outer_rect, radius))
             painter.fillRect(self.rect(), self._theme.card_background())
+            painter.setClipping(False)
 
-            if self._should_show_highlight():
-                # Background wash behind BOTH the video box and info
-                # box -- confirmed by Max: the unedited highlight is
-                # BOTH a border around the video player AND an overlay
-                # on the card's own background, rendered behind
-                # everything else (not replacing the video image).
-                painter.drawPixmap(self.rect(), self._highlight_pixmap)
+        # Video-thumbnail border: the unedited-highlight gradient for an
+        # unedited video (with highlighting enabled and the card not
+        # selected), otherwise a plain thin contrast-outline stroke in
+        # card_text_outline_color -- mutually exclusive, so every card
+        # gets exactly one border treatment around its thumbnail, never
+        # both and never neither.
+        video_rect = QRectF(self.video_box.geometry())
+        if video_rect.width() > 0 and video_rect.height() > 0:
+            video_radius = min(radius, border_width) if radius else 0
+            if not self._selected and self._should_show_highlight():
+                if video_radius:
+                    painter.setClipPath(rounded_rect_path(video_rect, video_radius))
+                painter.drawPixmap(video_rect, self._highlight_pixmap, QRectF(self._highlight_pixmap.rect()))
                 darken_factor = 1 - (self._appearance.unedited_highlight_brightness / 100.0)
                 if darken_factor > 0:
                     gray = round(255 * (1 - darken_factor))
                     painter.setCompositionMode(QPainter.CompositionMode_Multiply)
-                    painter.fillRect(self.rect(), QColor(gray, gray, gray))
+                    painter.fillRect(video_rect, QColor(gray, gray, gray))
                     painter.setCompositionMode(QPainter.CompositionMode_SourceOver)
-            painter.setClipping(False)
-
-        # Video-player border -- only for the unedited highlight (the
-        # video box gets no such treatment when the card is merely
-        # selected, or neither). Drawn into video_box's own geometry --
-        # its layout margin (video_border_width, set at construction) is
-        # exactly the gap thumb_label leaves clear for this.
-        if not self._selected and self._should_show_highlight():
-            video_rect = QRectF(self.video_box.geometry())
-            if video_rect.width() > 0 and video_rect.height() > 0:
-                video_radius = min(radius, border_width) if radius else 0
-                if video_radius:
-                    painter.setClipPath(rounded_rect_path(video_rect, video_radius))
-                    painter.drawPixmap(video_rect, self._highlight_pixmap, QRectF(self._highlight_pixmap.rect()))
-                    darken_factor = 1 - (self._appearance.unedited_highlight_brightness / 100.0)
-                    if darken_factor > 0:
-                        gray = round(255 * (1 - darken_factor))
-                        painter.setCompositionMode(QPainter.CompositionMode_Multiply)
-                        painter.fillRect(video_rect, QColor(gray, gray, gray))
-                        painter.setCompositionMode(QPainter.CompositionMode_SourceOver)
-                    painter.setClipping(False)
-                else:
-                    painter.drawPixmap(video_rect, self._highlight_pixmap, QRectF(self._highlight_pixmap.rect()))
-                    darken_factor = 1 - (self._appearance.unedited_highlight_brightness / 100.0)
-                    if darken_factor > 0:
-                        gray = round(255 * (1 - darken_factor))
-                        painter.setCompositionMode(QPainter.CompositionMode_Multiply)
-                        painter.fillRect(video_rect, QColor(gray, gray, gray))
-                        painter.setCompositionMode(QPainter.CompositionMode_SourceOver)
-
-        # Always-on thin contrast outline around the thumbnail itself
-        # (distinct from the unedited-highlight border above, which
-        # only shows for unedited videos) -- per Max: "the thumbnail is
-        # to improve contrast between the thumbnail and the video
-        # card", so this draws regardless of edit/selection state,
-        # using the same rounded shape baked into the thumbnail pixmap
-        # itself (see _load_pixmap's round_pixmap_corners call) so the
-        # stroke actually follows the image's own rounded edge instead
-        # of a sharp rectangle around a rounded image.
-        thumb_content_rect = QRectF(self.video_box.geometry()).adjusted(
-            border_width, border_width, -border_width, -border_width
-        )
-        if thumb_content_rect.width() > 0 and thumb_content_rect.height() > 0:
-            contrast_pen = QPen(QColor(self._appearance.card_text_outline_color), 2)
-            painter.setPen(contrast_pen)
-            painter.setBrush(Qt.NoBrush)
-            thumb_radius = min(radius, thumb_content_rect.width() / 2, thumb_content_rect.height() / 2) if radius else 0
-            if thumb_radius:
-                painter.drawPath(rounded_rect_path(thumb_content_rect, thumb_radius))
+                painter.setClipping(False)
             else:
-                painter.drawRect(thumb_content_rect)
+                contrast_pen = QPen(QColor(self._appearance.card_text_outline_color), 2)
+                painter.setPen(contrast_pen)
+                painter.setBrush(Qt.NoBrush)
+                if video_radius:
+                    painter.drawPath(rounded_rect_path(video_rect, video_radius))
+                else:
+                    painter.drawRect(video_rect)
 
         painter.end()
         super().paintEvent(event)
