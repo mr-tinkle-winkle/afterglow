@@ -40,6 +40,7 @@ from .editor_page import EditorPage
 from .resources import resource_qicon, resource_qpixmap
 from .scaling import compute_scale
 from .pixmap_effects import resolve_border_pixmap, hue_shift_pixmap_cached
+from .theme import Theme
 from .pulse_animation import PulseAnimator
 
 # Indices into self.stack -- fixed at construction time (see __init__).
@@ -295,9 +296,16 @@ class MainWindow(QMainWindow):
         self.resize(1600, 900)
 
         appearance = config_module.load().appearance
+        theme = Theme(appearance)
 
         central = QWidget()
         self.setCentralWidget(central)
+        # App-wide background -- always wired in (same pattern as
+        # VideoCard's card_background()/accent(): Theme itself decides
+        # whether this is Afterglow's fixed color or a live KDE-palette
+        # equivalent, this call doesn't need its own separate check).
+        central.setAutoFillBackground(True)
+        central.setStyleSheet(f"background-color: {theme.app_background().name()};")
         layout = QHBoxLayout(central)
 
         # ---- sidebar: Library + Editor (icon-only, fill the height),

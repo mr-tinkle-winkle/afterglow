@@ -224,6 +224,41 @@ class SettingsPage(QWidget):
         )
         form.addRow("Afterglow Theme:", self.afterglow_theme_check)
 
+        self.ui_padding_spin = QSpinBox()
+        self.ui_padding_spin.setRange(0, 100)
+        self.ui_padding_spin.setSuffix(" px")
+        self.ui_padding_spin.setValue(a.ui_padding)
+        self.ui_padding_spin.setToolTip(
+            "Shared spacing used everywhere -- between video cards, around a "
+            "card's own inner boxes, and (later) between sidebar panels."
+        )
+        form.addRow("Padding:", self.ui_padding_spin)
+
+        card_text_row = QHBoxLayout()
+        self.card_text_color_edit = QLineEdit(a.card_text_color)
+        card_text_pick = QPushButton("Pick...")
+        card_text_pick.clicked.connect(lambda: self._pick_color(self.card_text_color_edit))
+        card_text_row.addWidget(self.card_text_color_edit)
+        card_text_row.addWidget(card_text_pick)
+        form.addRow("Card Text Color:", card_text_row)
+
+        card_text_outline_row = QHBoxLayout()
+        self.card_text_outline_color_edit = QLineEdit(a.card_text_outline_color)
+        card_text_outline_pick = QPushButton("Pick...")
+        card_text_outline_pick.clicked.connect(lambda: self._pick_color(self.card_text_outline_color_edit))
+        card_text_outline_row.addWidget(self.card_text_outline_color_edit)
+        card_text_outline_row.addWidget(card_text_outline_pick)
+        form.addRow("Card Text Outline Color:", card_text_outline_row)
+
+        self.filter_outline_check = QCheckBox()
+        self.filter_outline_check.setChecked(a.filter_outline_enabled)
+        self.filter_outline_check.setToolTip(
+            "Outlines each filter icon's own shape (not a square) in the Card "
+            "Text Outline Color above, unless a filter has its own override "
+            "color set in Settings > Filters."
+        )
+        form.addRow("Filter Outline:", self.filter_outline_check)
+
         self.resize_text_check = QCheckBox()
         self.resize_text_check.setChecked(a.resize_text_to_fit)
         self.resize_text_check.setToolTip(
@@ -448,6 +483,9 @@ class SettingsPage(QWidget):
         library_row, self.afterglow_library_edit = self._build_color_row(a.afterglow_color_library)
         form.addRow("Library Pages:", library_row)
 
+        turquoise_row, self.afterglow_turquoise_edit = self._build_color_row(a.afterglow_color_turquoise)
+        form.addRow("Local/Uploaded Tab Icons:", turquoise_row)
+
         note = QLabel(
             "These only take effect when both Custom Buttons and Afterglow "
             "Theme are on (Settings > General)."
@@ -563,6 +601,8 @@ class SettingsPage(QWidget):
         a.rounded_corner_radius = self.rounded_corner_radius_spin.value()
         a.custom_buttons_enabled = self.custom_buttons_check.isChecked()
         a.afterglow_theme_enabled = self.afterglow_theme_check.isChecked()
+        a.ui_padding = self.ui_padding_spin.value()
+        a.filter_outline_enabled = self.filter_outline_check.isChecked()
         a.resize_text_to_fit = self.resize_text_check.isChecked()
         a.inactive_border_width = self.inactive_border_width_spin.value()
         a.inactive_border_brightness = self.inactive_border_brightness_spin.value()
@@ -592,11 +632,14 @@ class SettingsPage(QWidget):
             ("Card Background", self.afterglow_card_bg_edit),
             ("App Background", self.afterglow_app_bg_edit),
             ("Library Pages", self.afterglow_library_edit),
+            ("Local/Uploaded Tab Icons", self.afterglow_turquoise_edit),
+            ("Card Text Color", self.card_text_color_edit),
+            ("Card Text Outline Color", self.card_text_outline_color_edit),
         ):
             if not QColor(edit.text().strip()).isValid():
                 QMessageBox.warning(
                     self, "Invalid Color",
-                    f"'{edit.text()}' isn't a valid color for Afterglow Theme's {label} -- "
+                    f"'{edit.text()}' isn't a valid color for {label} -- "
                     f"use a hex code like #257fff.",
                 )
                 return
@@ -604,6 +647,9 @@ class SettingsPage(QWidget):
         a.afterglow_color_card_background = self.afterglow_card_bg_edit.text().strip()
         a.afterglow_color_app_background = self.afterglow_app_bg_edit.text().strip()
         a.afterglow_color_library = self.afterglow_library_edit.text().strip()
+        a.afterglow_color_turquoise = self.afterglow_turquoise_edit.text().strip()
+        a.card_text_color = self.card_text_color_edit.text().strip()
+        a.card_text_outline_color = self.card_text_outline_color_edit.text().strip()
 
         config_module.save(self._settings)
         self.filters_settings_page.save()

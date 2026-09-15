@@ -22,7 +22,8 @@ once it's actually on screen.
 from __future__ import annotations
 
 from PySide6.QtCore import QRectF
-from PySide6.QtGui import QPainterPath
+from PySide6.QtGui import QPainterPath, QPixmap, QPainter
+from PySide6.QtCore import Qt
 
 # 0.5523 = the standard constant for a Bezier-approximated quarter
 # circle. Above that flattens the curve (smoother, less immediately
@@ -84,3 +85,21 @@ def rounded_rect_path(
         path.lineTo(x, y)
     path.closeSubpath()
     return path
+
+
+def round_pixmap_corners(pixmap: QPixmap, radius: float) -> QPixmap:
+    """Bake rounded corners directly into a copy of `pixmap` (a
+    transparent-cornered clip, not just a widget-level effect) -- used
+    for the video thumbnail, since a QLabel showing a QPixmap doesn't
+    clip the image to anything but its own rectangular bounds on its
+    own. radius <= 0 returns the input unchanged, no copy."""
+    if radius <= 0:
+        return pixmap
+    result = QPixmap(pixmap.size())
+    result.fill(Qt.transparent)
+    painter = QPainter(result)
+    painter.setRenderHint(QPainter.Antialiasing)
+    painter.setClipPath(rounded_rect_path(QRectF(pixmap.rect()), radius))
+    painter.drawPixmap(0, 0, pixmap)
+    painter.end()
+    return result

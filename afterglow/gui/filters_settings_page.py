@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
     QMessageBox, QTabWidget, QFormLayout, QInputDialog, QToolButton,
     QMenu, QWidgetAction,
 )
+from PySide6.QtGui import QColor
 
 from .. import library
 from .. import config as config_module
@@ -39,11 +40,13 @@ _NEW_CATEGORY_DATA = "__new_category__"
 
 class _TagIconRow(QFrame):
     def __init__(self, tag_id: int, tag_name: str, icon_path: str | None,
-                 category_id: int | None, categories: list[tuple[int, str]], parent=None):
+                 category_id: int | None, categories: list[tuple[int, str]],
+                 outline_color: str | None = None, parent=None):
         super().__init__(parent)
         self.tag_id = tag_id
         self.tag_name = tag_name
         self.icon_path = icon_path or ""
+        self.outline_color = outline_color or ""
 
         row = QHBoxLayout(self)
         row.setContentsMargins(2, 2, 2, 2)
@@ -67,6 +70,18 @@ class _TagIconRow(QFrame):
         clear_btn = QPushButton("Clear Icon")
         clear_btn.clicked.connect(self._clear_icon)
         row.addWidget(clear_btn)
+
+        # Filter Outline's per-tag color override (Settings > General
+        # for the global default/toggle) -- empty means "use the
+        # global default", same convention as icon_path above.
+        self.outline_color_edit = QLineEdit(self.outline_color)
+        self.outline_color_edit.setPlaceholderText("(default)")
+        self.outline_color_edit.setMaxLength(9)
+        self.outline_color_edit.setFixedWidth(80)
+        row.addWidget(self.outline_color_edit)
+        outline_pick_btn = QPushButton("Outline...")
+        outline_pick_btn.clicked.connect(self._pick_outline_color)
+        row.addWidget(outline_pick_btn)
 
         rename_btn = QPushButton("Rename")
         rename_btn.clicked.connect(self._rename)
@@ -113,6 +128,15 @@ class _TagIconRow(QFrame):
     def _clear_icon(self) -> None:
         self.icon_path = ""
         self.icon_preview.setText(self._icon_summary())
+
+    def _pick_outline_color(self) -> None:
+        from PySide6.QtWidgets import QColorDialog
+        current = QColor(self.outline_color_edit.text().strip())
+        if not current.isValid():
+            current = QColor("#3669a0")
+        color = QColorDialog.getColor(current, self, "Choose Outline Color")
+        if color.isValid():
+            self.outline_color_edit.setText(color.name())
 
     def _rename(self) -> None:
         new_name, ok = QInputDialog.getText(self, "Rename Filter", "Filter name:", text=self.tag_name)
@@ -283,11 +307,13 @@ class FiltersSettingsPage(QWidget):
             row.deleteLater()
         self._tag_rows = []
         icons = library.tag_icons()
+        outline_colors = library.tag_outline_colors()
         category_ids = library.tag_category_ids()
         categories = library.all_categories()
         for tag_id, tag_name in library.all_tags_with_ids():
             row = _TagIconRow(
                 tag_id, tag_name, icons.get(tag_name), category_ids.get(tag_id), categories,
+                outline_color=outline_colors.get(tag_name),
             )
             self.rows_layout.insertWidget(self.rows_layout.count() - 1, row)
             self._tag_rows.append(row)
@@ -365,5 +391,14 @@ class FiltersSettingsPage(QWidget):
 
         for row in self._tag_rows:
             library.set_tag_icon(row.tag_id, row.icon_path or None)
+            outline_text = row.outline_color_edit.text().strip()
+            if outline_text and not QColor(outline_text).isValid():
+                QMessageBox.warning(
+                    self, "Invalid Color",
+                    f"'{outline_text}' isn't a valid outline color for '{row.tag_name}' -- "
+                    f"use a hex code like #3669a0. Left unchanged.",
+                )
+                continue
+            library.set_tag_outline_color(row.tag_id, outline_text or None)
 
         self._settings = settings

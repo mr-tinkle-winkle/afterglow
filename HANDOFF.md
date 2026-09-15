@@ -30,31 +30,42 @@ utilities, custom button base classes) instead of one-off styling.
 ### UI Update -- full spec (condensed, all decisions folded in)
 
 **Rounded Corners** (Settings > General, on by default, radius in px
-next to the toggle, default 12px -- Max said "whatever you think
-works"):
-- Applies to: sidebar borders, Library page tab icons (specifically
-  the non-touching edges -- e.g. Local's top-left, Uploaded's
-  top-right, since they're adjacent), video borders (the Library
-  card's unedited/selected highlight border, AND once the card
-  restructure below lands, ALL of its nested boxes: outer background
-  box, inner info box, and the video player itself), text boxes if
-  feasible, the video/audio segments in the future Editor (skip for
-  now -- segments don't exist yet), the corners of the app window
-  itself (Max said to SKIP this entirely -- window rounding should
-  just be whatever the KDE/window-manager theme already does, not a
-  custom frameless-window implementation).
+next to the toggle, default 24px -- raised from an initial 12px guess
+once Max could actually see it rendered):
+- Applies to: sidebar borders (not yet rounded -- no sidebar widget
+  reads `rounded_corners_enabled` yet), Library page tab icons (DONE --
+  the two tabs' touching inner corners stay sharp, outer three corners
+  each round normally), video borders (the Library card's unedited/
+  selected highlight border DONE, the video player/thumbnail's own
+  corners DONE, the outer background box and inner info box DONE),
+  text boxes if feasible (not yet touched -- QLineEdit/QTextEdit
+  elsewhere in the app still have square corners), the video/audio
+  segments in the future Editor (skip for now -- segments don't exist
+  yet), the corners of the app window itself (Max said to SKIP this
+  entirely -- window rounding should just be whatever the KDE/window-
+  manager theme already does, not a custom frameless-window
+  implementation).
 - "Apple style" clarified by Max: just means smooth/eased into the
   curve, NOT literally circular -- does NOT need true superellipse/
   squircle math. Implemented via a tuned cubic-Bezier approximation
   (see Architecture pointers).
 - Two touching corners (e.g. adjacent sidebar buttons, adjacent tab
-  icons) should NOT be rounded on the touching side.
+  icons) should NOT be rounded on the touching side. DONE for the tab
+  icons; sidebar buttons aren't rounded at all yet so this doesn't
+  apply there yet either.
 - "Assume rounded unless there's a reason not to" -- default to
   applying this broadly as it gets built out, not narrowly.
 
-**Video padding** -- a setting controlling both the space between
-Library cards AND the space between cards and the grid's own edges
-(one shared value, not two separate settings).
+**Padding** -- ONE shared setting (`AppearanceSettings.ui_padding`,
+default 14px) controlling every gap this update touches: between
+Library cards, between a card's own edge and its inner boxes, between
+those boxes, and (later) between sidebar panels. DONE. Supersedes the
+original spec's separate "video padding" item below, which is the
+same setting now.
+- ~~Video padding~~ -- a setting controlling both the space between
+  Library cards AND the space between cards and the grid's own edges
+  (one shared value, not two separate settings). Superseded by the
+  unified "Padding" setting immediately above.
 
 **Custom Buttons** (Settings > General, on by default) -- replace
 native/KDE-styled buttons (Filters, Sort By, Info, refresh, many in
@@ -68,25 +79,49 @@ default; Settings > Advanced for the actual editable hex values) --
 overrides Custom Buttons' color SOURCE from the live KDE palette to
 these fixed colors (confirmed by Max: Afterglow Theme on literally
 overrides the KDE-sampled colors). Does nothing if Custom Buttons is
-off. Exact hex codes, from Max directly:
-- `#257fff` (blue) -- most buttons (Filters, Sort By, Info), and the
-  card info box (holds filters/info/title).
-- `#34588c` (dark desaturated blue) -- the card background portrusion
-  behind videos.
-- `#2d3949` (super dark desaturated blue) -- the app's own background.
-- `#2ee0a6` (turquoise) -- the Library pages (Local and Uploaded)
-  themselves.
+off. **Current hex codes (superseded once already -- these are the
+CURRENT correct ones, from the "Real-screenshot feedback round" item
+in "Currently being worked on" below; ignore any hex codes quoted
+earlier in this section's own history)**:
+- `#2161bb` (blue) -- most buttons (Filters, Sort By, Info), and the
+  card info box (holds filters/info/title). DONE, wired into the info
+  box; NOT yet wired into actual buttons (Custom Buttons hasn't been
+  applied to any real button widget yet, only built as a settings/
+  color-source pair).
+- `#274162` (darker blue) -- the card background portrusion behind
+  videos. DONE, wired into `VideoCard`'s own background.
+- `#1d2c3d` (super dark blue) -- the Library pages' (Local/Uploaded)
+  own background. DONE, wired into `LibraryPage`'s grid/scroll area.
+- A DERIVED color (10% brighter, 15% more saturated than the library
+  background above, computed via `colorsys` -- currently `#1b2e43`) --
+  the app's own overall background. DONE, wired into `MainWindow`'s
+  central widget.
+- `#12b5c8` (turquoise) -- reassigned from the library-page role above
+  (which moved to the dark blue) to a narrower one: the Local/Uploaded
+  TAB ICONS' own background specifically. DONE for those two tabs;
+  Max mentioned filters as a possible future use of turquoise too,
+  explicitly not done yet ("for now leave it as just local and
+  uploaded").
 - Pre-existing gradients (sidebar borders, unedited-video highlight)
   stay as-is in shape/border, but with Afterglow Theme on: the
   background behind a sidebar button becomes a darkened/desaturated
-  version of that button's own border gradient. For the unedited-video
-  highlight specifically: confirmed by Max it's BOTH a border around
-  the video player itself AND a background overlay on the card's
-  background box, rendered BEHIND both the video player and the info
-  box (not replacing the video image itself). The background box needs
-  enough padding around its nested video-player + info-box children
-  that a sliver of the background portrusion is visible on every side,
-  everywhere on the card, not just in corners/gaps.
+  version of that button's own border gradient. **NOT yet done** --
+  this specific darkened-gradient-background piece for sidebar buttons
+  hasn't been built, only the video-card side of the highlight
+  redesign below.
+  For the unedited-video highlight specifically: confirmed by Max it's
+  BOTH a border around the video player itself AND a background
+  overlay on the card's background box, rendered BEHIND both the video
+  player and the info box (not replacing the video image itself) --
+  DONE (two sessions ago). The background box needs enough padding
+  around its nested video-player + info-box children that a sliver of
+  the background portrusion is visible on every side, everywhere on
+  the card, not just in corners/gaps -- DONE, this is what `ui_padding`
+  (the "Padding" setting) provides. Separately, Max also confirmed
+  wanting an ALWAYS-ON (not just for unedited videos) thin outline
+  around every thumbnail specifically for visual contrast against the
+  card background -- DONE, distinct from and additional to the
+  highlight's own conditional border.
 - Light shading is planned for later (subtle gradients replacing some
   flat fills) -- Max confirmed this doesn't need a redesign as long as
   color application is centralized (it now is -- see Theme class).
@@ -158,6 +193,21 @@ multi-selection.
 the Editor, closes and reopens the Editor with the same video loaded,
 prompting "Would you like to save?" first if there are unsaved
 changes.
+
+**Card text style** (Settings > General) -- default on-card text color
+`#9bcbff` with a `#3669a0` outline, applied to ALL on-card text (title,
+info/date lines, tag names -- Max: "all on-card text"). DONE, with a
+real font-size caveat discovered while building it: at this app's
+actual 10px info/date/tag-name size, no outline width leaves any fill
+color visible at all (glyph strokes are only ~1px wide there), so only
+the larger title gets a genuine two-tone effect -- see "Currently being
+worked on" below for the measured details. Not something further
+setting-tuning can fix; it's a font-size floor.
+
+**Filter Outline** (Settings > General, on by default) -- outlines a
+filter icon's own actual shape (not a bounding square) in the card
+text outline color above, with a per-tag override color settable in
+Settings > Filters next to that tag's icon controls. DONE.
 
 **Icons Max is providing later** (build with placeholder icons for
 now, swap in real assets once dropped): magnifying glass (search),
@@ -758,6 +808,132 @@ include a full Advanced Sound feature partway through. In order:
       assuming this is right once the preview player actually gets
       built). Video padding setting also not done yet.
 
+17. **Real-screenshot feedback round (first time Max actually saw this
+    rendered) -- a big batch of fixes and new small features.** Full
+    Q&A and every decision below is also folded into the "MAJOR EPIC"
+    section's spec near the top of this file, since some of these
+    revise things stated in earlier sessions (the Afterglow Theme
+    hex codes specifically -- see that section for the current,
+    correct values; don't trust hex codes quoted in older session
+    entries below this one).
+
+    - **The REAL vertical-padding bug, found from the screenshot.**
+      Reported as "unedited videos next to edited videos" looking
+      inconsistent -- root cause was actually `Resize Text to Fit`:
+      the title row's height came from the ACTUAL (possibly-shrunk)
+      font size chosen for that specific video's title, not a
+      constant. A video with a long auto-generated timestamp title
+      (common for never-renamed, i.e. still-unedited, clips) shrinks
+      its font more than one with a short hand-picked title (common
+      for renamed, i.e. edited, clips) -- so the correlation Max
+      actually saw ("unedited next to edited") was real, just not
+      caused by edit-state itself. Fixed by reserving the title row's
+      height from the TARGET (un-shrunk) font size in both `__init__`
+      and `set_font_scale()`, decoupled from whatever size shrinking
+      actually landed on. Verified directly: two videos, one 1-char
+      title and one title long enough to shrink drastically under
+      Resize Text to Fit, end up with literally identical title-row
+      pixel heights and identical overall `sizeHint()`, despite very
+      different actual font sizes.
+    - **New color palette**, given directly by Max, replacing the
+      placeholders from two sessions ago: `#2161bb` (accent -- buttons,
+      card info box), `#274162` (card background), `#1d2c3d` (library
+      page background -- reassigned from turquoise), and turquoise
+      itself (`#12b5c8`) reassigned to a NEW, narrower role: the Local/
+      Uploaded tab icons' own background specifically (Max: "for now
+      leave it as just local and uploaded" -- filters mentioned as a
+      possible future use, not done). App background
+      (`afterglow_color_app_background`) is no longer an independently
+      Max-picked color -- its default is now COMPUTED from the library
+      background (10% brighter, 15% more saturated in HSV, via
+      `colorsys`) so it's reliably a bit lighter than the library page
+      per Max's earlier ask, while staying a normal editable field
+      afterward. Wired into real widgets for the first time this
+      session: `MainWindow`'s central widget (app background) and
+      `LibraryPage`'s scroll area + grid container (library
+      background) -- previously these two `Theme` accessors existed
+      but nothing actually read them.
+    - **"Padding" setting** (`AppearanceSettings.ui_padding`, default
+      14) replaces the hardcoded `CARD_PADDING`/`BOX_GAP`/
+      `INFO_BOX_PADDING` constants from two sessions ago, AND now also
+      drives the grid's own card-to-card spacing (`QGridLayout`'s
+      horizontal/vertical spacing) -- one shared value for everything,
+      per how this was actually asked for ("adjusts the pixels of
+      padding used everywhere"), superseding the original spec's
+      separate "video padding" item.
+    - **Outlined on-card text** -- new `afterglow/gui/outlined_label.py`
+      (`OutlinedLabel`, a `QLabel` replacement drawing text via a
+      `QPainterPath` fill+stroke instead of QLabel's own plain
+      rendering), wired into all four text elements per Max's answer
+      ("all on-card text"): title, info line, date line, tag names.
+      Default fill `#9bcbff`, outline `#3669a0`, both new Settings >
+      General fields. **Found and fixed a real rendering bug while
+      testing this**, not just building it: the initial version used
+      `outline_width * 2` as the actual pen width, which completely
+      swallowed the fill color at this app's real font sizes -- normal
+      glyph strokes are only ~1-2px wide at 10-17pt, so a pen much
+      above ~1px leaves nothing for the fill to show through, and
+      TITLE text rendered as solid outline color with zero visible
+      fill. Measured directly across several pen widths to find one
+      that actually shows both colors (1.0, undoubled, for the title's
+      ~17pt font) -- but at the smaller 10px info/date/tag-name size,
+      NO pen width above 0 left any fill pixels at all (glyph strokes
+      are only ~1px wide there, period) -- so `OutlinedLabel` now
+      treats `outline_width <= 0` as "fill only, no stroke", and the
+      three small text elements use that rather than force an outline
+      that would just replace the fill color entirely. The title is
+      the only one of the four that gets a genuine two-tone effect;
+      this is a real font-size limitation, not a setting Max can tune
+      around. Verified by rendering real labels and checking actual
+      pixel colors match both the fill and outline hex values (title),
+      and that the small labels render in the fill color with no
+      forced outline swallowing it.
+    - **"Filter Outline"** (Settings > General, on by default) -- new
+      `silhouette_outline_pixmap()`/`_cached()` in `pixmap_effects.py`:
+      outlines a filter icon's own alpha silhouette (a morphological
+      dilation of the alpha channel, pure Python/no numpy, same
+      constraint as the existing hue-shift code) rather than a bounding
+      square, matching "not a square outline, but one that actually
+      matches the filter's shape" exactly. Per-tag color override:
+      new `outline_color` column on the `tags` table (migration
+      tested against a pre-existing DB), `library.set_tag_outline_color()`/
+      `tag_outline_colors()`, and a color field + picker added to each
+      row in Settings > Filters, right next to the existing icon
+      controls. Falls back to `card_text_outline_color` when a tag has
+      no override. The outlined icon is composited back to the SAME
+      overall size as the source icon (inset-then-outline, not grown
+      outward) specifically so it doesn't silently break
+      `_build_icon_row`'s fixed-size reservation from two sessions ago.
+      Verified: stays the same size, follows the actual icon shape (not
+      a box), transparent pixels stay transparent, and the caching
+      actually prevents redundant recomputation across cards sharing
+      the same icon+color.
+    - **Thumbnail corners actually rounded, for the first time.** Two
+      sessions ago's card-restructure work never actually did this
+      despite planning to -- confirmed directly before starting this
+      round of fixes. New `round_pixmap_corners()` in `rounded_rect.py`
+      (bakes a transparent-cornered clip into a pixmap copy), called
+      from `_load_pixmap()`.
+    - **Always-on thumbnail contrast outline**, new and separate from
+      the unedited-highlight border -- per Max's answer to "keep both,
+      the thumbnail outline is for contrast": a thin (2px) stroke drawn
+      at the thumbnail's own content boundary, in
+      `card_text_outline_color`, regardless of edit/selection state.
+      The unedited-highlight background wash and its own conditional
+      video-box border (from two sessions ago) are UNCHANGED -- this
+      is purely additive.
+    - Verified everything above against real widgets and real pixel
+      colors (not just construction/no-crash checks) -- 133 assertions
+      across 32 offscreen test suites, all passing, including three
+      pre-existing tests that needed updating for reasons that turned
+      out to be correct, intentional consequences of this session's
+      changes rather than regressions (the old radius default, the old
+      hex codes, and the tab-icon-size test needing to distinguish the
+      new turquoise background fill from the icon's own silhouette).
+    - **Still not done**, per Max's own "if you get to those now"
+      framing (explicitly optional this round): turquoise applied to
+      filters as well as the Local/Uploaded tabs.
+
 ### Two sessions ago
 All four items carried over from that session's "next up" list,
 implemented and verified (not just compiled -- see the offscreen
@@ -949,9 +1125,8 @@ widget-level testing note above):
   toggles tag-on-video, the other toggles include/exclude-from-search).
 
 ## Next up
-**Phase 2 (card restructure) is done** -- see item 16 above. Remaining
-for the UI Update epic, in order of what's most contained to what
-needs the most new plumbing:
+Remaining for the UI Update epic, in order of what's most contained to
+what needs the most new plumbing:
 1. **Confirm what clicking the thumbnail/video-box should do now**
    that it's visually separated from the info box (currently unchanged
    -- still whole-card select/double-click-to-edit). Cheap to answer,
@@ -964,11 +1139,16 @@ needs the most new plumbing:
    deserves to be scoped as its own sub-phase rather than a quick
    add-on.
 3. **Wire `Theme`/Custom Buttons into the sidebar and toolbar buttons**
-   -- Phase 1 built the settings and color source, Phase 2 wired it
-   into the video card, but the sidebar nav buttons and Filters/Sort/
-   Info-style buttons still don't read from `Theme` at all yet.
-4. Video padding setting.
-5. Everything else in the UI Update spec not yet touched: Comfy UI,
+   -- built and now used by the video card, but the sidebar nav
+   buttons and Filters/Sort/Info-style buttons still don't read from
+   `Theme` at all, and the sidebar's own gradient-darkened-background
+   piece of the Afterglow Theme spec isn't built either.
+4. **Rounded corners on sidebar buttons and text boxes** -- the utility
+   exists and is proven correct, just not yet applied to these two
+   remaining element types from the original spec.
+5. Turquoise applied to filters too (Max: optional, "if you get to
+   those now").
+6. Everything else in the UI Update spec not yet touched: Comfy UI,
    Video Info settings tab, the search bubble, the hamburger popover,
    hover-autoplay-in-grid, middle-click-deselects, Ctrl+R.
 
@@ -977,26 +1157,50 @@ reordering as each phase actually lands -- treat it as "what's next,"
 not a fixed roadmap.
 
 ## Architecture pointers
-- `afterglow/gui/video_card.py` -- extensively rewritten this session
-  (Phase 2, item 16 above). New `_InfoBox` class; new `CARD_PADDING`/
-  `BOX_GAP`/`INFO_BOX_PADDING` constants; `video_box` (thumbnail's
+- `afterglow/gui/outlined_label.py` -- NEW this session. `OutlinedLabel`,
+  used for all four on-card text elements. `outline_width <= 0` means
+  "fill only, no stroke" -- see item 17 above for the real font-size
+  reason the three smaller text elements need this while the title
+  doesn't.
+- `afterglow/gui/pixmap_effects.py` -- `silhouette_outline_pixmap()`/
+  `_cached()`, new this session, for Filter Outline. Same "pure Python,
+  cache it" pattern as the existing `hue_shift_pixmap`/`_cached`.
+- `afterglow/gui/rounded_rect.py` -- `round_pixmap_corners()`, new this
+  session, used by `video_card.py`'s `_load_pixmap` to actually round
+  the thumbnail image's own corners (previously planned but never
+  implemented, despite the rest of Phase 2's rounding work).
+- `afterglow/gui/theme.py` -- `Theme.turquoise()`, new this session,
+  used only by the Library tab icons so far.
+- `afterglow/gui/main_window.py` -- `MainWindow.__init__` now sets the
+  central widget's background via `Theme.app_background()` -- the
+  first real (non-video-card) use of `Theme` anywhere in the app.
+- `afterglow/gui/library_page.py` -- the grid's `scroll`/
+  `grid_container` now use `Theme.library_background()`;
+  `_composite_tab_icon()` gained a `bg_color`/`radius`/per-corner-skip
+  parameters for the turquoise tab-icon backgrounds; grid spacing now
+  reads `ui_padding` instead of a hardcoded `2`.
+- `afterglow/db.py` / `afterglow/library.py` -- new `outline_color`
+  column on `tags` (migrated), `set_tag_outline_color()`/
+  `tag_outline_colors()`.
+- `afterglow/gui/filters_settings_page.py` -- `_TagIconRow` gained an
+  outline-color field + picker alongside its existing icon controls.
+- `afterglow/gui/video_card.py` -- extensively rewritten two sessions
+  ago (Phase 2). New `_InfoBox` class; `video_box` (thumbnail's
   bordered wrapper); `_full_title_text` (the un-elided source of truth
   for the title, elision is applied only at display time in
   `set_font_scale`, which now handles both font-shrinking AND eliding
-  together); `_build_icon_row` reserves constant space regardless of
-  per-video tag count; `paintEvent` fully rewritten around
-  `rounded_rect.py` + `theme.py`.
-- `afterglow/gui/rounded_rect.py` -- `rounded_rect_path()`, the smooth
-  rounded-corner path builder, now actually used by `video_card.py`
-  (Phase 1 built it, nothing read it until Phase 2).
-- `afterglow/gui/theme.py` -- `Theme`, now actually read by
-  `video_card.py`'s `_InfoBox` (accent) and `VideoCard.paintEvent`
-  (card_background) -- still not wired into sidebar/toolbar buttons.
+  together, AND -- new this session -- reserves the title row's fixed
+  height from the un-shrunk target font size, which is what actually
+  fixed the real padding bug); `_build_icon_row` reserves constant
+  space regardless of per-video tag count; `paintEvent` built around
+  `rounded_rect.py` + `theme.py`; padding constants replaced by
+  `appearance.ui_padding` this session.
 - `afterglow/gui/resources/selected_border_gradient.png` -- the
   gold/white image Max provided directly, now the selection border's
   bundled default.
 - `afterglow/gui/clip_config_row.py` -- `clear_hotkey_btn`/
   `_clear_hotkey()`.
+
 - `afterglow/gui/pixmap_effects.py` --
   `resolve_border_pixmap()`, `hue_shift_pixmap()`, and
   `hue_shift_pixmap_cached()` (the caching matters -- see item 11

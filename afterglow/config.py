@@ -170,7 +170,27 @@ class AppearanceSettings:
     # video player) -- not a per-element radius, per how it was asked
     # for ("a customizable radius next to the toggle", singular).
     rounded_corners_enabled: bool = True
-    rounded_corner_radius: int = 12
+    rounded_corner_radius: int = 24
+    # "Padding" (Settings > General) -- ONE shared pixel value for
+    # every gap this update touches: between video cards, between a
+    # card's own edge and its two inner boxes, between those two boxes,
+    # and (later) between sidebar panels -- rather than each spacing
+    # having its own separate setting, per how this was actually asked
+    # for ("adjusts the pixels of padding used everywhere"). Also
+    # supersedes the earlier separate "video padding" ask from the
+    # original UI Update spec -- that's just this same setting now.
+    ui_padding: int = 14
+    # Default on-card text style -- applies to the title AND the
+    # info/date/tag-name lines (a judgment call: Max said "the default
+    # text on videos" without specifying just the title; flagged in
+    # HANDOFF.md in case just the title was actually meant).
+    card_text_color: str = "#9bcbff"
+    card_text_outline_color: str = "#3669a0"
+    # "Filter Outline" (Settings > General) -- outlines a filter icon's
+    # own silhouette (not a bounding square) in card_text_outline_color
+    # by default, overridable per-tag in Settings > Filters (see
+    # library.py's tag outline_color column).
+    filter_outline_enabled: bool = True
     # "Custom Buttons" (Settings > General) -- whether buttons across
     # the app are custom-painted (via the new theme system below)
     # instead of left as native Qt/KDE-styled widgets. Independent of
@@ -186,10 +206,23 @@ class AppearanceSettings:
     # painted left to recolor. Chosen directly by Max:
     # blue/dark-desaturated-blue/super-dark-desaturated-blue/turquoise.
     afterglow_theme_enabled: bool = True
-    afterglow_color_accent: str = "#257fff"
-    afterglow_color_card_background: str = "#34588c"
-    afterglow_color_app_background: str = "#2d3949"
-    afterglow_color_library: str = "#2ee0a6"
+    afterglow_color_accent: str = "#2161bb"
+    afterglow_color_card_background: str = "#274162"
+    # Computed once as a starting default (10% brighter, 15% more
+    # saturated, in HSV, than afterglow_color_library below) rather
+    # than an independent color Max picked directly -- still a normal
+    # editable field afterward (Settings > Advanced), this is just
+    # where its default value came from. Meant to eventually become the
+    # actual app-wide background (not yet wired everywhere -- see
+    # HANDOFF.md).
+    afterglow_color_app_background: str = "#1b2e43"
+    afterglow_color_library: str = "#1d2c3d"
+    # Given directly by Max but not yet assigned a role -- turquoise
+    # was originally slated for the library page background, which is
+    # now the dark blue above instead. Not read by Theme yet; kept here
+    # so the value isn't lost while that's still an open question (see
+    # HANDOFF.md).
+    afterglow_color_turquoise: str = "#12b5c8"
     # "normal" | "maximized" | "fullscreen" -- replaces the old
     # top-level default_to_fullscreen bool (see load()'s backward-compat
     # shim), moved here from the Clipping tab into General since it's

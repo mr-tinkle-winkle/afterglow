@@ -290,6 +290,24 @@ def tag_icons() -> dict[str, str]:
         return {r["name"]: r["icon_path"] for r in rows}
 
 
+def set_tag_outline_color(tag_id: int, outline_color: str | None) -> None:
+    """outline_color: a hex string, or None to fall back to the global
+    Filter Outline color (AppearanceSettings.card_text_outline_color)."""
+    with db.get_conn() as conn:
+        conn.execute("UPDATE tags SET outline_color = ? WHERE id = ?", (outline_color, tag_id))
+
+
+def tag_outline_colors() -> dict[str, str]:
+    """{tag_name: outline_color} for every tag with a per-tag Filter
+    Outline color override -- tags not in this dict fall back to the
+    global default."""
+    with db.get_conn() as conn:
+        rows = conn.execute(
+            "SELECT name, outline_color FROM tags WHERE outline_color IS NOT NULL AND outline_color != ''"
+        ).fetchall()
+        return {r["name"]: r["outline_color"] for r in rows}
+
+
 def tag_category_ids() -> dict[int, int | None]:
     """{tag_id: category_id or None} -- used by the Settings > Filters
     page to pre-select each tag's current category in its dropdown."""

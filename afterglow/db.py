@@ -52,6 +52,7 @@ CREATE TABLE IF NOT EXISTS tags (
     name        TEXT NOT NULL UNIQUE COLLATE NOCASE,
     icon_path   TEXT,                    -- optional icon shown above/below clip thumbnails
     category_id INTEGER,                 -- NULL = uncategorized, shown loose in the Filters dropdown
+    outline_color TEXT,                  -- optional per-tag override for Filter Outline's color (NULL = use the global default)
     FOREIGN KEY (category_id) REFERENCES filter_categories(id) ON DELETE SET NULL
 );
 
@@ -96,6 +97,8 @@ def _migrate_columns(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE tags ADD COLUMN icon_path TEXT")
     if not _has_column(conn, "tags", "category_id"):
         conn.execute("ALTER TABLE tags ADD COLUMN category_id INTEGER REFERENCES filter_categories(id) ON DELETE SET NULL")
+    if not _has_column(conn, "tags", "outline_color"):
+        conn.execute("ALTER TABLE tags ADD COLUMN outline_color TEXT")
 
 
 def init_db() -> None:

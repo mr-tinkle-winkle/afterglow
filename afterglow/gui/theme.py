@@ -74,6 +74,17 @@ class Theme:
             return QColor(self._appearance.afterglow_color_library)
         return QApplication.palette().color(QPalette.Base)
 
+    def turquoise(self) -> QColor:
+        """The Local/Uploaded TAB ICONS' own background specifically
+        (not the library page background above, despite the similar
+        name -- turquoise was reassigned to this narrower role once the
+        library page background itself became the dark blue). Not
+        currently used anywhere else, though Max mentioned filters as a
+        possible future use."""
+        if self.afterglow_enabled:
+            return QColor(self._appearance.afterglow_color_turquoise)
+        return QApplication.palette().color(QPalette.Mid)
+
     def button_color(self) -> QColor:
         """A custom-painted button's fill color -- reads the same
         accent color as accent() above (both map to "most buttons" in

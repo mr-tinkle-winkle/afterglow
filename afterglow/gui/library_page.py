@@ -12,8 +12,8 @@ grid/search/filter wiring twice.
 """
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, Signal, QSize, QFileSystemWatcher, QTimer
-from PySide6.QtGui import QActionGroup, QPainter, QIcon, QPixmap
+from PySide6.QtCore import Qt, Signal, QSize, QFileSystemWatcher, QTimer, QRectF
+from PySide6.QtGui import QActionGroup, QPainter, QIcon, QPixmap, QColor
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLineEdit, QToolButton,
     QMenu, QScrollArea, QLabel, QTabWidget, QTabBar, QMessageBox, QWidgetAction,
@@ -26,6 +26,8 @@ from .. import db as db_module
 from .video_card import VideoCard, THUMB_SIZE, FAVORITE_STAR
 from .resources import resource_qpixmap
 from .pulse_animation import PulseAnimator
+from .theme import Theme
+from .rounded_rect import rounded_rect_path
 
 # Approximate on-screen width of one card (thumbnail + its own internal
 # margins + the grid's inter-column spacing) -- used only to decide how
@@ -37,23 +39,41 @@ FILTER_STATE_INCLUDE = "include"
 FILTER_STATE_EXCLUDE = "exclude"
 
 
-def _composite_tab_icon(pixmap: QPixmap, target_size: int, canvas_size: int) -> QIcon:
+def _composite_tab_icon(pixmap: QPixmap, target_size: int, canvas_size: int,
+                         bg_color: "QColor | None" = None, radius: float = 0,
+                         top_left: bool = True, top_right: bool = True,
+                         bottom_left: bool = True, bottom_right: bool = True) -> QIcon:
     """Scale `pixmap` to fit within target_size x target_size (preserving
-    aspect ratio), then center it on a transparent canvas_size x
-    canvas_size canvas and wrap that in a QIcon.
+    aspect ratio), then center it on a canvas_size x canvas_size canvas
+    (filled with bg_color first if given -- turquoise, per Max, for the
+    Local/Uploaded tab icons specifically -- otherwise left transparent)
+    and wrap that in a QIcon. top_left/top_right/bottom_left/bottom_right
+    skip rounding that corner of the background fill, for the two tabs'
+    touching inner edge (see _rebuild_tab_icons).
 
-    Why: QTabBar exposes only ONE shared iconSize for the whole bar, so
-    the Local and Uploaded tabs can't just each call setIconSize with
-    their own value -- but Qt's icon painting scales a QIcon's pixmap to
-    fit the tab bar's iconSize, so as long as BOTH tabs' underlying
-    pixmaps are exactly canvas_size already, no further scaling happens
-    at paint time and each tab's own (possibly smaller) icon content
-    stays at its own intended size, just centered within the same
-    bounding box the other tab's icon also occupies."""
+    Why a whole canvas rather than just drawing the icon: QTabBar
+    exposes only ONE shared iconSize for the whole bar, so the Local and
+    Uploaded tabs can't just each call setIconSize with their own value
+    -- but Qt's icon painting scales a QIcon's pixmap to fit the tab
+    bar's iconSize, so as long as BOTH tabs' underlying pixmaps are
+    exactly canvas_size already, no further scaling happens at paint
+    time and each tab's own (possibly smaller) icon content stays at
+    its own intended size, just centered within the same bounding box
+    the other tab's icon also occupies."""
     scaled = pixmap.scaled(target_size, target_size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
     canvas = QPixmap(canvas_size, canvas_size)
     canvas.fill(Qt.transparent)
     painter = QPainter(canvas)
+    painter.setRenderHint(QPainter.Antialiasing)
+    if bg_color is not None:
+        if radius:
+            path = rounded_rect_path(
+                QRectF(0, 0, canvas_size, canvas_size), radius,
+                top_left=top_left, top_right=top_right, bottom_left=bottom_left, bottom_right=bottom_right,
+            )
+            painter.fillPath(path, bg_color)
+        else:
+            painter.fillRect(0, 0, canvas_size, canvas_size, bg_color)
     painter.drawPixmap((canvas_size - scaled.width()) // 2, (canvas_size - scaled.height()) // 2, scaled)
     painter.end()
     return QIcon(canvas)
@@ -195,12 +215,25 @@ class _VideoGridTab(QWidget):
         self.grid_container = _SelectionClearingContainer()
         self.grid_container.background_clicked.connect(self._clear_selection)
         self.grid_layout = QGridLayout(self.grid_container)
-        # Tightened from the 6px default -- this is on top of the
-        # row-stretch fix in _relayout() below, which addresses the much
-        # larger gap that was actually coming from leftover scroll-area
-        # space being split across rows rather than from this spacing
-        # value itself.
-        self.grid_layout.setVerticalSpacing(2)
+        # Both driven by the shared "Padding" setting now (previously a
+        # hardcoded 2px vertical-only value) -- "adjusts the pixels of
+        # padding used everywhere ... such as between video cards", per
+        # how this was actually asked for. Independent of the row-
+        # stretch-absorption trick in _relayout() below, which handles
+        # a completely different problem (leftover scroll-area slack),
+        # so changing this doesn't risk reintroducing that.
+        appearance = config_module.load().appearance
+        self.grid_layout.setVerticalSpacing(appearance.ui_padding)
+        self.grid_layout.setHorizontalSpacing(appearance.ui_padding)
+        # The grid's own background -- a shade darker than the app-wide
+        # background (Theme itself decides whether these are Afterglow's
+        # fixed colors or a live KDE-palette equivalent, so this call
+        # doesn't need its own separate on/off check).
+        theme = Theme(appearance)
+        library_bg_hex = theme.library_background().name()
+        self.scroll.setStyleSheet(f"QScrollArea {{ background-color: {library_bg_hex}; border: none; }}")
+        self.grid_container.setAutoFillBackground(True)
+        self.grid_container.setStyleSheet(f"background-color: {library_bg_hex};")
         self.scroll.setWidget(self.grid_container)
         outer.addWidget(self.scroll, stretch=1)
 
@@ -791,8 +824,24 @@ class LibraryPage(QWidget):
         uploaded_target = max(1, round(base * appearance.uploaded_videos_icon_size / 100))
         shared = max(local_target, uploaded_target, 1)
         self.tabs.setIconSize(QSize(shared, shared))
-        self.tabs.setTabIcon(0, _composite_tab_icon(resource_qpixmap("local_videos.png"), local_target, shared))
-        self.tabs.setTabIcon(1, _composite_tab_icon(resource_qpixmap("uploaded_videos.png"), uploaded_target, shared))
+        # Turquoise background per tab (Max: "the page buttons, such as
+        # local and uploaded") -- rounded on the OUTER corners only,
+        # matching the general "don't round a corner that's touching
+        # another element" rule from the rounded-corners spec: Local's
+        # right edge touches Uploaded's left edge, so those two inner
+        # corners (top+bottom) stay sharp on both tabs while the three
+        # remaining outer corners round normally.
+        theme = Theme(appearance)
+        turquoise = theme.turquoise()
+        radius = appearance.rounded_corner_radius if appearance.rounded_corners_enabled else 0
+        self.tabs.setTabIcon(0, _composite_tab_icon(
+            resource_qpixmap("local_videos.png"), local_target, shared,
+            bg_color=turquoise, radius=radius, top_right=False, bottom_right=False,
+        ))
+        self.tabs.setTabIcon(1, _composite_tab_icon(
+            resource_qpixmap("uploaded_videos.png"), uploaded_target, shared,
+            bg_color=turquoise, radius=radius, top_left=False, bottom_left=False,
+        ))
 
     def _fix_tab_bar_height(self) -> None:
         """Lock the tab bar's own height to its natural size at the

@@ -11,7 +11,7 @@ from pathlib import Path
 from datetime import datetime
 
 from PySide6.QtCore import Qt, Signal, QSize, QRectF
-from PySide6.QtGui import QPixmap, QPainter, QColor, QIcon, QFontMetrics
+from PySide6.QtGui import QPixmap, QPainter, QColor, QIcon, QFontMetrics, QPen
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QMenu, QMessageBox, QLineEdit,
     QPushButton, QHBoxLayout, QInputDialog, QCheckBox, QWidgetAction,
@@ -19,27 +19,24 @@ from PySide6.QtWidgets import (
 
 from .. import library, thumbnails, config as config_module
 from .resources import resource_qpixmap
-from .pixmap_effects import resolve_border_pixmap, hue_shift_pixmap_cached
-from .rounded_rect import rounded_rect_path
+from .pixmap_effects import resolve_border_pixmap, hue_shift_pixmap_cached, silhouette_outline_pixmap_cached
+from .rounded_rect import rounded_rect_path, round_pixmap_corners
 from .theme import Theme
+from .outlined_label import OutlinedLabel
 
 THUMB_SIZE = QSize(400, 224)  # 16:9, doubled from the original 200x112
 FAVORITE_STAR = "\u2605"  # "★"
 
 # UI Update Phase 2 (card restructure): the outer card is a "background"
-# box; CARD_PADDING is the margin between its own edge and its two
-# children (the video box, the info box) -- generous enough that a
-# sliver of the background portrusion stays visible on every side of
-# the card, per Max's ask, regardless of where you look at it. BOX_GAP
-# is the same idea applied to the gap between the two children
-# themselves.
-CARD_PADDING = 14
-BOX_GAP = 10
-# The info box's own internal margin for ITS children (title, info
-# lines, icons, tag names) -- kept comfortably >= the corner radius so
-# rounding the info box's corners never needs to clip/mask a child
-# widget; nothing reaches that far into the corner in the first place.
-INFO_BOX_PADDING = 8
+# box; the gap between its own edge and its two children (the video
+# box, the info box), the gap between those two children, AND the info
+# box's own internal margin for ITS children are all driven by the
+# single "Padding" setting (AppearanceSettings.ui_padding, read fresh
+# per-card at construction) rather than separate hardcoded constants --
+# "adjusts the pixels of padding used everywhere", per how this was
+# actually asked for. Generous enough by default that a sliver of the
+# background portrusion stays visible on every side of the card, per
+# Max's ask, regardless of where you look.
 
 # 3x the original 18px icon size, per request -- ICON_SPACING between
 # each. When more filter icons are on one video than fit at that size
@@ -143,7 +140,9 @@ class _InfoBox(QWidget):
         self._appearance = appearance
         self._theme = Theme(appearance)
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(INFO_BOX_PADDING, INFO_BOX_PADDING, INFO_BOX_PADDING, INFO_BOX_PADDING)
+        layout.setContentsMargins(
+            appearance.ui_padding, appearance.ui_padding, appearance.ui_padding, appearance.ui_padding
+        )
         layout.setSpacing(2)
         self.content_layout = layout
 
@@ -214,12 +213,16 @@ class VideoCard(QWidget):
         self._theme = Theme(self._appearance)
 
         outer_layout = QVBoxLayout(self)
-        outer_layout.setContentsMargins(CARD_PADDING, CARD_PADDING, CARD_PADDING, CARD_PADDING)
-        outer_layout.setSpacing(BOX_GAP)
+        outer_layout.setContentsMargins(
+            self._appearance.ui_padding, self._appearance.ui_padding,
+            self._appearance.ui_padding, self._appearance.ui_padding,
+        )
+        outer_layout.setSpacing(self._appearance.ui_padding)
 
         display_settings = settings.filter_display
         info_settings = settings.card_info
         icons = library.tag_icons()
+        self._tag_outline_colors = library.tag_outline_colors()
         show_filters = info_settings.show_filters
         matching = [(t, icons[t]) for t in video.tags if t in icons]
 
@@ -279,7 +282,7 @@ class VideoCard(QWidget):
         self.info_box = _InfoBox(self._appearance)
         info_layout = self.info_box.content_layout
 
-        self.title_label = QLabel()
+        self.title_label = OutlinedLabel()
         # Word wrap is now permanently off (was previously toggled by
         # Resize Text to Fit) -- a wrapped, variable-line-count title
         # was the single biggest source of card-to-card height
@@ -292,6 +295,7 @@ class VideoCard(QWidget):
         self.title_label.setWordWrap(False)
         self.title_label.setAlignment(Qt.AlignCenter)
         self.title_label.setFixedWidth(THUMB_SIZE.width())
+        self.title_label.set_colors(self._appearance.card_text_color, self._appearance.card_text_outline_color)
         # 1.875x the app's actual default label size -- was 2.5x, then
         # asked to be brought down to 75% of that (2.5 * 0.75 = 1.875).
         # Additionally scaled by font_scale to track the window's overall
@@ -325,16 +329,25 @@ class VideoCard(QWidget):
                 size_text = _format_file_size(video.path)
                 if size_text:
                     parts.append(size_text)
-            info_label = QLabel(" \u2022 ".join(parts) if parts else " ")
-            info_label.setStyleSheet("color: gray; font-size: 10px;")
+            info_label = OutlinedLabel(" \u2022 ".join(parts) if parts else " ")
+            info_label.setStyleSheet("font-size: 10px;")
             info_label.setAlignment(Qt.AlignCenter)
+            # outline_width=0 (fill only, no stroke) -- at this 10px
+            # size, even the thinnest usable outline swallows the whole
+            # glyph interior, leaving no room for the fill color to
+            # show through at all (see OutlinedLabel.paintEvent's own
+            # comment). The title above is large enough for the actual
+            # two-tone effect; this and the two other small lines below
+            # aren't.
+            info_label.set_colors(self._appearance.card_text_color, self._appearance.card_text_outline_color, outline_width=0)
             info_layout.addWidget(info_label)
 
         if info_settings.show_creation_date:
             date_text = _format_date(video.created_at) or " "
-            date_label = QLabel(date_text)
-            date_label.setStyleSheet("color: gray; font-size: 10px;")
+            date_label = OutlinedLabel(date_text)
+            date_label.setStyleSheet("font-size: 10px;")
             date_label.setAlignment(Qt.AlignCenter)
+            date_label.set_colors(self._appearance.card_text_color, self._appearance.card_text_outline_color, outline_width=0)
             info_layout.addWidget(date_label)
 
         # Filters section: "below"-location icons, then tag-name text --
@@ -346,10 +359,11 @@ class VideoCard(QWidget):
                 info_layout.addWidget(self._build_icon_row(matching, vertical=False))
 
             if display_settings.show_filter_names:
-                tag_label = QLabel(", ".join(video.tags) if video.tags else " ")
+                tag_label = OutlinedLabel(", ".join(video.tags) if video.tags else " ")
                 tag_label.setWordWrap(False)  # same single-line-always reasoning as the title
-                tag_label.setStyleSheet("color: gray; font-size: 10px;")
+                tag_label.setStyleSheet("font-size: 10px;")
                 tag_label.setAlignment(Qt.AlignCenter)
+                tag_label.set_colors(self._appearance.card_text_color, self._appearance.card_text_outline_color, outline_width=0)
                 info_layout.addWidget(tag_label)
 
         outer_layout.addWidget(self.info_box)
@@ -393,7 +407,13 @@ class VideoCard(QWidget):
         # rather than left/top-aligning them.
         row_layout.addStretch(1)
         for tag_name, path in matching:
-            icon_label = _FilterIconLabel(tag_name, QPixmap(path), icon_size, container)
+            icon_pixmap = QPixmap(path)
+            if self._appearance.filter_outline_enabled:
+                outline_hex = self._tag_outline_colors.get(tag_name, self._appearance.card_text_outline_color)
+                icon_pixmap = silhouette_outline_pixmap_cached(
+                    path, icon_pixmap, QColor(outline_hex), width=2
+                )
+            icon_label = _FilterIconLabel(tag_name, icon_pixmap, icon_size, container)
             icon_label.left_clicked.connect(self.filter_left_clicked.emit)
             icon_label.right_clicked.connect(self.filter_right_clicked.emit)
             row_layout.addWidget(icon_label)
@@ -412,6 +432,16 @@ class VideoCard(QWidget):
         font = self.title_label.font()
         target_pt = self._base_title_pt * factor
         max_width = THUMB_SIZE.width() - 8  # small margin, matches layout's own content margins
+
+        # Reserve the title row's height at the TARGET (un-shrunk) size
+        # BEFORE any Resize-Text-to-Fit shrinking below -- see this same
+        # note in __init__ for why decoupling the two matters (a card
+        # whose specific title needed shrinking would otherwise end up
+        # with a shorter row than one that didn't).
+        target_font_metrics = self.title_label.font()
+        target_font_metrics.setPointSizeF(target_pt)
+        self.title_label.setFixedHeight(QFontMetrics(target_font_metrics).height())
+
         if self._appearance.resize_text_to_fit:
             # Shrink (never grow past target_pt) until the title's
             # single-line width fits the card -- word-wrap has been
@@ -549,17 +579,43 @@ class VideoCard(QWidget):
                         painter.fillRect(video_rect, QColor(gray, gray, gray))
                         painter.setCompositionMode(QPainter.CompositionMode_SourceOver)
 
+        # Always-on thin contrast outline around the thumbnail itself
+        # (distinct from the unedited-highlight border above, which
+        # only shows for unedited videos) -- per Max: "the thumbnail is
+        # to improve contrast between the thumbnail and the video
+        # card", so this draws regardless of edit/selection state,
+        # using the same rounded shape baked into the thumbnail pixmap
+        # itself (see _load_pixmap's round_pixmap_corners call) so the
+        # stroke actually follows the image's own rounded edge instead
+        # of a sharp rectangle around a rounded image.
+        thumb_content_rect = QRectF(self.video_box.geometry()).adjusted(
+            border_width, border_width, -border_width, -border_width
+        )
+        if thumb_content_rect.width() > 0 and thumb_content_rect.height() > 0:
+            contrast_pen = QPen(QColor(self._appearance.card_text_outline_color), 2)
+            painter.setPen(contrast_pen)
+            painter.setBrush(Qt.NoBrush)
+            thumb_radius = min(radius, thumb_content_rect.width() / 2, thumb_content_rect.height() / 2) if radius else 0
+            if thumb_radius:
+                painter.drawPath(rounded_rect_path(thumb_content_rect, thumb_radius))
+            else:
+                painter.drawRect(thumb_content_rect)
+
         painter.end()
         super().paintEvent(event)
 
     def _load_pixmap(self, video: "library.Video") -> QPixmap:
         thumb_path = thumbnails.get_thumbnail(video.id, Path(video.path))
         if thumb_path is None:
-            return _placeholder_pixmap()
-        pixmap = QPixmap(str(thumb_path))
-        if pixmap.isNull():
-            return _placeholder_pixmap()
-        return pixmap.scaled(THUMB_SIZE, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
+            pixmap = _placeholder_pixmap()
+        else:
+            pixmap = QPixmap(str(thumb_path))
+            if pixmap.isNull():
+                pixmap = _placeholder_pixmap()
+            else:
+                pixmap = pixmap.scaled(THUMB_SIZE, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
+        radius = self._appearance.rounded_corner_radius if self._appearance.rounded_corners_enabled else 0
+        return round_pixmap_corners(pixmap, radius)
 
     def mousePressEvent(self, event) -> None:
         if event.button() == Qt.LeftButton:
