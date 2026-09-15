@@ -111,9 +111,13 @@ class AppearanceSettings:
     # border replaces whatever it would otherwise show -- unedited
     # gradient or nothing -- with a plain gray border at this same
     # width), hence the name; was `unedited_highlight_width` before
-    # selection existed (see load()'s backward-compat shim).
-    unedited_selected_border_width: int = 9
-    unedited_highlight_brightness: int = 100
+    # selection existed (see load()'s backward-compat shim). Doubled
+    # (9 -> 18) directly on Max's request once he could see the
+    # thumbnail border rendered for real -- this also doubles the
+    # selection ring's width, since the two share this one setting.
+    unedited_selected_border_width: int = 18
+    # Darkened 35% (100 -> 65) directly on Max's request.
+    unedited_highlight_brightness: int = 65
     filter_icon_size: int = 54
     # Sidebar nav icon scale, as a 0-200 percent of each button's own
     # available space (matches _ScalingIconButton.SCALE, previously a
@@ -186,6 +190,14 @@ class AppearanceSettings:
     # HANDOFF.md in case just the title was actually meant).
     card_text_color: str = "#9bcbff"
     card_text_outline_color: str = "#3669a0"
+    # 3x the previous hardcoded value (1.0), now an actual setting --
+    # only ever applied to the TITLE specifically (the three smaller
+    # info/date/tag-name lines stay at 0 -- fill only, no stroke --
+    # regardless of this setting, since even the thinnest usable
+    # outline swallows their whole glyph interior at that small a font
+    # size; see OutlinedLabel's own docstring/comment for the measured
+    # reasoning).
+    card_text_outline_width: float = 3.0
     # "Filter Outline" (Settings > General) -- outlines a filter icon's
     # own silhouette (not a bounding square) in card_text_outline_color
     # by default, overridable per-tag in Settings > Filters (see
@@ -206,16 +218,21 @@ class AppearanceSettings:
     # painted left to recolor. Chosen directly by Max:
     # blue/dark-desaturated-blue/super-dark-desaturated-blue/turquoise.
     afterglow_theme_enabled: bool = True
-    afterglow_color_accent: str = "#2161bb"
+    # Halfway (in HSV brightness/V, keeping accent's own hue/saturation)
+    # between card_background below and accent's own previous value,
+    # directly on Max's request once he could compare the two on
+    # screen.
+    afterglow_color_accent: str = "#194a8e"
     afterglow_color_card_background: str = "#274162"
     # Computed once as a starting default (10% brighter, 15% more
-    # saturated, in HSV, than afterglow_color_library below) rather
-    # than an independent color Max picked directly -- still a normal
-    # editable field afterward (Settings > Advanced), this is just
-    # where its default value came from. Meant to eventually become the
-    # actual app-wide background (not yet wired everywhere -- see
-    # HANDOFF.md).
-    afterglow_color_app_background: str = "#1b2e43"
+    # saturated, in HSV, than afterglow_color_library below), then
+    # darkened another 25% (in V) directly on Max's own follow-up
+    # request once he could compare it against the library background
+    # on screen -- still a normal editable field afterward (Settings >
+    # Advanced), this is just where its default value came from. Meant
+    # to eventually become the actual app-wide background (not yet
+    # wired everywhere -- see HANDOFF.md).
+    afterglow_color_app_background: str = "#142232"
     afterglow_color_library: str = "#1d2c3d"
     # Given directly by Max but not yet assigned a role -- turquoise
     # was originally slated for the library page background, which is
@@ -313,6 +330,33 @@ def load() -> AppSettings:
         shared = appearance_raw["library_icon_size"]
         appearance_raw.setdefault("editor_icon_size", shared)
         appearance_raw.setdefault("settings_icon_size", shared)
+    # afterglow_color_library's role was reassigned TWICE across recent
+    # sessions -- originally the actual turquoise color (#2ee0a6),
+    # briefly considered as the newer turquoise value too (#12b5c8)
+    # before that got its own separate field, and is now the dark blue
+    # library-page background. A config saved under either OLD
+    # assignment still has one of those two turquoise-ish hex codes
+    # sitting in this field, and a code-side default change never
+    # retroactively touches an already-saved value -- reported directly
+    # as "the library background is turquoise" while every OTHER
+    # Afterglow Theme color came through correctly, which is exactly
+    # what you'd see from one specific stale field rather than a
+    # systemic bug. Reset it back to the current correct default
+    # whenever it's still holding one of those two specific old values.
+    if appearance_raw.get("afterglow_color_library") in ("#2ee0a6", "#12b5c8"):
+        appearance_raw["afterglow_color_library"] = AppearanceSettings.afterglow_color_library
+    # Same reasoning as the library-color migration just above --
+    # app_background's default was computed differently (an extra 25%
+    # darkening step) later in the same session it was introduced, so a
+    # config saved in the brief window between those two defaults would
+    # otherwise keep showing the pre-darkened value forever.
+    if appearance_raw.get("afterglow_color_app_background") == "#1b2e43":
+        appearance_raw["afterglow_color_app_background"] = AppearanceSettings.afterglow_color_app_background
+    if appearance_raw.get("afterglow_color_accent") == "#2161bb":
+        # Same reasoning again -- accent's default became a computed
+        # halfway-brightness value later in the same session it was
+        # introduced.
+        appearance_raw["afterglow_color_accent"] = AppearanceSettings.afterglow_color_accent
     appearance = AppearanceSettings(**appearance_raw)
     top_level = {
         k: v for k, v in raw.items()

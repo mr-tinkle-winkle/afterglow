@@ -295,7 +295,10 @@ class VideoCard(QWidget):
         self.title_label.setWordWrap(False)
         self.title_label.setAlignment(Qt.AlignCenter)
         self.title_label.setFixedWidth(THUMB_SIZE.width())
-        self.title_label.set_colors(self._appearance.card_text_color, self._appearance.card_text_outline_color)
+        self.title_label.set_colors(
+            self._appearance.card_text_color, self._appearance.card_text_outline_color,
+            outline_width=self._appearance.card_text_outline_width,
+        )
         # 1.875x the app's actual default label size -- was 2.5x, then
         # asked to be brought down to 75% of that (2.5 * 0.75 = 1.875).
         # Additionally scaled by font_scale to track the window's overall
@@ -407,11 +410,46 @@ class VideoCard(QWidget):
         # rather than left/top-aligning them.
         row_layout.addStretch(1)
         for tag_name, path in matching:
-            icon_pixmap = QPixmap(path)
+            # Scaled DOWN to a STABLE reference size FIRST, then
+            # outlined -- not the count-adjusted, per-video icon_size,
+            # and not the icon's native resolution either.
+            #
+            # Native resolution was the ORIGINAL bug here: a
+            # user-provided icon file can be arbitrarily large (a
+            # 512x512 PNG isn't unusual), and outlining at that
+            # resolution before scaling down shrinks a 2px outline
+            # proportionally along with everything else -- e.g. roughly
+            # 0.2px on a 512px source scaled down to a 54px icon,
+            # imperceptible. Reported directly as "practically
+            # invisible".
+            #
+            # But using icon_size directly for the CACHE KEY (an
+            # earlier version of this fix did) turned out to be a
+            # SEPARATE, worse bug: icon_size is count-adjusted per
+            # video (_icon_size_for_count shrinks it as a video's own
+            # matching-tag count grows), so two videos with different
+            # tag counts get DIFFERENT icon_size values for the exact
+            # same underlying icon file -- meaning the cache almost
+            # never actually hit across different cards, and the
+            # expensive per-pixel outline computation (see
+            # silhouette_outline_pixmap's own docstring) re-ran for
+            # nearly every card in the library instead of once per
+            # unique icon. Directly responsible for the app going from
+            # opening instantly to taking 15-30 seconds. Outlining at
+            # the STABLE `reserved` size instead (the base setting,
+            # identical for every card regardless of that card's own
+            # tag count) means the cache key is finally stable across
+            # cards too -- `_FilterIconLabel`'s own subsequent `.scaled()`
+            # call handles any further per-video downscaling from there,
+            # which is cheap (a single native scale, not a per-pixel
+            # Python loop) regardless of how many times it happens.
+            icon_pixmap = QPixmap(path).scaled(
+                QSize(reserved, reserved), Qt.KeepAspectRatio, Qt.SmoothTransformation
+            )
             if self._appearance.filter_outline_enabled:
                 outline_hex = self._tag_outline_colors.get(tag_name, self._appearance.card_text_outline_color)
                 icon_pixmap = silhouette_outline_pixmap_cached(
-                    path, icon_pixmap, QColor(outline_hex), width=2
+                    f"{path}@{reserved}", icon_pixmap, QColor(outline_hex), width=3
                 )
             icon_label = _FilterIconLabel(tag_name, icon_pixmap, icon_size, container)
             icon_label.left_clicked.connect(self.filter_left_clicked.emit)
@@ -572,7 +610,9 @@ class VideoCard(QWidget):
                     painter.setCompositionMode(QPainter.CompositionMode_SourceOver)
                 painter.setClipping(False)
             else:
-                contrast_pen = QPen(QColor(self._appearance.card_text_outline_color), 2)
+                # app_background(), not card_text_outline_color -- per
+                # Max's direct request once he saw this rendered.
+                contrast_pen = QPen(self._theme.app_background(), 2)
                 painter.setPen(contrast_pen)
                 painter.setBrush(Qt.NoBrush)
                 if video_radius:

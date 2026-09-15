@@ -28,6 +28,7 @@ from .resources import resource_qpixmap
 from .pulse_animation import PulseAnimator
 from .theme import Theme
 from .rounded_rect import rounded_rect_path
+from .custom_button import CustomButton
 
 # Approximate on-screen width of one card (thumbnail + its own internal
 # margins + the grid's inter-column spacing) -- used only to decide how
@@ -176,34 +177,65 @@ class _VideoGridTab(QWidget):
         self._selected_ids: set[int] = set()
         self._selection_anchor_index: int | None = None
 
+        # Leading-edge debounce for refresh() -- see refresh()'s own
+        # comment for why. A plain bool flag + a singleShot timer that
+        # just clears it, rather than reusing the trailing-edge
+        # QTimer.start()-restarts-the-countdown pattern the DB file
+        # watcher uses further down (_refresh_debounce): that pattern
+        # is right for "wait for a burst of background writes to settle
+        # before reacting once", but wrong here -- a user clicking
+        # Refresh wants the FIRST click to act immediately, not wait
+        # 0.75s to see anything happen at all.
+        self._refresh_debounce_active = False
+        self._refresh_cooldown_timer = QTimer(self)
+        self._refresh_cooldown_timer.setSingleShot(True)
+        self._refresh_cooldown_timer.setInterval(750)
+        self._refresh_cooldown_timer.timeout.connect(self._clear_refresh_cooldown)
+
         outer = QVBoxLayout(self)
 
         # ---- search + filters row ----
         top_row = QHBoxLayout()
         self.search_edit = QLineEdit()
         self.search_edit.setPlaceholderText("Search title or description...")
-        self.search_edit.textChanged.connect(self.refresh)
+        # Bypasses refresh()'s own leading-edge debounce deliberately --
+        # that debounce exists for spam-clicked BUTTONS (Refresh, the
+        # sidebar Library nav), where dropping extra rapid triggers is
+        # exactly the point. Typing a search query is the opposite
+        # case: every keystroke SHOULD filter immediately, that's the
+        # whole feature, so this goes straight to the actual rebuild.
+        self.search_edit.textChanged.connect(self._do_refresh)
+
+        # "Search" custom button -- toggles the search field's own
+        # visibility for now, as a lightweight stand-in for the eventual
+        # magnifying-glass-expands-into-a-text-bubble redesign (a
+        # separate, not-yet-built piece of the UI Update spec). Placed
+        # first in the row, matching where a leading search icon would
+        # naturally sit.
+        self.search_btn = CustomButton("Search")
+        self.search_btn.clicked.connect(self._toggle_search_visibility)
+        top_row.addWidget(self.search_btn)
         top_row.addWidget(self.search_edit, stretch=1)
 
-        self.refresh_btn = QToolButton()
-        self.refresh_btn.setIcon(self.style().standardIcon(QStyle.SP_BrowserReload))
+        # All five of these are "Custom Buttons" per the UI Update spec
+        # -- text-only for now (none of them have a real custom icon
+        # asset yet; Refresh's previous native standard-library reload
+        # icon doesn't count as "already have one" for this purpose).
+        self.refresh_btn = CustomButton("Refresh")
         self.refresh_btn.setToolTip("Refresh")
         self.refresh_btn.clicked.connect(self.refresh)
         top_row.addWidget(self.refresh_btn)
 
-        self.filters_btn = QToolButton()
-        self.filters_btn.setText("Filters")
+        self.filters_btn = CustomButton("Filters")
         self.filters_btn.setPopupMode(QToolButton.InstantPopup)
         top_row.addWidget(self.filters_btn)
 
-        self.sort_btn = QToolButton()
-        self.sort_btn.setText("Sort By:")
+        self.sort_btn = CustomButton("Sort By:")
         self.sort_btn.setPopupMode(QToolButton.InstantPopup)
         self._build_sort_menu()
         top_row.addWidget(self.sort_btn)
 
-        self.info_btn = QToolButton()
-        self.info_btn.setText("Info")
+        self.info_btn = CustomButton("Info")
         self.info_btn.setPopupMode(QToolButton.InstantPopup)
         self._build_info_menu()
         top_row.addWidget(self.info_btn)
@@ -401,6 +433,16 @@ class _VideoGridTab(QWidget):
 
     # ------------------------------------------------------------ sort menu
 
+    def _toggle_search_visibility(self) -> None:
+        """Placeholder behavior for the "Search" custom button until the
+        full magnifying-glass-expands-into-a-text-bubble redesign gets
+        built -- just shows/hides the existing search field. Doesn't
+        clear its text on hide, so re-showing it picks up right where
+        it left off."""
+        self.search_edit.setVisible(not self.search_edit.isVisible())
+        if self.search_edit.isVisible():
+            self.search_edit.setFocus()
+
     def _build_sort_menu(self) -> None:
         # Built once (unlike the filters menu, which depends on which
         # tags currently exist) -- the sort options themselves never
@@ -437,6 +479,30 @@ class _VideoGridTab(QWidget):
     # ------------------------------------------------------------ grid rendering
 
     def refresh(self) -> None:
+        # Leading-edge debounce: the FIRST call in any 750ms window acts
+        # immediately (a Refresh click should feel instant, not
+        # laggy) -- every call after that, until the cooldown clears,
+        # is silently dropped. This is a second, independent layer on
+        # top of the hide()-before-deleteLater() fix below: that fix
+        # makes a stale card disappear immediately once a refresh DOES
+        # run, but doesn't stop a rapid burst of clicks from queuing up
+        # many full rebuilds back to back in the first place -- on a
+        # slow-enough machine (or a large-enough library -- rebuilding
+        # is O(number of cards)), enough queued rebuilds can still make
+        # things feel like they're "multiplying and messing up
+        # scaling" even with that fix in place, simply because there's
+        # more mid-rebuild time for it to happen in. Reported directly
+        # as still happening.
+        if self._refresh_debounce_active:
+            return
+        self._refresh_debounce_active = True
+        self._refresh_cooldown_timer.start()
+        self._do_refresh()
+
+    def _clear_refresh_cooldown(self) -> None:
+        self._refresh_debounce_active = False
+
+    def _do_refresh(self) -> None:
         self._rebuild_filters_menu()
 
         # Clear existing cards -- data may have changed (new/deleted
@@ -458,6 +524,8 @@ class _VideoGridTab(QWidget):
         # duplicates/messes up clip sizing": the stale cards were real,
         # still-alive, still-VISIBLE widgets sitting at old geometry,
         # not a duplicate library entry or a sizing calculation bug.
+        # refresh()'s own debounce guard above is the OTHER half of
+        # actually fixing this -- see its comment.
         while self.grid_layout.count():
             item = self.grid_layout.takeAt(0)
             widget = item.widget()

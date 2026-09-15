@@ -1079,6 +1079,228 @@ include a full Advanced Sound feature partway through. In order:
       the exact corner (rounded away), at the full 24px radius.
     - 35 test suites passing.
 
+20. **A third screenshot round -- 7 more items, one confirmed real bug
+    fix, a config-migration pattern established, and the biggest
+    remaining piece of the UI Update epic (Local/Uploaded's native tab
+    widget) deliberately deferred.**
+    - **The library-background-turquoise bug, actually resolved.**
+      Given the new clue that specifically the LIBRARY background (not
+      the app background, which Max confirmed was already correct)
+      was wrong, the far more likely explanation flipped back to a
+      stale SAVED VALUE for that one specific field, from BEFORE
+      `afterglow_color_library`'s role was reassigned (twice, across
+      recent sessions) -- exactly the kind of thing a code-side default
+      change can't retroactively fix. Added a targeted migration in
+      `config.load()`: if a saved config's `afterglow_color_library`
+      is still one of the two specific old values that field used to
+      hold (`#2ee0a6`, the very original; `#12b5c8`, briefly considered
+      for it too before turquoise got its own field), reset it to the
+      current correct default -- a genuinely custom value is left
+      alone. Same migration pattern applied preemptively to
+      `afterglow_color_app_background` and `afterglow_color_accent`
+      too, since BOTH of those defaults also changed again later in
+      THIS SAME SESSION (see below) -- without this, anyone who'd
+      already saved a config in the brief window before those changes
+      would hit the exact same "my settings didn't update" experience
+      all over again. Verified directly: old values of all three
+      migrate correctly, genuinely custom values don't get touched.
+    - **The filter-outline-invisible bug, found and fixed for real.**
+      The outline was being composited onto the icon at its NATIVE
+      resolution (a user-uploaded icon file can easily be 512x512 or
+      larger) and only scaled down to the actual tiny display size
+      afterward, inside `_FilterIconLabel` -- shrinking a 2px outline
+      proportionally along with everything else, down to a small
+      fraction of a pixel at typical icon sizes. Fixed by scaling the
+      icon down to its real display size FIRST, then outlining at
+      THAT size, so the configured width means something. Verified
+      directly with a realistic 512px source icon scaled to a 54px
+      display size: the old order produced ZERO visible outline
+      pixels; the fixed order produced 256. This was a severe, real
+      bug (not a subtle contrast issue), not something a mere color
+      change would have fixed.
+    - **Direct color/sizing adjustments, all on Max's explicit
+      instruction, all applied to config defaults with the migration
+      pattern above where a default actually changed:**
+      `unedited_selected_border_width` doubled (9 -> 18 -- this is a
+      SHARED setting, so it also doubles the selection ring's width,
+      not just the thumbnail border specifically, since there's only
+      the one field governing both); `unedited_highlight_brightness`
+      darkened 35% (100 -> 65); the plain (non-gradient) thumbnail
+      contrast outline's color source changed from
+      `card_text_outline_color` to `Theme.app_background()`;
+      `afterglow_color_accent` recomputed as the exact HSV-brightness
+      midpoint between the old accent value and `card_background()`
+      (`#194a8e`); `afterglow_color_app_background` darkened another
+      25% in V on top of its already-computed value (`#142232`).
+    - **New "Card Text Outline Width" setting** (`card_text_outline_width`,
+      default 3.0 -- "3x what it is now", i.e. 3x the previous
+      hardcoded 1.0), applied only to the title (the three smaller
+      lines stay fill-only regardless, per last session's font-size
+      finding). **Measured and flagged, not silently shipped:** at
+      this exact default, the title's fill color is COMPLETELY
+      invisible (0 fill pixels found, directly measured) -- a real,
+      confirmed tradeoff of following the literal instruction, not a
+      guess. The setting itself works correctly at smaller widths
+      (verified: at 1.0, the fill is visible again), so this is a
+      values/defaults question for Max to weigh in on, not a bug in
+      `OutlinedLabel`.
+    - **New `afterglow/gui/custom_button.py`** (`CustomButton`, a
+      `QToolButton` subclass with fully custom rounded/theme-colored
+      painting instead of native/KDE styling) -- the actual
+      implementation of the "Custom Buttons" setting, applied to the
+      Library's Search/Refresh/Filters/Sort By/Info row. All five are
+      text-only for now (none has a real custom icon asset yet -- the
+      previous native standard-library reload icon on Refresh doesn't
+      count as "already have one" for this purpose). A new "Search"
+      button toggles the existing search field's visibility as a
+      lightweight stand-in for the eventual magnifying-glass-expands-
+      to-a-bubble redesign (a separate, not-yet-built piece of the
+      spec). Subclassing `QToolButton` specifically (not `QPushButton`)
+      keeps Filters/Sort By/Info's existing `setPopupMode(InstantPopup)`
+      + `setMenu()` wiring completely unchanged -- only the painting
+      changed, not the click/popup behavior.
+    - **A real debugging detour that turned out to be a false alarm,
+      worth recording as a fourth example of this file's own "sample a
+      point clear of the corner/text, not the literal corner" lesson:**
+      `CustomButton` initially appeared completely broken -- every test
+      showed plain default gray instead of the theme color, even
+      though a call-counter confirmed `paintEvent` WAS running. Spent a
+      full isolation pass (bare `fillRect` with no theme lookup: works;
+      add the theme color lookup: still works; add the rounded-corner
+      clip: "breaks") before recognizing the actual cause: the test was
+      sampling pixel `(2, 2)` -- the LITERAL CORNER of a rounded
+      button -- which is legitimately excluded from the fill by the
+      button's own corner rounding, same as several corner-pixel test
+      mistakes earlier in this file. `CustomButton` was correct the
+      entire time; only the test's sample point was wrong. A SEPARATE,
+      genuinely real nuance surfaced during the same investigation
+      though: the button's hover-lighten effect (`underMouse()` is
+      `True` even in this offscreen sandbox by default) means a plain
+      exact-color-match assertion needs to account for that adjustment
+      too, not just avoid the corner.
+    - **Deliberately NOT attempted this round: item 4, replacing
+      Local/Uploaded's underlying `QTabWidget`/`QTabBar` with fully
+      custom page-switcher buttons** ("the page buttons up top have
+      two buttons -- the 'page' button that attaches to the search bar
+      area, and the actual icon... replace these with completely
+      custom buttons"). This is a materially bigger and riskier change
+      than anything else in this batch -- it means ripping out
+      `_PulsingTabBar`/the tab-icon compositing trick/the click-pulse
+      animation/the prev-next-navigation tab-tracking (`_last_edit_tab`)
+      that ALL currently depend on the video actually being a
+      `QTabWidget`, and rebuilding equivalent behavior on top of two
+      plain `CustomButton`s + something to switch the visible page
+      (a `QStackedWidget`, most likely). Given how much of this
+      session was already spent and how much existing, working
+      functionality that change would touch at once, it felt like the
+      wrong thing to rush in the same batch as everything else here --
+      flagged clearly as the next concrete piece of work instead of
+      attempted partially.
+    - 36 test suites passing (including 4 pre-existing ones from
+      earlier this session that needed updating for the SAME reason as
+      before -- a hex code or color-source genuinely changed on
+      purpose, not a regression).
+
+21. **Three more reports from the same round: the app taking 15-30s to
+    open (was instant before), the spam-click bug still happening, and
+    a sidebar pulse-timing mismatch. All three turned out to share ONE
+    root cause, plus one deliberate additional defense.**
+    - **The startup slowdown -- a real, severe bug I introduced myself,
+      in THIS SAME SESSION's earlier filter-outline fix (item 20
+      above).** That fix's cache key included the per-video, count-
+      adjusted `icon_size` (`_icon_size_for_count` shrinks it as a
+      video's own matching-tag count grows) -- meaning two videos with
+      different tag counts got DIFFERENT cache keys for the exact same
+      underlying icon file, so the cache almost never actually hit
+      across different cards, and the expensive per-pixel outline
+      computation re-ran for nearly every card in the library instead
+      of once per unique icon. Fixed by outlining at a STABLE reference
+      size (`appearance.filter_icon_size`, the base setting, identical
+      for every card regardless of that card's own tag count) instead,
+      letting `_FilterIconLabel`'s own subsequent `.scaled()` call
+      handle any further per-video downscaling -- cheap regardless of
+      how many times it happens, since it's a single native scale, not
+      a per-pixel Python loop. Measured directly, not assumed: the OLD
+      approach took 5.1s for just the outline step across a realistic
+      30-video/varying-tag-count/512px-icon workload; the FIXED
+      approach does the entire `VideoCard` construction (outline
+      included) for all 30 in 2.05s.
+    - **The spam-click bug "still existing" -- a real, additional
+      defense added, not a re-fix of the same thing.** The
+      hide()-before-deleteLater() fix from several sessions ago is
+      still correct and still there -- it makes a stale card
+      invisible immediately once a rebuild DOES run. What it never
+      addressed is a burst of clicks queuing up MANY FULL REBUILDS
+      back to back in the first place, and on a slow-enough render (the
+      startup-slowdown bug above made EVERY rebuild slower, widening
+      the window for exactly this), enough queued rebuilds can still
+      look like "multiplying and messing up scaling" even with that
+      fix in place. Added a LEADING-EDGE debounce (750ms) to
+      `_VideoGridTab.refresh()`, per Max's own suggested fix -- the
+      first call in any 750ms window acts immediately (Refresh should
+      feel instant on a single click), every call after that until the
+      cooldown clears is silently dropped. Deliberately NOT the same
+      pattern as the existing DB-file-watcher debounce
+      (`_refresh_debounce`, a TRAILING-edge "wait for a burst to settle
+      then act once" debounce, right for background writes, wrong
+      here -- it would make even a single Refresh click feel laggy,
+      waiting 750ms to see anything happen at all). Renamed the actual
+      rebuild logic to `_do_refresh()`; `refresh()` is now a thin
+      debounced wrapper around it. Search-as-you-type
+      (`search_edit.textChanged`) was deliberately rewired to call
+      `_do_refresh()` directly, bypassing the debounce entirely --
+      every keystroke needs to filter immediately, that's the whole
+      feature, and routing it through the leading-edge debounce would
+      have made only the FIRST character of a fast-typed query actually
+      filter anything.
+    - **The sidebar pulse-timing mismatch -- investigated, and it
+      turned out to already be fixed by the startup-slowdown fix
+      above, not a separate bug in the pulse code.** Traced the actual
+      mechanism: a sidebar nav button's `mouseReleaseEvent` calls
+      `self._pulse.release(...)` (starts the pulse-up animation)
+      immediately, correctly, THEN calls `super().mouseReleaseEvent()`,
+      which SYNCHRONOUSLY fires Qt's `clicked`/`idClicked` signal --
+      and `_on_nav_clicked` calls `self.library_page.refresh()`
+      directly inline, on the SAME call stack, BEFORE control ever
+      returns to the event loop. Qt can't process ANY paint events
+      (including the pulse animation's own queued frames) while that
+      synchronous chain is running -- so however long
+      `library_page.refresh()` took (which, before the fix above, could
+      be seconds) is exactly how long the pulse-up animation appeared
+      to "wait" before showing anything, even though the animation
+      itself started immediately in code. The Library page's own
+      Local/Uploaded tab-icon pulsing was never affected by this,
+      because switching between tabs WITHIN an already-open Library
+      page doesn't trigger anything nearly as expensive -- which is
+      exactly why Max's own framing ("match the way the library pages
+      pulse") pointed at the right root cause. No changes were needed
+      to `pulse_animation.py` or the sidebar button's event handlers --
+      they were already correct and already consistent with the
+      Library tab icons' own wiring. Verified directly: with the
+      startup-slowdown fix in place, the exact synchronous chain a
+      sidebar Library click triggers takes ~124ms on a realistic
+      30-video library (down from however long it took with the
+      caching bug present) -- should read as instant or very close to
+      it. Measured honestly, not just claimed fixed: at 100 videos the
+      same chain still takes ~640ms, better than before but not
+      perfectly instant for a very large library -- a deeper
+      architectural question (lazily loading/virtualizing the grid
+      rather than rebuilding every card synchronously on every
+      refresh) that's out of scope for this fix specifically.
+    - Updated three existing tests whose specific numbers depended on
+      the OLD "refresh() always runs" assumption, now genuinely wrong
+      given the new debounce -- `test_bulk_context.py`,
+      `test_live_refresh.py`, and `test_spam_click_fix.py` (the last of
+      these also gained a NEW check specifically confirming the
+      stronger guarantee: 8 rapid Refresh clicks now never even create
+      a second generation of cards, not just "stale ones get hidden
+      promptly"). All three needed an explicit
+      `tab._clear_refresh_cooldown()` call before the specific
+      refresh they depend on, since test setup/construction usually
+      already consumes the leading-edge allowance before the actual
+      check runs.
+    - 38 test suites passing.
+
 ### Two sessions ago
 All four items carried over from that session's "next up" list,
 implemented and verified (not just compiled -- see the offscreen
@@ -1272,28 +1494,41 @@ widget-level testing note above):
 ## Next up
 Remaining for the UI Update epic, in order of what's most contained to
 what needs the most new plumbing:
-1. **Confirm what clicking the thumbnail/video-box should do now**
+1. **Replace Local/Uploaded's `QTabWidget`/`QTabBar` with two
+   `CustomButton`s + a page-switching mechanism** (explicitly asked
+   for this session, deliberately not attempted -- see item 20 above
+   for exactly why). The biggest remaining piece of the "Custom
+   Buttons" work specifically, since it's an architecture change, not
+   just a repaint -- needs `_PulsingTabBar`'s click-pulse/hover
+   animation, the tab-icon compositing trick (independent Local/
+   Uploaded icon sizes despite one shared native property), and the
+   prev-next-navigation tab-tracking (`_last_edit_tab`) all
+   reimplemented on top of two plain buttons + probably a
+   `QStackedWidget`, rather than inheriting them for free from
+   `QTabWidget`.
+2. **Confirm what clicking the thumbnail/video-box should do now**
    that it's visually separated from the info box (currently unchanged
    -- still whole-card select/double-click-to-edit). Cheap to answer,
    worth doing before building the preview player next, since that's
    the other half of "what do the two boxes each do when clicked."
-2. **The info-box-click -> separate smaller preview player** (Medal-
+3. **The info-box-click -> separate smaller preview player** (Medal-
    style, confirmed distinct from both the Editor and hover-autoplay).
    This is a real new feature (a second mpv-embedded player, this time
    in a lightweight modal/dialog rather than a full page) -- probably
    deserves to be scoped as its own sub-phase rather than a quick
    add-on.
-3. **Wire `Theme`/Custom Buttons into the sidebar and toolbar buttons**
-   -- built and now used by the video card, but the sidebar nav
-   buttons and Filters/Sort/Info-style buttons still don't read from
-   `Theme` at all, and the sidebar's own gradient-darkened-background
-   piece of the Afterglow Theme spec isn't built either.
-4. **Rounded corners on sidebar buttons and text boxes** -- the utility
-   exists and is proven correct, just not yet applied to these two
-   remaining element types from the original spec.
-5. Turquoise applied to filters too (Max: optional, "if you get to
+4. **Wire `Theme`/`CustomButton` into the sidebar nav buttons too** --
+   `CustomButton` exists and is used by the Library's top row now, but
+   the sidebar (Library/Editor/Settings) still uses the older
+   `_ScalingIconButton`/gradient-image system, and the sidebar's own
+   gradient-darkened-background piece of the Afterglow Theme spec
+   isn't built either.
+5. **Rounded corners on text boxes** -- the utility exists and is
+   proven correct, just not yet applied to `QLineEdit`/`QTextEdit`
+   elsewhere in the app.
+6. Turquoise applied to filters too (Max: optional, "if you get to
    those now").
-6. Everything else in the UI Update spec not yet touched: Comfy UI,
+7. Everything else in the UI Update spec not yet touched: Comfy UI,
    Video Info settings tab, the search bubble, the hamburger popover,
    hover-autoplay-in-grid, middle-click-deselects, Ctrl+R.
 
@@ -1302,6 +1537,26 @@ reordering as each phase actually lands -- treat it as "what's next,"
 not a fixed roadmap.
 
 ## Architecture pointers
+- `afterglow/gui/custom_button.py` -- NEW this session. `CustomButton`
+  (`QToolButton` subclass, fully custom rounded/theme-colored paint),
+  used by the Library's Search/Refresh/Filters/Sort By/Info row.
+  Subclasses `QToolButton` specifically (not `QPushButton`) so
+  `setPopupMode(InstantPopup)` + `setMenu()` keep working unchanged --
+  only the painting is replaced. NOT yet used for the sidebar nav
+  buttons or the Local/Uploaded tab icons (see "Next up").
+- `afterglow/gui/library_page.py` -- `_VideoGridTab.refresh()` is now a
+  thin leading-edge-debounced (750ms) wrapper around the actual rebuild
+  logic, renamed to `_do_refresh()`. Any NEW caller that wants "act
+  immediately, every time, no debounce" (the way `search_edit`'s
+  `textChanged` does) should call `_do_refresh()` directly, not
+  `refresh()`. `_composite_tab_icon()` gained `bg_color`/`radius`/
+  per-corner-skip parameters for the turquoise tab-icon backgrounds.
+- `afterglow/gui/video_card.py` -- `_build_icon_row`'s filter-icon
+  outline is computed at the STABLE `reserved` (base setting) size, not
+  the per-video count-adjusted `icon_size` -- this distinction is a
+  genuine, measured performance requirement now (see item 21 above),
+  not just a style choice; using `icon_size` in the outline's cache key
+  again would silently reintroduce the exact startup-slowdown bug.
 - `afterglow/gui/outlined_label.py` -- NEW this session. `OutlinedLabel`,
   used for all four on-card text elements. `outline_width <= 0` means
   "fill only, no stroke" -- see item 17 above for the real font-size

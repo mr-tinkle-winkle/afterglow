@@ -250,6 +250,21 @@ class SettingsPage(QWidget):
         card_text_outline_row.addWidget(card_text_outline_pick)
         form.addRow("Card Text Outline Color:", card_text_outline_row)
 
+        self.card_text_outline_width_spin = QDoubleSpinBox()
+        self.card_text_outline_width_spin.setRange(0.0, 10.0)
+        self.card_text_outline_width_spin.setSingleStep(0.5)
+        self.card_text_outline_width_spin.setValue(a.card_text_outline_width)
+        self.card_text_outline_width_spin.setToolTip(
+            "Only affects the title -- the smaller info/date/tag-name lines "
+            "always render fill-only (no stroke) regardless of this setting, "
+            "since even the thinnest usable outline swallows their whole "
+            "glyph at that small a font size. Verified directly: even the "
+            "default of 3.0 already makes the title's fill color completely "
+            "invisible at this app's current title font size -- lower this "
+            "if you want the two-tone fill+outline look back."
+        )
+        form.addRow("Card Text Outline Width:", self.card_text_outline_width_spin)
+
         self.filter_outline_check = QCheckBox()
         self.filter_outline_check.setChecked(a.filter_outline_enabled)
         self.filter_outline_check.setToolTip(
@@ -650,6 +665,7 @@ class SettingsPage(QWidget):
         a.afterglow_color_turquoise = self.afterglow_turquoise_edit.text().strip()
         a.card_text_color = self.card_text_color_edit.text().strip()
         a.card_text_outline_color = self.card_text_outline_color_edit.text().strip()
+        a.card_text_outline_width = self.card_text_outline_width_spin.value()
 
         config_module.save(self._settings)
         self.filters_settings_page.save()
