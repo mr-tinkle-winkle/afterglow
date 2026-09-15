@@ -226,19 +226,18 @@ class _VideoGridTab(QWidget):
         self.refresh_btn.clicked.connect(self.refresh)
         top_row.addWidget(self.refresh_btn)
 
-        self.filters_btn = CustomButton("Filters")
-        self.filters_btn.setPopupMode(QToolButton.InstantPopup)
-        top_row.addWidget(self.filters_btn)
-
-        self.sort_btn = CustomButton("Sort By:")
+        # Filters, Sort By, and Info are now ONE combined button/menu,
+        # internally still called "sort_btn" (per Max's own naming) --
+        # "Sort" is a placeholder label until Max provides a real icon
+        # for it. The combined menu (built in _rebuild_toolbar_menu(),
+        # called both here and on every refresh() since the Filters
+        # section depends on which tags currently exist) lays out all
+        # three as labeled sections in one QMenu rather than three
+        # separate popups.
+        self.sort_btn = CustomButton("Sort")
         self.sort_btn.setPopupMode(QToolButton.InstantPopup)
-        self._build_sort_menu()
+        self._rebuild_toolbar_menu()
         top_row.addWidget(self.sort_btn)
-
-        self.info_btn = CustomButton("Info")
-        self.info_btn.setPopupMode(QToolButton.InstantPopup)
-        self._build_info_menu()
-        top_row.addWidget(self.info_btn)
         outer.addLayout(top_row)
 
         # ---- grid ----
@@ -292,17 +291,28 @@ class _VideoGridTab(QWidget):
 
     # ------------------------------------------------------------ filters menu
 
-    def _rebuild_filters_menu(self) -> None:
-        menu = QMenu(self.filters_btn)
+    def _rebuild_toolbar_menu(self) -> None:
+        """Filters, Sort By, and Info used to be three separate
+        buttons/popups -- now one combined button (self.sort_btn,
+        placeholder-labeled "Sort" until Max supplies a real icon) with
+        one menu laid out as three labeled sections. Rebuilt on every
+        refresh() (not just at construction) since the Filters section
+        depends on which tags currently exist -- the Sort By and Info
+        sections are static enough that rebuilding them too is
+        harmless, and keeping all three in one function avoids the
+        three separate rebuild call-sites silently drifting out of
+        sync with each other over time."""
+        menu = QMenu(self.sort_btn)
 
-        # Built-in "Favorite" filter, pinned above every user tag.
+        # ---- Filters section ----
+        filters_header = menu.addAction("Filters")
+        filters_header.setEnabled(False)
         favorite_checkbox = QCheckBox(f"{FAVORITE_STAR} Favorite", menu)
         favorite_checkbox.setChecked(self._favorite_only)
         favorite_checkbox.toggled.connect(self._toggle_favorite_filter)
         favorite_action = QWidgetAction(menu)
         favorite_action.setDefaultWidget(favorite_checkbox)
         menu.addAction(favorite_action)
-        menu.addSeparator()
 
         all_tags = library.all_known_tags()
         grouped, uncategorized = library.tags_grouped_by_category()
@@ -335,7 +345,6 @@ class _VideoGridTab(QWidget):
         for tag in uncategorized:
             _make_checkbox(tag, menu)
 
-        menu.addSeparator()
         add_filter_btn = QPushButton("+ Add Filter")
         add_filter_btn.setFlat(True)
         add_filter_btn.clicked.connect(self._add_new_filter)
@@ -343,7 +352,6 @@ class _VideoGridTab(QWidget):
         add_filter_action.setDefaultWidget(add_filter_btn)
         menu.addAction(add_filter_action)
 
-        menu.addSeparator()
         highlight_checkbox = QCheckBox("Highlight Unedited", menu)
         highlight_checkbox.setChecked(self._highlight_unedited)
         highlight_checkbox.toggled.connect(self._toggle_highlight_unedited)
@@ -351,7 +359,52 @@ class _VideoGridTab(QWidget):
         highlight_action.setDefaultWidget(highlight_checkbox)
         menu.addAction(highlight_action)
 
-        self.filters_btn.setMenu(menu)
+        # ---- Sort By section ----
+        menu.addSeparator()
+        sort_header = menu.addAction("Sort By")
+        sort_header.setEnabled(False)
+        sort_group = QActionGroup(menu)
+        sort_group.setExclusive(True)
+        # (label, sort_by constant) pairs, each immediately followed by
+        # its inverse -- matches the requested ordering of each mode
+        # next to its opposite.
+        sort_options = [
+            ("Creation date (newest first)", library.SORT_CREATED_NEWEST),
+            ("Creation date (oldest first)", library.SORT_CREATED_OLDEST),
+            ("Last modified (newest first)", library.SORT_MODIFIED_NEWEST),
+            ("Last modified (oldest first)", library.SORT_MODIFIED_OLDEST),
+            ("Name (A to Z)", library.SORT_NAME_A_TO_Z),
+            ("Name (Z to A)", library.SORT_NAME_Z_TO_A),
+            ("Video length (short to long)", library.SORT_LENGTH_SHORT_TO_LONG),
+            ("Video length (long to short)", library.SORT_LENGTH_LONG_TO_SHORT),
+        ]
+        for label, sort_by in sort_options:
+            action = menu.addAction(label)
+            action.setCheckable(True)
+            action.setChecked(sort_by == self._sort_by)
+            action.triggered.connect(lambda checked, s=sort_by: self._set_sort_by(s))
+            sort_group.addAction(action)
+
+        # ---- Info section ----
+        menu.addSeparator()
+        info_header = menu.addAction("Info")
+        info_header.setEnabled(False)
+        card_info = config_module.load().card_info
+        info_options = [
+            ("Show Filters", "show_filters", card_info.show_filters),
+            ("Show Video Length", "show_length", card_info.show_length),
+            ("Show File Size", "show_file_size", card_info.show_file_size),
+            ("Show Creation Date", "show_creation_date", card_info.show_creation_date),
+        ]
+        for label, field_name, checked in info_options:
+            checkbox = QCheckBox(label, menu)
+            checkbox.setChecked(checked)
+            checkbox.toggled.connect(lambda is_checked, f=field_name: self._set_card_info_field(f, is_checked))
+            action = QWidgetAction(menu)
+            action.setDefaultWidget(checkbox)
+            menu.addAction(action)
+
+        self.sort_btn.setMenu(menu)
 
     def _toggle_favorite_filter(self, checked: bool) -> None:
         self._favorite_only = checked
@@ -399,39 +452,11 @@ class _VideoGridTab(QWidget):
         for card in self._cards:
             card.set_font_scale(factor)
 
-    # ------------------------------------------------------------ info menu
-
-    def _build_info_menu(self) -> None:
-        """What's shown on each card besides the thumbnail/title itself:
-        filters, video length, file size, creation date -- persisted to
-        config (see config.CardInfoSettings) since this is a display
-        preference, not a per-session filter selection."""
-        menu = QMenu(self.info_btn)
-        card_info = config_module.load().card_info
-
-        options = [
-            ("Show Filters", "show_filters", card_info.show_filters),
-            ("Show Video Length", "show_length", card_info.show_length),
-            ("Show File Size", "show_file_size", card_info.show_file_size),
-            ("Show Creation Date", "show_creation_date", card_info.show_creation_date),
-        ]
-        for label, field_name, checked in options:
-            checkbox = QCheckBox(label, menu)
-            checkbox.setChecked(checked)
-            checkbox.toggled.connect(lambda is_checked, f=field_name: self._set_card_info_field(f, is_checked))
-            action = QWidgetAction(menu)
-            action.setDefaultWidget(checkbox)
-            menu.addAction(action)
-
-        self.info_btn.setMenu(menu)
-
     def _set_card_info_field(self, field_name: str, checked: bool) -> None:
         settings = config_module.load()
         setattr(settings.card_info, field_name, checked)
         config_module.save(settings)
         self.refresh()
-
-    # ------------------------------------------------------------ sort menu
 
     def _toggle_search_visibility(self) -> None:
         """Placeholder behavior for the "Search" custom button until the
@@ -442,35 +467,6 @@ class _VideoGridTab(QWidget):
         self.search_edit.setVisible(not self.search_edit.isVisible())
         if self.search_edit.isVisible():
             self.search_edit.setFocus()
-
-    def _build_sort_menu(self) -> None:
-        # Built once (unlike the filters menu, which depends on which
-        # tags currently exist) -- the sort options themselves never
-        # change, only which one is checked.
-        menu = QMenu(self.sort_btn)
-        group = QActionGroup(menu)
-        group.setExclusive(True)
-
-        # (label, sort_by constant) pairs, each immediately followed by
-        # its inverse -- matches the requested ordering of each mode next
-        # to its opposite.
-        options = [
-            ("Creation date (newest first)", library.SORT_CREATED_NEWEST),
-            ("Creation date (oldest first)", library.SORT_CREATED_OLDEST),
-            ("Last modified (newest first)", library.SORT_MODIFIED_NEWEST),
-            ("Last modified (oldest first)", library.SORT_MODIFIED_OLDEST),
-            ("Name (A to Z)", library.SORT_NAME_A_TO_Z),
-            ("Name (Z to A)", library.SORT_NAME_Z_TO_A),
-            ("Video length (short to long)", library.SORT_LENGTH_SHORT_TO_LONG),
-            ("Video length (long to short)", library.SORT_LENGTH_LONG_TO_SHORT),
-        ]
-        for label, sort_by in options:
-            action = menu.addAction(label)
-            action.setCheckable(True)
-            action.setChecked(sort_by == self._sort_by)
-            action.triggered.connect(lambda checked, s=sort_by: self._set_sort_by(s))
-            group.addAction(action)
-        self.sort_btn.setMenu(menu)
 
     def _set_sort_by(self, sort_by: str) -> None:
         self._sort_by = sort_by
@@ -503,7 +499,7 @@ class _VideoGridTab(QWidget):
         self._refresh_debounce_active = False
 
     def _do_refresh(self) -> None:
-        self._rebuild_filters_menu()
+        self._rebuild_toolbar_menu()
 
         # Clear existing cards -- data may have changed (new/deleted
         # video, rename, tag change), so these are rebuilt from scratch

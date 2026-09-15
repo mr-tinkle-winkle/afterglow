@@ -335,14 +335,21 @@ class VideoCard(QWidget):
             info_label = OutlinedLabel(" \u2022 ".join(parts) if parts else " ")
             info_label.setStyleSheet("font-size: 10px;")
             info_label.setAlignment(Qt.AlignCenter)
-            # outline_width=0 (fill only, no stroke) -- at this 10px
-            # size, even the thinnest usable outline swallows the whole
-            # glyph interior, leaving no room for the fill color to
-            # show through at all (see OutlinedLabel.paintEvent's own
-            # comment). The title above is large enough for the actual
-            # two-tone effect; this and the two other small lines below
-            # aren't.
-            info_label.set_colors(self._appearance.card_text_color, self._appearance.card_text_outline_color, outline_width=0)
+            # Uses the SAME card_text_outline_width as the title now --
+            # the old outline_width=0 (fill-only) fallback here was
+            # working around a real limitation in the OLD single-pass
+            # stroke+fill technique (the stroke ate inward into the
+            # fill from both sides, swallowing it entirely at small
+            # font sizes). OutlinedLabel now draws the outline and fill
+            # as two SEPARATE passes -- fill always renders the
+            # complete, untouched glyph shape on top, so it never
+            # disappears regardless of outline width; verified directly
+            # even at the full default width (3.0) on 10px text, the
+            # fill stays clearly present.
+            info_label.set_colors(
+                self._appearance.card_text_color, self._appearance.card_text_outline_color,
+                outline_width=self._appearance.card_text_outline_width,
+            )
             info_layout.addWidget(info_label)
 
         if info_settings.show_creation_date:
@@ -350,7 +357,10 @@ class VideoCard(QWidget):
             date_label = OutlinedLabel(date_text)
             date_label.setStyleSheet("font-size: 10px;")
             date_label.setAlignment(Qt.AlignCenter)
-            date_label.set_colors(self._appearance.card_text_color, self._appearance.card_text_outline_color, outline_width=0)
+            date_label.set_colors(
+                self._appearance.card_text_color, self._appearance.card_text_outline_color,
+                outline_width=self._appearance.card_text_outline_width,
+            )
             info_layout.addWidget(date_label)
 
         # Filters section: "below"-location icons, then tag-name text --
@@ -366,7 +376,10 @@ class VideoCard(QWidget):
                 tag_label.setWordWrap(False)  # same single-line-always reasoning as the title
                 tag_label.setStyleSheet("font-size: 10px;")
                 tag_label.setAlignment(Qt.AlignCenter)
-                tag_label.set_colors(self._appearance.card_text_color, self._appearance.card_text_outline_color, outline_width=0)
+                tag_label.set_colors(
+                    self._appearance.card_text_color, self._appearance.card_text_outline_color,
+                    outline_width=self._appearance.card_text_outline_width,
+                )
                 info_layout.addWidget(tag_label)
 
         outer_layout.addWidget(self.info_box)
@@ -581,10 +594,14 @@ class VideoCard(QWidget):
 
         # Video-thumbnail border: the unedited-highlight gradient for an
         # unedited video (with highlighting enabled and the card not
-        # selected), otherwise a plain thin contrast-outline stroke in
-        # card_text_outline_color -- mutually exclusive, so every card
-        # gets exactly one border treatment around its thumbnail, never
-        # both and never neither.
+        # selected), otherwise a plain app_background()-colored fill --
+        # mutually exclusive, so every card gets exactly one border
+        # treatment around its thumbnail, never both and never neither.
+        # Both branches fill the SAME video_box margin region (radius,
+        # position, and thickness all identical -- the only difference
+        # is a stretched gradient image vs. a flat color), which is
+        # what actually guarantees the two look consistent rather than
+        # needing their geometry kept in sync by hand.
         video_rect = QRectF(self.video_box.geometry())
         if video_rect.width() > 0 and video_rect.height() > 0:
             # NOT capped to border_width -- an earlier version of this
@@ -610,15 +627,27 @@ class VideoCard(QWidget):
                     painter.setCompositionMode(QPainter.CompositionMode_SourceOver)
                 painter.setClipping(False)
             else:
-                # app_background(), not card_text_outline_color -- per
-                # Max's direct request once he saw this rendered.
-                contrast_pen = QPen(self._theme.app_background(), 2)
-                painter.setPen(contrast_pen)
-                painter.setBrush(Qt.NoBrush)
+                # FILLS the same video_box margin region the gradient
+                # branch above fills, with app_background() as a flat
+                # color instead of a stretched gradient image -- NOT a
+                # thin stroke drawn at video_box's own OUTER edge (an
+                # earlier version of this did that, and it was wrong:
+                # video_box's outer edge sits border_width pixels away
+                # from the thumbnail's actual edge, so a stroke drawn
+                # there left a visible gap of plain card_background()
+                # color showing through in between. Reported directly
+                # as "a few pixels off, showing the video card color in
+                # between". Using the exact same fill-then-let-thumb_
+                # label-cover-the-center technique as the gradient
+                # branch guarantees this one matches it in BOTH
+                # position and width automatically, rather than needing
+                # to keep two separate geometries in sync by hand.
                 if video_radius:
-                    painter.drawPath(rounded_rect_path(video_rect, video_radius))
+                    painter.setClipPath(rounded_rect_path(video_rect, video_radius))
+                    painter.fillRect(video_rect, self._theme.app_background())
+                    painter.setClipping(False)
                 else:
-                    painter.drawRect(video_rect)
+                    painter.fillRect(video_rect, self._theme.app_background())
 
         painter.end()
         super().paintEvent(event)

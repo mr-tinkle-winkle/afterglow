@@ -52,35 +52,40 @@ class OutlinedLabel(QLabel):
         path.addText(x, y, self.font(), text)
 
         if self._outline_width > 0:
-            # A single drawPath with both a pen and a brush set both
-            # strokes (the outline, centered on each glyph's own edge)
-            # and fills (the interior) in one pass. The pen width is
-            # used directly (NOT doubled) -- measured directly that
-            # doubling it (an earlier version of this code did)
-            # completely swallows the fill color at typical UI text
-            # sizes: normal glyph strokes are only a couple pixels wide
-            # at 10-17pt, so a pen much above ~1px leaves zero interior
-            # pixels for the fill to show through at all, defeating the
-            # whole two-tone effect. 1.0 (the default) is a good
-            # balance verified directly -- clearly visible outline,
-            # fill still dominant -- at the title's font size
-            # specifically.
-            pen = QPen(self._outline_color, self._outline_width)
-            pen.setJoinStyle(Qt.RoundJoin)
-            pen.setCapStyle(Qt.RoundCap)
-            painter.setPen(pen)
-        else:
-            # Below a certain font size (measured directly: this app's
-            # 10px info/date/tag-name lines), even the thinnest usable
-            # pen swallows the ENTIRE glyph interior -- normal letter
-            # strokes are only ~1px wide at that size, so there's no
-            # room left for the fill to show through at all, and the
-            # text would just render as a solid block of outline_color
-            # instead of the intended fill_color. Falling back to a
-            # plain fill (no stroke) at outline_width<=0 keeps that
-            # text genuinely readable in fill_color rather than
-            # silently becoming outline_color instead.
-            painter.setPen(Qt.NoPen)
+            # TWO SEPARATE passes, not one combined stroke+fill drawPath
+            # call (an earlier version of this did that, and it was
+            # wrong -- reported directly as "the outline bleeds onto
+            # the text, making the text just the color of the
+            # outline"). A single drawPath with both a pen and brush
+            # set strokes CENTERED on the path, eating into the fill
+            # from BOTH sides equally -- at typical UI text sizes,
+            # where glyph strokes are only a couple pixels wide to
+            # begin with, that inward bite alone is enough to consume
+            # the entire glyph interior, leaving nothing of the fill
+            # color visible at all.
+            #
+            # The fix: stroke-only first (bottom layer, pen set, brush
+            # NoBrush) draws the outline extending BOTH inward and
+            # outward from the glyph's true edge; fill-only second (top
+            # layer, brush set, pen NoPen) draws the EXACT original
+            # glyph shape completely opaque on top, which fully
+            # restores/covers the inward half the stroke pass drew into
+            # -- what's left visible is only the OUTWARD half of the
+            # stroke, a clean border around an untouched, fully-colored
+            # fill. Doubling the pen width here (vs. not doubling, from
+            # the old single-pass version) is intentional and correct
+            # under this new technique specifically: since half of it
+            # is always going to be covered by the fill pass, the
+            # configured outline_width should describe the VISIBLE
+            # (outward-only) thickness, not the pen's own raw width.
+            outline_pen = QPen(self._outline_color, self._outline_width * 2)
+            outline_pen.setJoinStyle(Qt.RoundJoin)
+            outline_pen.setCapStyle(Qt.RoundCap)
+            painter.setPen(outline_pen)
+            painter.setBrush(Qt.NoBrush)
+            painter.drawPath(path)
+
+        painter.setPen(Qt.NoPen)
         painter.setBrush(self._fill_color)
         painter.drawPath(path)
         painter.end()

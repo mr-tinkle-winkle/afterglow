@@ -82,46 +82,89 @@ def silhouette_outline_pixmap(pixmap: QPixmap, color: QColor, width: int) -> QPi
     """Outline `pixmap`'s own opaque SILHOUETTE (not a bounding
     rectangle) in `color`, `width` pixels thick -- the "Filter Outline"
     setting, which was specifically asked to match the icon's actual
-    shape rather than draw a square around it. The source icon is
-    scaled down and inset by `width` on each side before compositing,
-    so the result stays the SAME overall size as the input -- the
-    outline grows inward into that reserved space rather than
-    outward past it, which would otherwise silently break
-    _build_icon_row's fixed-size reservation (see its own comment on
-    why that matters for card-size normalization).
+    shape rather than draw a square around it. Also fills any fully
+    ENCLOSED transparent regions (a hole inside the silhouette, like
+    the counter of a letter "O" or "A") with the outline color too, per
+    a direct follow-up request -- a hollow gap poking through the
+    middle of an otherwise-solid outline reads as a rendering glitch,
+    not a design choice.
+
+    The canvas GROWS outward by `width` on each side rather than the
+    icon being shrunk inward to leave room within a fixed-size canvas
+    (an earlier version did that). Shrinking the icon visually
+    detaches the outline from where the icon's TRUE edge actually is --
+    reported directly as the outline appearing to "float 1 or 2 pixels
+    off" the icon. Growing outward instead means the icon is placed at
+    its own full, untouched size, and the outline hugs its real edge
+    by construction; the result is simply LARGER than the input now,
+    and it's the CALLER's job to scale the whole composite (icon +
+    outline together, so their relative proportions never change) down
+    to whatever final display size is needed -- `_FilterIconLabel`
+    already does exactly that scaling step regardless of this
+    pixmap's own size, so this needs no caller-side change beyond
+    what's already there.
 
     Implemented as a plain morphological dilation of the alpha channel
     (a pixel becomes part of the outline if it's currently transparent
-    but within `width` pixels of an opaque one) -- pure Python, no
-    numpy, so this is a real O(w*h*width^2) cost. Fine for typical
-    small icon sizes as a cached one-time-per-(icon, color, width)
-    operation (see the cache below), not something to call per-frame."""
+    but within `width` pixels of an opaque one), plus a flood fill from
+    the canvas border to distinguish true exterior transparent pixels
+    from enclosed ones -- pure Python, no numpy, so this is a real
+    O(w*h*width^2) cost. Fine for typical small icon sizes as a cached
+    one-time-per-(icon, color, width) operation (see the cache below),
+    not something to call per-frame."""
     if width <= 0:
         return pixmap
     from PySide6.QtCore import QSize, Qt
     from PySide6.QtGui import QPainter
+    from collections import deque
 
     size = pixmap.size()
-    inset_size = QSize(max(1, size.width() - 2 * width), max(1, size.height() - 2 * width))
-    inset_pixmap = pixmap.scaled(inset_size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+    new_size = QSize(size.width() + 2 * width, size.height() + 2 * width)
 
-    icon_layer = QImage(size, QImage.Format_ARGB32)
+    icon_layer = QImage(new_size, QImage.Format_ARGB32)
     icon_layer.fill(Qt.transparent)
-    ox = (size.width() - inset_pixmap.width()) // 2
-    oy = (size.height() - inset_pixmap.height()) // 2
     painter = QPainter(icon_layer)
-    painter.drawPixmap(ox, oy, inset_pixmap)
+    painter.drawPixmap(width, width, pixmap)
     painter.end()
 
-    w, h = size.width(), size.height()
+    w, h = new_size.width(), new_size.height()
     opaque = [[icon_layer.pixelColor(x, y).alpha() > 10 for x in range(w)] for y in range(h)]
 
-    result = QImage(size, QImage.Format_ARGB32)
+    # Flood fill from every border pixel across connected transparent
+    # cells -- whatever this reaches is genuinely OUTSIDE the
+    # silhouette; any transparent pixel it never reaches is enclosed
+    # (a hole) and gets filled in below, same as the outline itself.
+    exterior = [[False] * w for _ in range(h)]
+    queue = deque()
+    for x in range(w):
+        for y in (0, h - 1):
+            if not opaque[y][x] and not exterior[y][x]:
+                exterior[y][x] = True
+                queue.append((x, y))
+    for y in range(h):
+        for x in (0, w - 1):
+            if not opaque[y][x] and not exterior[y][x]:
+                exterior[y][x] = True
+                queue.append((x, y))
+    while queue:
+        cx, cy = queue.popleft()
+        for nx, ny in ((cx + 1, cy), (cx - 1, cy), (cx, cy + 1), (cx, cy - 1)):
+            if 0 <= nx < w and 0 <= ny < h and not opaque[ny][nx] and not exterior[ny][nx]:
+                exterior[ny][nx] = True
+                queue.append((nx, ny))
+
+    result = QImage(new_size, QImage.Format_ARGB32)
     result.fill(Qt.transparent)
     radius_sq = width * width
     for y in range(h):
         for x in range(w):
             if opaque[y][x]:
+                continue
+            if not exterior[y][x]:
+                # Enclosed hole -- fill solid, no dilation-distance
+                # check needed (it's inside the silhouette regardless
+                # of how far from an opaque pixel it happens to sit).
+                result.setPixelColor(x, y, color)
                 continue
             found = False
             for dy in range(-width, width + 1):

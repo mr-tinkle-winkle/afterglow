@@ -112,10 +112,12 @@ class AppearanceSettings:
     # gradient or nothing -- with a plain gray border at this same
     # width), hence the name; was `unedited_highlight_width` before
     # selection existed (see load()'s backward-compat shim). Doubled
-    # (9 -> 18) directly on Max's request once he could see the
-    # thumbnail border rendered for real -- this also doubles the
-    # selection ring's width, since the two share this one setting.
-    unedited_selected_border_width: int = 18
+    # twice now, both directly on Max's request once he could see it
+    # rendered for real -- first 9 -> 18, then 18 -> 36 -- this also
+    # doubles the selection ring's width both times, since all of
+    # these (the unedited-highlight border, the plain edited-video
+    # border, and the selection ring) share this one setting.
+    unedited_selected_border_width: int = 36
     # Darkened 35% (100 -> 65) directly on Max's request.
     unedited_highlight_brightness: int = 65
     filter_icon_size: int = 54
@@ -218,28 +220,21 @@ class AppearanceSettings:
     # painted left to recolor. Chosen directly by Max:
     # blue/dark-desaturated-blue/super-dark-desaturated-blue/turquoise.
     afterglow_theme_enabled: bool = True
-    # Halfway (in HSV brightness/V, keeping accent's own hue/saturation)
-    # between card_background below and accent's own previous value,
-    # directly on Max's request once he could compare the two on
-    # screen.
-    afterglow_color_accent: str = "#194a8e"
-    afterglow_color_card_background: str = "#274162"
-    # Computed once as a starting default (10% brighter, 15% more
-    # saturated, in HSV, than afterglow_color_library below), then
-    # darkened another 25% (in V) directly on Max's own follow-up
-    # request once he could compare it against the library background
-    # on screen -- still a normal editable field afterward (Settings >
-    # Advanced), this is just where its default value came from. Meant
-    # to eventually become the actual app-wide background (not yet
-    # wired everywhere -- see HANDOFF.md).
-    afterglow_color_app_background: str = "#142232"
+    # Exact hex given directly by Max, most recently. Previous values
+    # (computed derivations, etc.) are documented in this file's git
+    # history / HANDOFF.md rather than here now that this is simply a
+    # literal value he specified.
+    afterglow_color_accent: str = "#1d61b5"
+    afterglow_color_card_background: str = "#1f3a5f"
+    # Given directly by Max, most recently -- meant to eventually
+    # become the actual app-wide background (not yet wired everywhere
+    # -- see HANDOFF.md).
+    afterglow_color_app_background: str = "#0d1621"
     afterglow_color_library: str = "#1d2c3d"
-    # Given directly by Max but not yet assigned a role -- turquoise
-    # was originally slated for the library page background, which is
-    # now the dark blue above instead. Not read by Theme yet; kept here
-    # so the value isn't lost while that's still an open question (see
-    # HANDOFF.md).
-    afterglow_color_turquoise: str = "#12b5c8"
+    # Used for the Local/Uploaded tab icons' own background
+    # specifically (not the library page background above, despite the
+    # similar name -- see Theme.turquoise()'s own docstring for why).
+    afterglow_color_turquoise: str = "#05a4b9"
     # "normal" | "maximized" | "fullscreen" -- replaces the old
     # top-level default_to_fullscreen bool (see load()'s backward-compat
     # shim), moved here from the Clipping tab into General since it's
@@ -357,6 +352,23 @@ def load() -> AppSettings:
         # halfway-brightness value later in the same session it was
         # introduced.
         appearance_raw["afterglow_color_accent"] = AppearanceSettings.afterglow_color_accent
+    if appearance_raw.get("afterglow_color_accent") == "#194a8e":
+        # And again -- Max gave a new literal hex directly the very
+        # next round.
+        appearance_raw["afterglow_color_accent"] = AppearanceSettings.afterglow_color_accent
+    if appearance_raw.get("afterglow_color_card_background") == "#274162":
+        appearance_raw["afterglow_color_card_background"] = AppearanceSettings.afterglow_color_card_background
+    if appearance_raw.get("afterglow_color_app_background") == "#142232":
+        appearance_raw["afterglow_color_app_background"] = AppearanceSettings.afterglow_color_app_background
+    if appearance_raw.get("afterglow_color_turquoise") == "#12b5c8":
+        appearance_raw["afterglow_color_turquoise"] = AppearanceSettings.afterglow_color_turquoise
+    if appearance_raw.get("unedited_selected_border_width") in (9, 18):
+        # Doubled twice in quick succession (9 -> 18 -> 36), both times
+        # directly on Max's own request once he could see it rendered
+        # -- same stale-default reasoning as the color migrations
+        # above. A GENUINELY custom value (anything other than these
+        # two specific old defaults) is left alone.
+        appearance_raw["unedited_selected_border_width"] = AppearanceSettings.unedited_selected_border_width
     appearance = AppearanceSettings(**appearance_raw)
     top_level = {
         k: v for k, v in raw.items()

@@ -1301,6 +1301,109 @@ include a full Advanced Sound feature partway through. In order:
       check runs.
     - 38 test suites passing.
 
+22. **Sixth screenshot-feedback round: two real rendering bugs fixed
+    at the technique level (not just tuned), the color palette updated
+    again, and Filters/Sort By/Info merged into one button.**
+    - **The text-outline-bleeding bug -- fixed at the actual technique
+      level, not just re-tuned.** `OutlinedLabel` used to draw the
+      outline and fill in ONE combined `drawPath()` call with both a
+      pen and brush set -- Qt strokes a path CENTERED on it, eating
+      into the fill from both sides equally, which is exactly why
+      raising `card_text_outline_width` (last session) made the title
+      render as solid outline color with the fill completely gone.
+      Reported directly as "the outline bleeds onto the text, making
+      the text just the color of the outline." Fixed by splitting this
+      into two SEPARATE passes: stroke-only underneath (pen set, brush
+      `NoBrush`), then fill-only on top (brush set, pen `NoPen`) --
+      the fill pass draws the exact, untouched original glyph shape,
+      completely covering the inward half of the stroke pass below it,
+      so what remains visible is only the outward-facing half of the
+      outline as a clean border around a fully-intact fill. This is
+      robust regardless of outline width now (verified: even the
+      default 3.0 shows the fill clearly, unlike before), so the three
+      smaller info/date/tag-name lines no longer need the fill-only
+      (`outline_width=0`) fallback from last session -- they use
+      `card_text_outline_width` like the title now, and were verified
+      to keep a healthy fill pixel count even at that width.
+    - **The edited-video outline "a few pixels off" bug -- a real
+      positioning bug, found and fixed.** It was a thin, fixed 2px
+      stroke drawn at `video_box`'s own OUTER edge -- but the actual
+      thumbnail content sits `border_width` pixels further in, so the
+      stroke and the thumbnail were never touching; the gap between
+      them just showed plain `card_background()`. Fixed by using the
+      exact same fill-the-whole-margin technique the unedited-gradient
+      branch already used correctly (fill `video_box`'s full area with
+      `app_background()`, let `thumb_label` cover the center as a
+      child widget drawn afterward) -- guarantees both branches match
+      in position AND width by construction, rather than needing their
+      geometry kept in sync by hand. This also naturally satisfies
+      "give it the same width as the unedited outline" for free.
+    - **The border width setting doubled again** (18 -> 36) directly on
+      request -- same migration pattern as before for anyone whose
+      config still has 9 or 18 saved.
+    - **The filter-outline "floating 1-2px off the icon" bug -- found
+      and fixed, plus closed-area filling added.** The floating was
+      caused by `silhouette_outline_pixmap` SHRINKING the icon inward
+      to make room for the outline within a fixed-size canvas -- the
+      icon itself ended up visibly smaller than its "real" size, with
+      the outline occupying the freed ring, which reads as detached
+      from where the icon's true edge should be. Fixed by GROWING the
+      canvas outward by `width` on each side instead, placing the icon
+      at its own full, untouched size -- the outline now hugs the
+      icon's real edge by construction. The result is now larger than
+      the input (by `2*width` per dimension); `_FilterIconLabel`'s
+      existing `.scaled()` call already handles scaling the whole
+      composite down to the actual display size regardless of this
+      pixmap's own size, so no caller-side change was needed beyond
+      that. Also added, per a direct follow-up: a flood fill from the
+      canvas border identifies genuinely EXTERIOR transparent pixels;
+      anything transparent NOT reached by it (an enclosed hole, like
+      the counter of a letter "O") gets filled with the outline color
+      too, rather than staying transparent. Verified with a donut-
+      shaped test icon: the hole fills, the true exterior doesn't.
+    - **New color palette**, given directly, with the same migration
+      pattern for the previous round's values: `#1d61b5` (accent),
+      `#1f3a5f` (card background), `#0d1621` (app background),
+      `#05a4b9` (turquoise). Library background untouched (not part of
+      this round's given values).
+    - **Filters, Sort By, and Info merged into one button** (Max: "all
+      now in one tab referred to in the code as Sort, with placeholder
+      text until i give you the icon"). `self.filters_btn` and
+      `self.info_btn` are gone; `self.sort_btn` (labeled "Sort",
+      placeholder pending a real icon) now opens ONE combined `QMenu`
+      laid out as three sections (disabled header actions read
+      "Filters" / "Sort By" / "Info", each followed by that section's
+      own content) rather than three separate popups. All the
+      underlying logic (tag checkboxes, categories-as-submenus, sort
+      selection, info toggles) is unchanged -- only the menu
+      CONSTRUCTION was merged, into one `_rebuild_toolbar_menu()`
+      replacing the three separate `_rebuild_filters_menu()`/
+      `_build_sort_menu()`/`_build_info_menu()` methods, called both at
+      construction and on every `_do_refresh()` (since the Filters
+      section depends on which tags currently exist; rebuilding the
+      more static Sort By/Info sections too on every refresh is
+      harmless).
+    - Also worth flagging, NOT yet acted on: with the border width now
+      36px and `ui_padding` still 14px, the selection ring (which
+      shares the same width setting) can extend further than the gap
+      between the card's outer edge and `video_box`, meaning a
+      selected card's ring may visually reach into or past where
+      `video_box` itself sits, rather than sitting cleanly in the
+      outer padding area the way it did at smaller border widths. Not
+      reported as a problem yet, but flagged here since it was directly
+      observed while fixing an unrelated test's sample point (see
+      "Currently being worked on" test-file notes) -- worth watching
+      if the border width grows any further.
+    - 40 test suites passing.
+    - **Still not started this round** (explicitly acknowledged, not
+      forgotten): the Local/Uploaded `QTabWidget` -> custom-buttons
+      replacement (asked for again this round -- "you still didn't
+      make the saved and uploaded their own custom tabs"), lazy-loading
+      the grid (36 videos then load-more-on-scroll), and the custom
+      scroll bar (turquoise handle, app-background track, card-color
+      outline). All three are queued as the very next work -- see
+      "Next up".
+
 ### Two sessions ago
 All four items carried over from that session's "next up" list,
 implemented and verified (not just compiled -- see the offscreen
@@ -1492,39 +1595,57 @@ widget-level testing note above):
   toggles tag-on-video, the other toggles include/exclude-from-search).
 
 ## Next up
-Remaining for the UI Update epic, in order of what's most contained to
-what needs the most new plumbing:
+**Explicitly queued and re-requested this round, in the order Max gave
+them:**
 1. **Replace Local/Uploaded's `QTabWidget`/`QTabBar` with two
-   `CustomButton`s + a page-switching mechanism** (explicitly asked
-   for this session, deliberately not attempted -- see item 20 above
-   for exactly why). The biggest remaining piece of the "Custom
-   Buttons" work specifically, since it's an architecture change, not
-   just a repaint -- needs `_PulsingTabBar`'s click-pulse/hover
-   animation, the tab-icon compositing trick (independent Local/
-   Uploaded icon sizes despite one shared native property), and the
-   prev-next-navigation tab-tracking (`_last_edit_tab`) all
-   reimplemented on top of two plain buttons + probably a
-   `QStackedWidget`, rather than inheriting them for free from
-   `QTabWidget`.
-2. **Confirm what clicking the thumbnail/video-box should do now**
-   that it's visually separated from the info box (currently unchanged
-   -- still whole-card select/double-click-to-edit). Cheap to answer,
-   worth doing before building the preview player next, since that's
-   the other half of "what do the two boxes each do when clicked."
-3. **The info-box-click -> separate smaller preview player** (Medal-
-   style, confirmed distinct from both the Editor and hover-autoplay).
-   This is a real new feature (a second mpv-embedded player, this time
-   in a lightweight modal/dialog rather than a full page) -- probably
-   deserves to be scoped as its own sub-phase rather than a quick
-   add-on.
-4. **Wire `Theme`/`CustomButton` into the sidebar nav buttons too** --
-   `CustomButton` exists and is used by the Library's top row now, but
-   the sidebar (Library/Editor/Settings) still uses the older
-   `_ScalingIconButton`/gradient-image system, and the sidebar's own
-   gradient-darkened-background piece of the Afterglow Theme spec
-   isn't built either.
-5. **Rounded corners on text boxes** -- the utility exists and is
-   proven correct, just not yet applied to `QLineEdit`/`QTextEdit`
+   `CustomButton`s + a page-switching mechanism.** Asked for again this
+   round ("you still didn't make the saved and uploaded their own
+   custom tabs, they still use the default page header behavior, and
+   still have the bugs associated with it") -- deliberately deferred
+   twice now given its size, but next up for real. The biggest
+   remaining piece of the "Custom Buttons" work specifically, since
+   it's an architecture change, not just a repaint -- needs
+   `_PulsingTabBar`'s click-pulse/hover animation, the tab-icon
+   compositing trick (independent Local/Uploaded icon sizes despite
+   one shared native property), and the prev-next-navigation
+   tab-tracking (`_last_edit_tab`) all reimplemented on top of two
+   plain buttons + probably a `QStackedWidget`, rather than inheriting
+   them for free from `QTabWidget`. Max's own framing suggests he
+   expects this to also incidentally fix whatever tab-related bugs he
+   hasn't bothered separately reporting.
+2. **Lazy-load the grid**: load the first ~36 videos so the app opens
+   immediately, then load more as the user scrolls further down,
+   rather than building every card synchronously up front. Explicitly
+   OK with videos still loading in the background per Max ("its okay
+   if the videos are still loading as the app opens"). Needs: an
+   initial batch-limited `_do_refresh()`, and a scroll-position
+   listener on `_VideoGridTab.scroll` that appends the next batch when
+   the user nears the bottom of what's currently loaded.
+3. **Custom scroll bar**: turquoise handle, app-background track,
+   outlined in the video-card color. A new `QScrollBar` subclass with
+   custom paint, swapped in via `QScrollArea.setVerticalScrollBar()`.
+
+**Everything else, unordered:**
+- **Confirm what clicking the thumbnail/video-box should do now**
+  that it's visually separated from the info box (currently unchanged
+  -- still whole-card select/double-click-to-edit). Cheap to answer,
+  worth doing before building the preview player next, since that's
+  the other half of "what do the two boxes each do when clicked."
+- **The info-box-click -> separate smaller preview player** (Medal-
+  style, confirmed distinct from both the Editor and hover-autoplay).
+  This is a real new feature (a second mpv-embedded player, this time
+  in a lightweight modal/dialog rather than a full page) -- probably
+  deserves to be scoped as its own sub-phase rather than a quick
+  add-on.
+- **Wire `Theme`/`CustomButton` into the sidebar nav buttons too** --
+  `CustomButton` exists and is used by the Library's top row now, but
+  the sidebar (Library/Editor/Settings) still uses the older
+  `_ScalingIconButton`/gradient-image system, and the sidebar's own
+  gradient-darkened-background piece of the Afterglow Theme spec
+  isn't built either.
+- **Rounded corners on text boxes** -- the utility exists and is
+  proven correct, just not yet applied to `QLineEdit`/`QTextEdit`
+
    elsewhere in the app.
 6. Turquoise applied to filters too (Max: optional, "if you get to
    those now").
