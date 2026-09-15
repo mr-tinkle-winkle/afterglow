@@ -549,7 +549,17 @@ class VideoCard(QWidget):
         # both and never neither.
         video_rect = QRectF(self.video_box.geometry())
         if video_rect.width() > 0 and video_rect.height() > 0:
-            video_radius = min(radius, border_width) if radius else 0
+            # NOT capped to border_width -- an earlier version of this
+            # line did `min(radius, border_width)`, which with the
+            # default 24px corner radius vs. a 9px border width capped
+            # the thumbnail's own rounding down to just 9px, visibly
+            # less rounded than the rest of the card (outer box, info
+            # box) and easily read as "not rounded at all" at normal
+            # viewing size -- reported directly from a screenshot.
+            # rounded_rect_path() already clamps to half of whichever
+            # of the rect's own width/height is smaller, which is the
+            # only clamp actually needed to keep the shape valid.
+            video_radius = radius
             if not self._selected and self._should_show_highlight():
                 if video_radius:
                     painter.setClipPath(rounded_rect_path(video_rect, video_radius))

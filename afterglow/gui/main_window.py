@@ -304,8 +304,23 @@ class MainWindow(QMainWindow):
         # VideoCard's card_background()/accent(): Theme itself decides
         # whether this is Afterglow's fixed color or a live KDE-palette
         # equivalent, this call doesn't need its own separate check).
+        #
+        # QPalette, not setStyleSheet("background-color: ...") -- an
+        # unscoped stylesheet property is a well-known Qt gotcha where
+        # the style engine applies it across the WHOLE descendant
+        # subtree (effectively "* { ... }"), which can bleed into other
+        # widgets' own custom painting on a real compositor even though
+        # they have nothing to do with this one -- and this sandbox's
+        # offscreen platform doesn't reliably reproduce that same
+        # cascading, so testing clean here isn't proof it's safe on a
+        # real display. central being the single ancestor of literally
+        # everything else in the app makes this the highest-risk place
+        # in the whole codebase for that mistake specifically. Setting
+        # the palette directly instead affects only this one widget.
         central.setAutoFillBackground(True)
-        central.setStyleSheet(f"background-color: {theme.app_background().name()};")
+        central_palette = central.palette()
+        central_palette.setColor(central.backgroundRole(), theme.app_background())
+        central.setPalette(central_palette)
         layout = QHBoxLayout(central)
 
         # ---- sidebar: Library + Editor (icon-only, fill the height),

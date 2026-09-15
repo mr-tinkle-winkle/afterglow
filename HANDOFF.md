@@ -305,6 +305,24 @@ layout, AND explicitly checking the resulting geometry/proportions
 when a change touches layout at all -- not just that construction
 didn't crash and the pieces exist.
 
+**A fourth, related lesson from this same recurring pattern, added
+later in this same session:** an unscoped Qt stylesheet property
+(`setStyleSheet("background-color: X;")` with no type/class selector)
+is treated by Qt's style engine as applying to the WHOLE descendant
+widget subtree, not just the widget it's called on -- and this
+sandbox's offscreen platform plugin doesn't reliably reproduce that
+cascading the same way a real compositor does, so a pixel-perfect
+passing test *in this sandbox* genuinely is not proof a background
+color is safe on Max's real machine, specifically for anything
+touching `setStyleSheet` with a bare (unscoped) property. See item 19
+below for the concrete case (a background color meant for one
+container bleeding into every VideoCard's own custom-painted
+background) -- prefer `QPalette` over an unscoped stylesheet property
+for single-widget background colors going forward, and always scope a
+stylesheet rule with an explicit type/class/object-name selector
+(`"QScrollArea { ... }"`, not `"background-color: ...;"` alone) when a
+plain QSS rule is unavoidable.
+
 ## Currently being worked on
 Seven consecutive batches of Library/Settings/appearance
 features/bug fixes, given together each time. Newest first.
@@ -1006,6 +1024,61 @@ include a full Advanced Sound feature partway through. In order:
       correct, expected updates given the design actually changed, not
       regressions.
 
+19. **The turquoise-color bug -- found for real this time.** Max
+    confirmed the two obvious explanations from item 18's investigation
+    were BOTH ruled out (he'd rebuilt/redeployed, and both Custom
+    Buttons and Afterglow Theme were confirmed on), which meant there
+    was a genuine bug still to find rather than a stale config file.
+    Root cause: **an unscoped `setStyleSheet("background-color: ...")`
+    call is a well-known Qt gotcha** -- Qt's style engine treats a CSS
+    property with no type/class selector as if it were written
+    `* { property: value; }`, applying it across the WHOLE descendant
+    widget subtree, not just the widget it was called on. Two sessions
+    ago's background-wiring work (item 17) called
+    `grid_container.setStyleSheet(f"background-color: {hex};")` and
+    `central.setStyleSheet(f"background-color: {hex};")` with exactly
+    this unscoped form -- meaning `MainWindow`'s central widget (the
+    ancestor of literally everything else in the app) and the Library
+    grid's own container could each cascade their background color
+    down into every descendant widget's painting, including
+    `VideoCard`'s and `_InfoBox`'s own fully custom `paintEvent`-drawn
+    backgrounds, on a REAL compositor. This sandbox's offscreen Qt
+    platform plugin doesn't reliably reproduce that same cascading
+    behavior (consistent with the various other "this plugin does not
+    support..." limitations already known from earlier sessions), which
+    is exactly why direct pixel tests against fresh configs kept coming
+    back correct in this environment despite Max seeing the wrong
+    colors on his real machine -- a good concrete example of "verified
+    in the sandbox" and "verified for Max" not being the same claim,
+    worth remembering for any future background/stylesheet work
+    specifically. Fixed by switching both to `QPalette` (`setPalette()`
+    + `setAutoFillBackground(True)`), which sets a color on exactly one
+    widget with no cascading path at all. Also found and fixed the
+    SAME unscoped-background pattern in one more, unrelated place while
+    auditing for it (`LibraryPage`'s `status_bar` label) -- lower risk
+    in practice since a bare `QLabel` has no children, but fixed for
+    consistency and to close out the pattern everywhere it appeared.
+    New `test_no_stylesheet_cascade.py` walks every widget in a real
+    `LibraryPage`/`MainWindow` tree checking for exactly this mistake
+    (an unscoped rule that mentions `background`), so it can't quietly
+    reappear.
+    - **Also fixed in the same round: the video-thumbnail outline
+      wasn't visibly rounded**, a real (if smaller) bug, also caught
+      from a screenshot. The outline's corner radius was being
+      capped at `min(radius, border_width)` -- with the default 24px
+      corner radius vs. a 9px border width, that capped the
+      thumbnail's own rounding down to just 9px, visibly less rounded
+      than the rest of the card (which uses the full 24px) and easily
+      read as "not rounded at all" at normal viewing size. There was
+      no real geometric reason for that cap --
+      `rounded_rect_path()` already clamps to half of whichever of the
+      rect's own width/height is smaller, which is the only clamp
+      actually needed. Now uses the same `radius` as everything else.
+      Verified directly: with a real 16:9 thumbnail, the outline
+      stroke is present along a straight edge and genuinely absent at
+      the exact corner (rounded away), at the full 24px radius.
+    - 35 test suites passing.
+
 ### Two sessions ago
 All four items carried over from that session's "next up" list,
 implemented and verified (not just compiled -- see the offscreen
@@ -1362,17 +1435,6 @@ not a fixed roadmap.
   for Auto Add Filter's multi-select; `refresh_dynamic_lists()`.
 
 ## Open questions / pending decisions
-- **Turquoise/dark-blue/etc. possibly still showing wrong colors on
-  Max's machine.** Investigated directly this session -- the code's
-  color mapping is verified correct against a fresh config (see item
-  18 above) -- so if this persists after this build, the most likely
-  cause is his ACTUAL `config.toml` still holding color values saved
-  under an earlier session's (different) field assignment, since a
-  code-side default change never retroactively updates an
-  already-saved settings file. Worth him checking Settings > Advanced
-  directly to see what's actually saved, or deleting/editing those
-  specific lines in the config file, rather than assuming it's a fresh
-  code bug if it recurs.
 - Whether the README rewrite (anonymizing the whole changelog, not
   just new sections) should happen as its own dedicated pass.
 - Whether categories need their own rename/delete UI.

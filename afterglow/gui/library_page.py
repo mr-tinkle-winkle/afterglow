@@ -229,11 +229,26 @@ class _VideoGridTab(QWidget):
         # background (Theme itself decides whether these are Afterglow's
         # fixed colors or a live KDE-palette equivalent, so this call
         # doesn't need its own separate on/off check).
+        #
+        # QPalette, not an unscoped setStyleSheet("background-color: ...")
+        # -- an unscoped CSS property on a widget's stylesheet is a
+        # well-known Qt gotcha: Qt's style engine treats it as applying
+        # to the WHOLE subtree (effectively "* { ... }"), which can
+        # bleed into descendant widgets' own painting, INCLUDING ones
+        # with a fully custom paintEvent like VideoCard, on a real
+        # compositor -- and this sandbox's offscreen platform plugin
+        # doesn't reliably reproduce that same cascading behavior, so a
+        # test here passing is not proof it's safe on a real display.
+        # Setting the palette directly instead affects only this one
+        # widget, with no cascading path at all.
         theme = Theme(appearance)
-        library_bg_hex = theme.library_background().name()
-        self.scroll.setStyleSheet(f"QScrollArea {{ background-color: {library_bg_hex}; border: none; }}")
-        self.grid_container.setAutoFillBackground(True)
-        self.grid_container.setStyleSheet(f"background-color: {library_bg_hex};")
+        library_bg = theme.library_background()
+        self.scroll.setFrameShape(QScrollArea.NoFrame)
+        for widget in (self.scroll, self.scroll.viewport(), self.grid_container):
+            widget.setAutoFillBackground(True)
+            palette = widget.palette()
+            palette.setColor(widget.backgroundRole(), library_bg)
+            widget.setPalette(palette)
         self.scroll.setWidget(self.grid_container)
         outer.addWidget(self.scroll, stretch=1)
 
@@ -720,7 +735,7 @@ class LibraryPage(QWidget):
         # empty state.
         self.status_bar = QLabel("")
         self.status_bar.setAlignment(Qt.AlignCenter)
-        self.status_bar.setStyleSheet("background: palette(midlight); padding: 6px;")
+        self.status_bar.setStyleSheet("QLabel { background: palette(midlight); padding: 6px; }")
         self.status_bar.setVisible(False)
         layout.addWidget(self.status_bar)
 
