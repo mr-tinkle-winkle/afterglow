@@ -610,6 +610,60 @@ def clear_edit_backup(video_id: int) -> Video:
     return get_video(video_id)
 
 
+@dataclass
+class LibraryStats:
+    """Snapshot for Settings > Stats. Computed on demand (see
+    compute_stats()) rather than kept live, since a full requery +
+    per-filter scan over the whole library on every card change would
+    be wasted work the vast majority of the time nobody's looking at
+    this tab -- the Stats page itself only calls compute_stats() when
+    its own Refresh button is pressed."""
+    total: int
+    with_filter: int
+    per_filter: dict[str, int]  # tag name -> count, alphabetical (matches all_known_tags() order)
+    unedited: int
+    edited: int
+    avg_length_sec: float | None
+    longest_title: str | None
+    longest_length_sec: float | None
+    shortest_title: str | None
+    shortest_length_sec: float | None
+
+
+def compute_stats() -> "LibraryStats":
+    """Combined Local + Uploaded totals -- list_videos() with no
+    filters already returns every video regardless of upload state."""
+    videos = list_videos()
+    total = len(videos)
+    with_filter = sum(1 for v in videos if v.tags)
+    per_filter = {tag: 0 for tag in all_known_tags()}
+    for v in videos:
+        for tag in v.tags:
+            if tag in per_filter:
+                per_filter[tag] += 1
+    edited = sum(1 for v in videos if v.has_edit)
+    unedited = total - edited
+
+    timed = [v for v in videos if v.duration_sec is not None]
+    if timed:
+        avg_length_sec = sum(v.duration_sec for v in timed) / len(timed)
+        longest = max(timed, key=lambda v: v.duration_sec)
+        shortest = min(timed, key=lambda v: v.duration_sec)
+        longest_title, longest_length_sec = longest.title, longest.duration_sec
+        shortest_title, shortest_length_sec = shortest.title, shortest.duration_sec
+    else:
+        avg_length_sec = None
+        longest_title = longest_length_sec = None
+        shortest_title = shortest_length_sec = None
+
+    return LibraryStats(
+        total=total, with_filter=with_filter, per_filter=per_filter,
+        unedited=unedited, edited=edited, avg_length_sec=avg_length_sec,
+        longest_title=longest_title, longest_length_sec=longest_length_sec,
+        shortest_title=shortest_title, shortest_length_sec=shortest_length_sec,
+    )
+
+
 if __name__ == "__main__":
     import subprocess, tempfile, shutil
 

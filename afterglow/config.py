@@ -112,12 +112,12 @@ class AppearanceSettings:
     # gradient or nothing -- with a plain gray border at this same
     # width), hence the name; was `unedited_highlight_width` before
     # selection existed (see load()'s backward-compat shim). Doubled
-    # twice now, both directly on Max's request once he could see it
-    # rendered for real -- first 9 -> 18, then 18 -> 36 -- this also
-    # doubles the selection ring's width both times, since all of
+    # three times now, each directly on Max's request once he could
+    # see it rendered for real -- 9 -> 18 -> 36 -> 72 -- this also
+    # doubles the selection ring's width every time, since all of
     # these (the unedited-highlight border, the plain edited-video
     # border, and the selection ring) share this one setting.
-    unedited_selected_border_width: int = 36
+    unedited_selected_border_width: int = 72
     # Darkened 35% (100 -> 65) directly on Max's request.
     unedited_highlight_brightness: int = 65
     filter_icon_size: int = 54
@@ -362,12 +362,12 @@ def load() -> AppSettings:
         appearance_raw["afterglow_color_app_background"] = AppearanceSettings.afterglow_color_app_background
     if appearance_raw.get("afterglow_color_turquoise") == "#12b5c8":
         appearance_raw["afterglow_color_turquoise"] = AppearanceSettings.afterglow_color_turquoise
-    if appearance_raw.get("unedited_selected_border_width") in (9, 18):
-        # Doubled twice in quick succession (9 -> 18 -> 36), both times
-        # directly on Max's own request once he could see it rendered
-        # -- same stale-default reasoning as the color migrations
-        # above. A GENUINELY custom value (anything other than these
-        # two specific old defaults) is left alone.
+    if appearance_raw.get("unedited_selected_border_width") in (9, 18, 36):
+        # Doubled three times in quick succession (9 -> 18 -> 36 -> 72),
+        # each time directly on Max's own request once he could see it
+        # rendered for real -- same stale-default reasoning as the
+        # color migrations above. A GENUINELY custom value (anything
+        # other than these three specific old defaults) is left alone.
         appearance_raw["unedited_selected_border_width"] = AppearanceSettings.unedited_selected_border_width
     appearance = AppearanceSettings(**appearance_raw)
     top_level = {

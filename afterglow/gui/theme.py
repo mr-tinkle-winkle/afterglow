@@ -23,6 +23,18 @@ from PySide6.QtWidgets import QApplication
 from .. import config as config_module
 
 
+def contrast_text(bg: QColor) -> QColor:
+    """Standard perceptual-luminance text color pick for readability
+    against an arbitrary background -- factored out of
+    Theme.button_text_color() so other custom-painted widgets (e.g. the
+    Sort popover's tab strip, which has an active/inactive fill that
+    ISN'T always button_color()) can get the same contrast behavior
+    against whichever theme color they're actually painting, not just
+    the button one."""
+    luminance = 0.299 * bg.red() + 0.587 * bg.green() + 0.114 * bg.blue()
+    return QColor(20, 20, 20) if luminance > 140 else QColor(240, 240, 240)
+
+
 class Theme:
     """Cheap to construct -- mirrors this codebase's existing
     "config_module.load() fresh wherever needed" pattern rather than a
@@ -99,9 +111,4 @@ class Theme:
         computed for contrast against button_color() rather than fixed,
         since Afterglow's accent and a live KDE theme's highlight color
         can each be light or dark."""
-        bg = self.button_color()
-        # Standard perceptual luminance -- readable on both light and
-        # dark accent colors without needing a separate configurable
-        # text color.
-        luminance = 0.299 * bg.red() + 0.587 * bg.green() + 0.114 * bg.blue()
-        return QColor(20, 20, 20) if luminance > 140 else QColor(240, 240, 240)
+        return contrast_text(self.button_color())

@@ -328,6 +328,142 @@ Seven consecutive batches of Library/Settings/appearance
 features/bug fixes, given together each time. Newest first.
 
 ### This session
+Four more items, given together: smooth scrolling, a new Settings >
+Stats tab, the Sort popover's horizontal-tabs-as-pages redesign, and
+the search bubble redesign (the last of these was flagged as not-yet-
+built in "Next up" item 7 below for several sessions -- now done).
+All verified with real widget construction + pixel-level checks under
+an offscreen Qt platform (no PySide6/tomli_w/obsws-python/evdev/
+python-mpv were pre-installed in this sandbox this time either --
+installed fresh via pip before testing, same as always).
+
+1. **Smooth scrolling** -- new `afterglow/gui/smooth_scroll_area.py`,
+   `SmoothScrollArea(QScrollArea)`. QScrollArea's default wheel
+   handling jumps the scrollbar by a fixed step per notch with no
+   easing, which is exactly what read as "snappy." Overrides
+   `wheelEvent` to animate the vertical scrollbar's `value` property
+   with `QPropertyAnimation` (`OutCubic`, 220ms) instead of setting it
+   directly. A fast flick (several wheel notches in quick succession)
+   extends the SAME in-flight animation's target rather than starting
+   a new animation from the current (mid-flight) position each time --
+   tested directly (`_anim_target` after a wheel event matches the
+   expected accumulated step), not just that *an* animation exists.
+   Swapped in for the Library grid's `self.scroll` in
+   `library_page.py` -- a drop-in replacement, no other call site
+   needed to change since it only overrides wheel handling.
+2. **Settings > Stats tab** -- new `afterglow/gui/stats_settings_page.py`
+   (`StatsPage`) plus `library.compute_stats()` / `LibraryStats`.
+   Shows total videos; videos-with-a-filter (count | percent-of-total);
+   an indented per-filter breakdown under that (count | percent, one
+   row per known tag, in the same alphabetical order as
+   `all_known_tags()`); unedited/edited counts (count | percent each);
+   and average/longest/shortest video length. Combined Local +
+   Uploaded (`list_videos()` with no filters already returns both).
+   Length stats use the CURRENT (possibly trimmed) `duration_sec`, per
+   Max's direct answer, not the original pre-trim capture length.
+   Percentages deliberately NOT shown on the three length rows --
+   there's no sensible "percent of what" for a duration, only for a
+   count-of-videos subset -- flagged as a judgment call in case Max
+   actually wants a percent shown there anyway (e.g. against some
+   fixed reference length), since the ask's own wording technically
+   covered "all except total." Read-only tab, no save() hook (unlike
+   every other Settings tab) -- deliberately only recomputes when its
+   own Refresh button is clicked, per Max's explicit instruction to
+   avoid a full library scan (every video's tags + duration) running
+   on every "Settings became visible," which is how `FiltersSettingsPage`
+   handles ITS dynamic lists. Verified against a real SQLite-backed
+   library with real ffmpeg-generated clips of different lengths, one
+   trimmed via `apply_trim`, two different tags on different subsets,
+   one favorited -- all the count/percent math checked against hand-
+   computed expected values, not just "it rendered something."
+3. **Sort popover redesign** -- new `afterglow/gui/sort_popover.py`
+   (`SortPopover`, `_PopoverTabButton`, `_RoundedContentArea`). Replaces
+   the combined Filters/Sort By/Info `QMenu` (three labeled sections
+   stacked vertically -- the "vertical tiling" Max wanted gone) with an
+   actual custom popup: three horizontally-tiled tabs switching a real
+   `QStackedWidget` page below, rather than a dropdown list. Rounding
+   exactly as specified: the two OUTER tabs round only their own outer
+   top corner (left tab: top-left only; right tab: top-right only); the
+   MIDDLE tab has no rounding on any corner; no tab rounds a corner
+   that touches a neighbor or the content area below, same "don't round
+   a touching seam" rule already used for the Local/Uploaded tab icons.
+   Verified PIXEL-LEVEL, not just by checking the boolean flags passed
+   in: grabbed the whole (translucent-background) popover as a QImage
+   and sampled each tab's two top corners directly -- left tab's top-
+   left alpha=0 (rounded away) and top-right alpha=255 (square,
+   touching middle); middle tab both alpha=255 (no rounding at all);
+   right tab mirrors left. (Grabbing an individual CHILD widget alone
+   rather than the translucent top-level popover was tried first and
+   gave a false failure -- a bare child widget's own `.grab()` isn't
+   guaranteed an alpha channel, so every pixel read back opaque
+   regardless of what actually got painted; switched to grabbing the
+   popover itself and mapping each button's corner into popover
+   coordinates instead.) Colors: active tab + content panel border use
+   `Theme.accent()`; inactive tabs + content panel fill use
+   `Theme.card_background()` -- "the color scheme as mentioned," reusing
+   the existing Afterglow Theme palette rather than a one-off choice.
+   Added `contrast_text()` to `theme.py` as a standalone function
+   (factored out of `Theme.button_text_color()`, which now just calls
+   it) so the tab buttons' text color can be computed against whichever
+   of the two fills is actually active, not just against
+   `button_color()`. The old QMenu content (favorite checkbox, per-
+   category groups -- now `QGroupBox`es instead of side-opening
+   submenus, since a fixed page has nowhere for a submenu to open TO --
+   uncategorized tags, +Add Filter, Highlight Unedited, the 8 sort
+   options as `QRadioButton`s in a `QButtonGroup`, the 4 Info
+   checkboxes) all moved over as real inline widgets built by three new
+   `_build_filters_page()` / `_build_sort_page()` / `_build_info_page()`
+   methods on `_VideoGridTab`, called from `_rebuild_toolbar_menu()`
+   (name kept as-is despite no longer building a menu, to avoid
+   touching every call site's name too) on the same every-refresh
+   cadence as before. Each page is wrapped in a fixed-height (320px),
+   frame-less `QScrollArea` so a long tag list can't grow the whole
+   popover past the screen. Verified with a real categorized tag
+   (`create_category` + `set_tag_category`) exercising the QGroupBox
+   branch, not just the flat uncategorized-tags path.
+4. **Search bubble redesign** -- new `afterglow/gui/search_bubble.py`
+   (`SearchBubble`). Replaces the old `_toggle_search_visibility`
+   placeholder (which just showed/hid a plain `QLineEdit` sitting
+   beside the Search button in the same row) with an actual popup that
+   appears UNDERNEATH the button and visually attaches to it via a
+   small triangular tail, like a comic speech bubble -- `Qt.Popup` +
+   `WA_TranslucentBackground`, painted as one unified
+   `QPainterPath.united()` of a rounded body and the tail triangle so
+   the outline strokes as one continuous shape rather than two
+   overlapping ones. Outline color is `Theme.accent()` (the button
+   color); fill is `Theme.card_background()` (the video card
+   background color), per Max's explicit color pairing for this one --
+   note this is the OPPOSITE pairing convention from the Sort popover's
+   content panel above only in which theme color plays which role, not
+   a new color source. Auto-closes on an outside click for free via
+   `Qt.Popup`'s own mouse-grab behavior -- no separate "clicked
+   elsewhere" handling needed, confirmed this is what Max wanted when
+   asked directly. `search_edit` is now just an attribute alias
+   pointing at `SearchBubble.line_edit` (`self.search_edit =
+   self.search_bubble.line_edit`) so every existing reference
+   elsewhere in `_VideoGridTab` (the `textChanged` connection,
+   `refresh()`'s `search=self.search_edit.text()`) needed zero changes.
+   Verified pixel-level the same way as the Sort popover: grabbed the
+   whole bubble, confirmed its far corners are transparent (outside
+   both the rounded body and the tail triangle), the body center is
+   opaque, and -- the part actually specific to a speech bubble rather
+   than a plain rounded box -- the tail's tip pixel (directly under
+   where the button sits) is ALSO opaque, i.e. the tail is actually
+   there and pointing at the right place, not just a rounded rectangle
+   with a transparent gap where a tail should be. Also confirmed the
+   fill pixel reads back as EXACTLY `card_background()`'s hex value,
+   not just "some opaque color."
+
+Two unresolved judgment calls from this batch, both flagged above and
+worth a quick confirm next time: whether the three length-stat rows
+in the Stats tab should actually show some form of percent despite it
+not being a video-count subset, and whether per-button hover/pulse
+feedback (like the sidebar nav buttons and the existing `CustomButton`
+have) is wanted on the new Sort popover tabs -- they currently only
+lighten slightly on hover via `_PopoverTabButton`'s own `underMouse()`
+check, no pulse animation.
+
+### Previous session
 Multi-select landed this session too (standard file-manager
 conventions -- plain click selects one and sets an "anchor"; ctrl+click
 toggles one card and moves the anchor to it; shift+click selects the
@@ -1404,6 +1540,43 @@ include a full Advanced Sound feature partway through. In order:
       outline). All three are queued as the very next work -- see
       "Next up".
 
+23. **Quick follow-up batch before a handoff**: `unedited_selected_
+    border_width` doubled a third time (36 -> 72, same migration
+    pattern extended to cover the just-superseded 36 too); the grid's
+    own OUTER edges (not just the gaps between cards) now use
+    `ui_padding` as well, via `grid_layout.setContentsMargins(...)` --
+    previously this was whatever Qt's own default happened to be,
+    unrelated to the Padding setting at all, per a direct follow-up
+    ("the padding between videos should be applied to videos and the
+    edges of the library 'container'"). Verified directly: a
+    distinctive `ui_padding` value shows up as the grid_layout's actual
+    contentsMargins, and the first card's on-screen position is inset
+    by exactly that amount from the container's edge.
+    - **New recovery tools, added directly on request** ("add a
+      'Revert to Default Colors' button, and a 'Revert to Default
+      Settings' button before assuming there is a bug") -- a new
+      "Reset" group in Settings > Advanced with two buttons.
+      **"Revert to Default Colors"** resets just the five Afterglow
+      Theme colors plus the two card-text colors to their dataclass
+      defaults, updates the visible line edits, and saves immediately
+      -- verified it does NOT touch any other (non-color) setting in
+      the same save. **"Revert to Default Settings"** resets the WHOLE
+      `AppearanceSettings` section (padding, border widths, rounding,
+      brightness, everything) to fresh defaults and saves, then tells
+      the person to reopen Settings -- deliberately does NOT try to
+      live-refresh every widget across all four Settings tabs in
+      place, since that's a lot of surface area for what's meant to be
+      a quick diagnostic/recovery tool, not a polished feature. Given
+      how many rounds of "my colors don't seem to be applying" have
+      turned out to be a stale saved value rather than a code bug,
+      this gives a direct, no-explanation-needed way to rule that out
+      before assuming otherwise -- exactly the intent behind the
+      request. Both verified against a real `SettingsPage` (mocking
+      the confirmation dialog, which otherwise blocks waiting for
+      input in an offscreen test -- caught this directly from a hung
+      test run, not guessed).
+    - 42 test suites passing.
+
 ### Two sessions ago
 All four items carried over from that session's "next up" list,
 implemented and verified (not just compiled -- see the offscreen
@@ -1650,21 +1823,64 @@ them:**
 6. Turquoise applied to filters too (Max: optional, "if you get to
    those now").
 7. Everything else in the UI Update spec not yet touched: Comfy UI,
-   Video Info settings tab, the search bubble, the hamburger popover,
-   hover-autoplay-in-grid, middle-click-deselects, Ctrl+R.
+   Video Info settings tab, the hamburger popover, hover-autoplay-in-
+   grid, middle-click-deselects, Ctrl+R. (The search bubble itself is
+   now done -- see "This session" above.)
+8. **New from this session:** confirm whether the Stats tab's three
+   length rows (average/longest/shortest) should show a percent of
+   some kind despite not being a video-count subset, and whether the
+   Sort popover's tab buttons want the same press/hover pulse
+   animation the sidebar nav and existing CustomButton have (they
+   currently only lighten slightly on hover, no pulse).
 
 Given how large this epic is, expect this list to keep growing/
 reordering as each phase actually lands -- treat it as "what's next,"
 not a fixed roadmap.
 
 ## Architecture pointers
-- `afterglow/gui/custom_button.py` -- NEW this session. `CustomButton`
-  (`QToolButton` subclass, fully custom rounded/theme-colored paint),
-  used by the Library's Search/Refresh/Filters/Sort By/Info row.
-  Subclasses `QToolButton` specifically (not `QPushButton`) so
-  `setPopupMode(InstantPopup)` + `setMenu()` keep working unchanged --
-  only the painting is replaced. NOT yet used for the sidebar nav
-  buttons or the Local/Uploaded tab icons (see "Next up").
+- `afterglow/gui/custom_button.py` -- `CustomButton` (`QToolButton`
+  subclass, fully custom rounded/theme-colored paint), used by the
+  Library's Search/Refresh/Sort row. Subclasses `QToolButton`
+  specifically (not `QPushButton`) so `setPopupMode(InstantPopup)` +
+  `setMenu()` keep working unchanged when needed elsewhere -- only the
+  painting is replaced. `sort_btn` no longer uses that popup-menu path
+  as of this session (see `sort_popover.py` below) -- it's now a plain
+  `clicked` connection opening a `SortPopover` instead. NOT yet used
+  for the sidebar nav buttons or the Local/Uploaded tab icons (see
+  "Next up").
+- `afterglow/gui/smooth_scroll_area.py` -- NEW this session.
+  `SmoothScrollArea(QScrollArea)`, animates wheel-scroll instead of
+  jumping per-notch. Swapped in for `_VideoGridTab.scroll`; nothing
+  else needed to change since only `wheelEvent` is overridden.
+- `afterglow/gui/stats_settings_page.py` -- NEW this session.
+  `StatsPage`, added to `SettingsPage`'s tab bar as `self.stats_page`.
+  Read-only, no `save()` -- `SettingsPage._save()` was NOT changed to
+  call one. Pulls from `library.compute_stats()` (`LibraryStats`
+  dataclass in `library.py`), only on its own Refresh button press.
+- `afterglow/gui/sort_popover.py` -- NEW this session. `SortPopover`
+  (the popup itself, `Qt.Popup` + translucent background),
+  `_PopoverTabButton` (each of the 3 tabs, custom rounded paint per
+  position: `left`/`middle`/`right`), `_RoundedContentArea` (the
+  `QStackedWidget` subclass painting the rounded-bottom-corners card
+  behind whichever page is showing). `_VideoGridTab.sort_popover` is
+  built once at construction; `_rebuild_toolbar_menu()` (name kept
+  despite no longer building a `QMenu`) calls
+  `sort_popover.set_page_widget(index, widget)` for each of the three
+  pages on every refresh, preserving whichever page is currently
+  showing.
+- `afterglow/gui/search_bubble.py` -- NEW this session. `SearchBubble`
+  (`Qt.Popup` + translucent background, custom-painted rounded body +
+  triangular tail via `QPainterPath.united()`). Owns the actual
+  `QLineEdit` (`SearchBubble.line_edit`); `_VideoGridTab.search_edit`
+  is just `self.search_bubble.line_edit`, an alias, not a separate
+  widget -- every existing reference to `self.search_edit` elsewhere
+  in that class needed zero changes.
+- `afterglow/gui/theme.py` -- `contrast_text(bg: QColor) -> QColor` is
+  now a standalone module-level function (was inline logic inside
+  `Theme.button_text_color()`, which now just calls it), so other
+  custom-painted widgets whose fill isn't always `button_color()` (the
+  Sort popover's tab strip, specifically) can get the same contrast
+  behavior against whichever color they're actually painting.
 - `afterglow/gui/library_page.py` -- `_VideoGridTab.refresh()` is now a
   thin leading-edge-debounced (750ms) wrapper around the actual rebuild
   logic, renamed to `_do_refresh()`. Any NEW caller that wants "act

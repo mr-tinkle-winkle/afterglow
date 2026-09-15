@@ -27,6 +27,7 @@ from .. import clips
 from ..clips import ClipError
 from .clip_config_row import ClipConfigRow
 from .filters_settings_page import FiltersSettingsPage
+from .stats_settings_page import StatsPage
 
 
 class SettingsPage(QWidget):
@@ -60,9 +61,13 @@ class SettingsPage(QWidget):
         self.filters_settings_page = FiltersSettingsPage()
         tabs.addTab(self.filters_settings_page, "Filters")
 
+        self.stats_page = StatsPage()
+        tabs.addTab(self.stats_page, "Stats")
+
         advanced_page = QWidget()
         advanced_layout = QVBoxLayout(advanced_page)
         advanced_layout.addWidget(self._build_afterglow_theme_group())
+        advanced_layout.addWidget(self._build_reset_group())
         advanced_layout.addStretch(1)
         tabs.addTab(advanced_page, "Advanced")
 
@@ -509,6 +514,57 @@ class SettingsPage(QWidget):
         form.addRow(note)
 
         return group
+
+    def _build_reset_group(self) -> QGroupBox:
+        """Recovery tools for exactly the class of problem that's come
+        up repeatedly: a color or setting default changes in a new
+        build, but an already-saved config keeps showing the OLD
+        value, and it can look indistinguishable from a real rendering
+        bug from the outside. Added directly on Max's request --
+        "before assuming there is a bug" -- as the first thing to try."""
+        group = QGroupBox("Reset")
+        layout = QVBoxLayout(group)
+
+        colors_btn = QPushButton("Revert to Default Colors")
+        colors_btn.clicked.connect(self._revert_default_colors)
+        layout.addWidget(colors_btn)
+
+        settings_btn = QPushButton("Revert to Default Settings")
+        settings_btn.clicked.connect(self._revert_default_settings)
+        layout.addWidget(settings_btn)
+
+        note = QLabel(
+            "\"Revert to Default Colors\" resets just the Afterglow Theme "
+            "and card-text colors above. \"Revert to Default Settings\" "
+            "resets every appearance setting (padding, borders, rounding, "
+            "etc., in addition to colors) -- reopen Settings afterward to "
+            "see the reset values reflected everywhere."
+        )
+        note.setWordWrap(True)
+        layout.addWidget(note)
+        return group
+
+    def _revert_default_colors(self) -> None:
+        defaults = config_module.AppearanceSettings()
+        self.afterglow_accent_edit.setText(defaults.afterglow_color_accent)
+        self.afterglow_card_bg_edit.setText(defaults.afterglow_color_card_background)
+        self.afterglow_app_bg_edit.setText(defaults.afterglow_color_app_background)
+        self.afterglow_library_edit.setText(defaults.afterglow_color_library)
+        self.afterglow_turquoise_edit.setText(defaults.afterglow_color_turquoise)
+        self.card_text_color_edit.setText(defaults.card_text_color)
+        self.card_text_outline_color_edit.setText(defaults.card_text_outline_color)
+        self._save()
+
+    def _revert_default_settings(self) -> None:
+        settings = config_module.load()
+        settings.appearance = config_module.AppearanceSettings()
+        config_module.save(settings)
+        self._settings = settings
+        QMessageBox.information(
+            self, "Reverted",
+            "All appearance settings have been reset to their defaults. "
+            "Reopen Settings to see the reset values reflected in this page.",
+        )
 
     def _build_color_row(self, initial_hex: str) -> tuple[QHBoxLayout, QLineEdit]:
         row = QHBoxLayout()

@@ -13,11 +13,12 @@ grid/search/filter wiring twice.
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal, QSize, QFileSystemWatcher, QTimer, QRectF
-from PySide6.QtGui import QActionGroup, QPainter, QIcon, QPixmap, QColor
+from PySide6.QtGui import QPainter, QIcon, QPixmap, QColor
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLineEdit, QToolButton,
-    QMenu, QScrollArea, QLabel, QTabWidget, QTabBar, QMessageBox, QWidgetAction,
-    QCheckBox, QStyle, QInputDialog, QPushButton,
+    QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
+    QScrollArea, QLabel, QTabWidget, QTabBar, QMessageBox,
+    QCheckBox, QStyle, QInputDialog, QPushButton, QGroupBox, QRadioButton,
+    QButtonGroup,
 )
 
 from .. import library
@@ -29,6 +30,9 @@ from .pulse_animation import PulseAnimator
 from .theme import Theme
 from .rounded_rect import rounded_rect_path
 from .custom_button import CustomButton
+from .smooth_scroll_area import SmoothScrollArea
+from .sort_popover import SortPopover
+from .search_bubble import SearchBubble
 
 # Approximate on-screen width of one card (thumbnail + its own internal
 # margins + the grid's inter-column spacing) -- used only to decide how
@@ -196,8 +200,19 @@ class _VideoGridTab(QWidget):
 
         # ---- search + filters row ----
         top_row = QHBoxLayout()
-        self.search_edit = QLineEdit()
-        self.search_edit.setPlaceholderText("Search title or description...")
+
+        # "Search" custom button -- opens a comic-speech-bubble-style
+        # popup attached directly under the button (SearchBubble), which
+        # owns the actual QLineEdit. self.search_edit still points at
+        # that same widget so the rest of this class (refresh's
+        # search=self.search_edit.text() call) doesn't need to know the
+        # field moved into a popup.
+        self.search_btn = CustomButton("Search")
+        self.search_btn.clicked.connect(self._toggle_search_bubble)
+        top_row.addWidget(self.search_btn)
+
+        self.search_bubble = SearchBubble(self)
+        self.search_edit = self.search_bubble.line_edit
         # Bypasses refresh()'s own leading-edge debounce deliberately --
         # that debounce exists for spam-clicked BUTTONS (Refresh, the
         # sidebar Library nav), where dropping extra rapid triggers is
@@ -205,17 +220,6 @@ class _VideoGridTab(QWidget):
         # case: every keystroke SHOULD filter immediately, that's the
         # whole feature, so this goes straight to the actual rebuild.
         self.search_edit.textChanged.connect(self._do_refresh)
-
-        # "Search" custom button -- toggles the search field's own
-        # visibility for now, as a lightweight stand-in for the eventual
-        # magnifying-glass-expands-into-a-text-bubble redesign (a
-        # separate, not-yet-built piece of the UI Update spec). Placed
-        # first in the row, matching where a leading search icon would
-        # naturally sit.
-        self.search_btn = CustomButton("Search")
-        self.search_btn.clicked.connect(self._toggle_search_visibility)
-        top_row.addWidget(self.search_btn)
-        top_row.addWidget(self.search_edit, stretch=1)
 
         # All five of these are "Custom Buttons" per the UI Update spec
         # -- text-only for now (none of them have a real custom icon
@@ -226,22 +230,22 @@ class _VideoGridTab(QWidget):
         self.refresh_btn.clicked.connect(self.refresh)
         top_row.addWidget(self.refresh_btn)
 
-        # Filters, Sort By, and Info are now ONE combined button/menu,
+        # Filters, Sort By, and Info are still ONE combined button,
         # internally still called "sort_btn" (per Max's own naming) --
         # "Sort" is a placeholder label until Max provides a real icon
-        # for it. The combined menu (built in _rebuild_toolbar_menu(),
+        # for it. Now opens a SortPopover (three horizontally-tiled
+        # custom pages) instead of a QMenu -- see _rebuild_toolbar_menu,
         # called both here and on every refresh() since the Filters
-        # section depends on which tags currently exist) lays out all
-        # three as labeled sections in one QMenu rather than three
-        # separate popups.
+        # page's content depends on which tags currently exist.
         self.sort_btn = CustomButton("Sort")
-        self.sort_btn.setPopupMode(QToolButton.InstantPopup)
+        self.sort_popover = SortPopover(self)
+        self.sort_btn.clicked.connect(lambda: self.sort_popover.show_below(self.sort_btn))
         self._rebuild_toolbar_menu()
         top_row.addWidget(self.sort_btn)
         outer.addLayout(top_row)
 
         # ---- grid ----
-        self.scroll = QScrollArea()
+        self.scroll = SmoothScrollArea()
         self.scroll.setWidgetResizable(True)
         self.grid_container = _SelectionClearingContainer()
         self.grid_container.background_clicked.connect(self._clear_selection)
@@ -256,6 +260,15 @@ class _VideoGridTab(QWidget):
         appearance = config_module.load().appearance
         self.grid_layout.setVerticalSpacing(appearance.ui_padding)
         self.grid_layout.setHorizontalSpacing(appearance.ui_padding)
+        # Same padding value on the grid's own OUTER edges too, not just
+        # between cards -- per Max's direct follow-up ("the padding
+        # between videos should be applied to videos and the edges of
+        # the library 'container'"). Previously this used whatever
+        # QGridLayout's own default contentsMargins happened to be,
+        # unrelated to the Padding setting at all.
+        self.grid_layout.setContentsMargins(
+            appearance.ui_padding, appearance.ui_padding, appearance.ui_padding, appearance.ui_padding
+        )
         # The grid's own background -- a shade darker than the app-wide
         # background (Theme itself decides whether these are Afterglow's
         # fixed colors or a live KDE-palette equivalent, so this call
@@ -292,79 +305,80 @@ class _VideoGridTab(QWidget):
     # ------------------------------------------------------------ filters menu
 
     def _rebuild_toolbar_menu(self) -> None:
-        """Filters, Sort By, and Info used to be three separate
-        buttons/popups -- now one combined button (self.sort_btn,
-        placeholder-labeled "Sort" until Max supplies a real icon) with
-        one menu laid out as three labeled sections. Rebuilt on every
-        refresh() (not just at construction) since the Filters section
-        depends on which tags currently exist -- the Sort By and Info
-        sections are static enough that rebuilding them too is
-        harmless, and keeping all three in one function avoids the
-        three separate rebuild call-sites silently drifting out of
+        """Filters, Sort By, and Info are one combined button
+        (self.sort_btn, placeholder-labeled "Sort" until Max supplies a
+        real icon) opening a SortPopover -- three horizontally-tiled
+        custom pages rather than one long vertical QMenu. Rebuilt on
+        every refresh() (not just at construction) since the Filters
+        page's content depends on which tags currently exist -- the
+        Sort By and Info pages are static enough that rebuilding them
+        too is harmless, and keeping all three in one function avoids
+        the three separate rebuild call-sites silently drifting out of
         sync with each other over time."""
-        menu = QMenu(self.sort_btn)
+        self.sort_popover.set_page_widget(0, self._build_filters_page())
+        self.sort_popover.set_page_widget(1, self._build_sort_page())
+        self.sort_popover.set_page_widget(2, self._build_info_page())
 
-        # ---- Filters section ----
-        filters_header = menu.addAction("Filters")
-        filters_header.setEnabled(False)
-        favorite_checkbox = QCheckBox(f"{FAVORITE_STAR} Favorite", menu)
+    def _build_filters_page(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(8, 8, 8, 8)
+
+        favorite_checkbox = QCheckBox(f"{FAVORITE_STAR} Favorite")
         favorite_checkbox.setChecked(self._favorite_only)
         favorite_checkbox.toggled.connect(self._toggle_favorite_filter)
-        favorite_action = QWidgetAction(menu)
-        favorite_action.setDefaultWidget(favorite_checkbox)
-        menu.addAction(favorite_action)
+        layout.addWidget(favorite_checkbox)
 
         all_tags = library.all_known_tags()
         grouped, uncategorized = library.tags_grouped_by_category()
 
-        def _make_checkbox(tag: str, target_menu: QMenu) -> None:
-            checkbox = FilterCheckBox(tag, target_menu)
+        def _make_checkbox(tag: str, target_layout: QVBoxLayout) -> None:
+            checkbox = FilterCheckBox(tag)
             if tag in self._excluded_tags:
                 checkbox.set_state(FILTER_STATE_EXCLUDE)
             elif tag in self._active_tags:
                 checkbox.set_state(FILTER_STATE_INCLUDE)
             checkbox.state_changed.connect(self._on_filter_state_changed)
-            action = QWidgetAction(target_menu)
-            action.setDefaultWidget(checkbox)
-            target_menu.addAction(action)
+            target_layout.addWidget(checkbox)
 
         if not all_tags:
-            no_tags_action = menu.addAction("(no tags yet)")
-            no_tags_action.setEnabled(False)
+            no_tags_label = QLabel("(no tags yet)")
+            no_tags_label.setStyleSheet("color: gray;")
+            layout.addWidget(no_tags_label)
 
-        # Categories render as submenus that open to the side, like
-        # folders -- each one is its own QMenu added via addMenu(),
-        # which is what gives the side-opening-submenu behavior for
-        # free rather than needing to build that interaction by hand.
+        # Categories render as their own group box (was a side-opening
+        # submenu in the old QMenu version -- a fixed page has nowhere
+        # for a submenu to open TO, so each category is just its own
+        # labeled group instead, in the same vertical flow).
         for category_name, tag_names in grouped.items():
-            category_menu = QMenu(category_name, menu)
+            group = QGroupBox(category_name)
+            group_layout = QVBoxLayout(group)
             for tag in tag_names:
-                _make_checkbox(tag, category_menu)
-            menu.addMenu(category_menu)
+                _make_checkbox(tag, group_layout)
+            layout.addWidget(group)
 
         for tag in uncategorized:
-            _make_checkbox(tag, menu)
+            _make_checkbox(tag, layout)
 
         add_filter_btn = QPushButton("+ Add Filter")
         add_filter_btn.setFlat(True)
         add_filter_btn.clicked.connect(self._add_new_filter)
-        add_filter_action = QWidgetAction(menu)
-        add_filter_action.setDefaultWidget(add_filter_btn)
-        menu.addAction(add_filter_action)
+        layout.addWidget(add_filter_btn)
 
-        highlight_checkbox = QCheckBox("Highlight Unedited", menu)
+        highlight_checkbox = QCheckBox("Highlight Unedited")
         highlight_checkbox.setChecked(self._highlight_unedited)
         highlight_checkbox.toggled.connect(self._toggle_highlight_unedited)
-        highlight_action = QWidgetAction(menu)
-        highlight_action.setDefaultWidget(highlight_checkbox)
-        menu.addAction(highlight_action)
+        layout.addWidget(highlight_checkbox)
 
-        # ---- Sort By section ----
-        menu.addSeparator()
-        sort_header = menu.addAction("Sort By")
-        sort_header.setEnabled(False)
-        sort_group = QActionGroup(menu)
-        sort_group.setExclusive(True)
+        layout.addStretch(1)
+        return self._wrap_scrollable(page)
+
+    def _build_sort_page(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(8, 8, 8, 8)
+
+        group = QButtonGroup(page)
         # (label, sort_by constant) pairs, each immediately followed by
         # its inverse -- matches the requested ordering of each mode
         # next to its opposite.
@@ -379,16 +393,20 @@ class _VideoGridTab(QWidget):
             ("Video length (long to short)", library.SORT_LENGTH_LONG_TO_SHORT),
         ]
         for label, sort_by in sort_options:
-            action = menu.addAction(label)
-            action.setCheckable(True)
-            action.setChecked(sort_by == self._sort_by)
-            action.triggered.connect(lambda checked, s=sort_by: self._set_sort_by(s))
-            sort_group.addAction(action)
+            radio = QRadioButton(label)
+            radio.setChecked(sort_by == self._sort_by)
+            radio.toggled.connect(lambda checked, s=sort_by: self._set_sort_by(s) if checked else None)
+            group.addButton(radio)
+            layout.addWidget(radio)
 
-        # ---- Info section ----
-        menu.addSeparator()
-        info_header = menu.addAction("Info")
-        info_header.setEnabled(False)
+        layout.addStretch(1)
+        return self._wrap_scrollable(page)
+
+    def _build_info_page(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(8, 8, 8, 8)
+
         card_info = config_module.load().card_info
         info_options = [
             ("Show Filters", "show_filters", card_info.show_filters),
@@ -397,14 +415,28 @@ class _VideoGridTab(QWidget):
             ("Show Creation Date", "show_creation_date", card_info.show_creation_date),
         ]
         for label, field_name, checked in info_options:
-            checkbox = QCheckBox(label, menu)
+            checkbox = QCheckBox(label)
             checkbox.setChecked(checked)
             checkbox.toggled.connect(lambda is_checked, f=field_name: self._set_card_info_field(f, is_checked))
-            action = QWidgetAction(menu)
-            action.setDefaultWidget(checkbox)
-            menu.addAction(action)
+            layout.addWidget(checkbox)
 
-        self.sort_btn.setMenu(menu)
+        layout.addStretch(1)
+        return self._wrap_scrollable(page)
+
+    @staticmethod
+    def _wrap_scrollable(page: QWidget) -> QScrollArea:
+        """Bounds each SortPopover page to a comfortable fixed height
+        (a Filters page with many tags could otherwise grow the whole
+        popover past the screen) while keeping the popover's own
+        painted background visible through it."""
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.NoFrame)
+        scroll.setFixedHeight(320)
+        scroll.viewport().setAutoFillBackground(False)
+        scroll.setAttribute(Qt.WA_TranslucentBackground, True)
+        scroll.setWidget(page)
+        return scroll
 
     def _toggle_favorite_filter(self, checked: bool) -> None:
         self._favorite_only = checked
@@ -458,15 +490,18 @@ class _VideoGridTab(QWidget):
         config_module.save(settings)
         self.refresh()
 
-    def _toggle_search_visibility(self) -> None:
-        """Placeholder behavior for the "Search" custom button until the
-        full magnifying-glass-expands-into-a-text-bubble redesign gets
-        built -- just shows/hides the existing search field. Doesn't
-        clear its text on hide, so re-showing it picks up right where
-        it left off."""
-        self.search_edit.setVisible(not self.search_edit.isVisible())
-        if self.search_edit.isVisible():
-            self.search_edit.setFocus()
+    def _toggle_search_bubble(self) -> None:
+        """Opens the comic-bubble-style search popup attached under the
+        Search button (see SearchBubble). Qt.Popup already closes it on
+        an outside click, so a second click on this same button (which
+        counts as "outside" the popup, per Qt's own popup-grab
+        handling) will typically be seen as already-hidden by the time
+        this runs and just reopen it -- text isn't cleared either way,
+        so repeated toggling picks up right where it left off."""
+        if self.search_bubble.isVisible():
+            self.search_bubble.hide()
+        else:
+            self.search_bubble.show_below(self.search_btn)
 
     def _set_sort_by(self, sort_by: str) -> None:
         self._sort_by = sort_by
