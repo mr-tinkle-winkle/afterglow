@@ -7,7 +7,8 @@ loop / UI never blocks waiting on device reads.
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, QThread, Signal
-from PySide6.QtWidgets import QDialog, QLabel, QVBoxLayout, QPushButton, QMessageBox
+from PySide6.QtWidgets import QDialog, QLabel, QVBoxLayout, QMessageBox
+from .custom_button import CustomButton
 
 from ..hotkeys import EvdevHotkeyListener, RecorderAdapter
 
@@ -51,7 +52,7 @@ class HotkeyRecordDialog(QDialog):
         self.status_label.setWordWrap(True)
         layout.addWidget(self.status_label)
 
-        cancel_btn = QPushButton("Cancel")
+        cancel_btn = CustomButton("Cancel")
         cancel_btn.clicked.connect(self.reject)
         layout.addWidget(cancel_btn)
 

@@ -256,6 +256,19 @@ class AppearanceSettings:
 @dataclass
 class AppSettings:
     clips_dir: str = str(DEFAULT_CLIPS_DIR)
+    # When True, the GUI skips its own filesystem scan/ingest/prune on
+    # every open and refresh -- that work happens continuously in the
+    # background daemon instead (see daemon.py's _library_scan_loop),
+    # and the GUI just re-queries the DB (already-fast, no filesystem
+    # walk) and relies on its existing DB-file-watcher to pick up
+    # whatever the daemon just wrote. Per Max's own suspicion that
+    # this is better for drive health (one process doing the
+    # filesystem walking instead of both the GUI and daemon
+    # potentially doing it independently) -- default False (GUI does
+    # its own scan, the original/unchanged behavior) since this is a
+    # genuinely new code path he wants to be able to compare against,
+    # not something to switch to blind.
+    offload_library_scan_to_daemon: bool = False
     default_sound_path: str = ""  # legacy -- specifically the "replay buffer completed" keyframe's sound (see keyframes.py)
     # "Advanced Sound": a distinct sound for each pipeline checkpoint in
     # keyframes.PIPELINE_KEYFRAMES, keyed by its keyframe id. All optional

@@ -328,6 +328,279 @@ Seven consecutive batches of Library/Settings/appearance
 features/bug fixes, given together each time. Newest first.
 
 ### This session
+Max provided a real app icon (replacing the `library.png`-derived
+placeholder from last session) and gave three more animation notes:
+
+1. **New app icon applied.** Regenerated the full 9-size icon set
+   (16 through 512) from the provided image via the same Pillow resize
+   pipeline as before -- same `data/icons/hicolor/<size>x<size>/apps/
+   afterglow.png` paths flake.nix's `postInstall` expects, just sourced
+   from the real icon now instead of the placeholder. Verified each
+   generated file is actually its claimed size.
+2. **Settings animation removed.** The "grow out of the clicked tab
+   button" overlay effect added last session (`reveal_from_point`,
+   called from `_on_settings_tab_clicked`) is gone -- tab switching is
+   back to a plain, instant `QStackedWidget.setCurrentIndex()`, per
+   Max's direct "get rid of the animations in the settings."
+3. **Search bubble now grows out of the Search icon**, matching what
+   Sort already had. `SearchBubble.show_below()` now calls the same
+   `animate_popup_from_point()` SortPopover uses, computing its usual
+   final position/size and animating geometry + opacity from a small
+   point at the Search button's own center up to it, instead of
+   jumping straight there.
+4. **Found and fixed a real bug while verifying #3 actually looked
+   right, not just that SOME animation was running.** Both
+   `SearchBubble` (`setFixedSize`) and `SortPopover` (`setFixedWidth`)
+   had hard size constraints that silently clamped
+   `animate_popup_from_point()`'s small starting geometry straight back
+   up to the FINAL size the instant `setGeometry()` was called --
+   meaning the animation was technically executing (the position
+   component moved correctly) but the size never actually appeared to
+   shrink, defeating the entire point of a "grow" effect. A SECOND,
+   independent source of the same clamping was also found and fixed:
+   even after removing those explicit constraints, each widget's own
+   `QLayout` (a `QHBoxLayout`/`QVBoxLayout` with real child widgets --
+   a line edit + checkbox for the bubble, tab buttons + a stack for the
+   popover) was AUTOMATICALLY computing and enforcing a minimum size
+   from those children's own size hints, which caused the exact same
+   clamping via a completely different mechanism. Fixed both: replaced
+   `setFixedSize`/`setFixedWidth` with plain `resize()` calls (a
+   one-time hint, not a hard floor/ceiling), and set
+   `QLayout.setSizeConstraint(QLayout.SetNoConstraint)` on both
+   widgets' own top-level layouts so Qt stops trying to auto-derive a
+   minimum size from their children at all -- safe in both cases
+   specifically because `show_below()` always asserts an exact final
+   geometry itself, so nothing actually depends on the layout's own
+   size negotiation to pick these widgets' size. Verified by checking
+   each popup's ACTUAL size in the very first frame after the
+   triggering click (not after letting the animation run) -- both now
+   genuinely measure roughly 24x24px at that moment, growing to their
+   real final size (260x64 for the bubble, 320xcontent-height for the
+   popover) only as the animation progresses. Two of my own smoke-test
+   assertions had to be updated alongside this fix -- they'd been
+   written checking geometry/pixel state immediately after a
+   `show_below()` call, back when that was still instantaneous;
+   they now wait for the animation to settle first, which is exactly
+   what exposed this bug's fix needed verifying properly rather than
+   just trusting the animation "ran."
+
+### Previous session
+**Build-breaking bug, reported directly from a real `nixos-rebuild-flaked`
+failure log:** `flake.nix`'s `postInstall` has always expected
+`data/applications/afterglow.desktop` and a full `data/icons/hicolor/
+<size>x<size>/apps/afterglow.png` icon set (9 sizes: 16/22/24/32/48/64/
+128/256/512) to exist in the repo -- but neither ever actually existed;
+these were apparently expected by whichever earlier session wrote that
+part of flake.nix but never followed through on creating the files
+themselves, so the build has presumably been broken this way for a
+while, just not hit/reported until now. Fixed: added
+`data/applications/afterglow.desktop` (standard freedesktop entry --
+Name, Comment, Exec=afterglow, Icon=afterglow, Categories=AudioVideo;
+Video;Recorder;) and the full 9-size icon set, generated from
+`library.png` (the sidebar's own Library icon) resized down via
+Pillow, since no dedicated app logo/icon has ever been provided --
+flagged here as a placeholder specifically so a future session (or
+Max directly) knows to swap in a real one if/when he has one, rather
+than assuming this was a deliberate icon choice. Verified: the
+`.desktop` file parses correctly as valid INI/desktop-entry syntax,
+and every one of the 9 generated PNGs is confirmed to actually be
+its claimed size (not just resized-then-forgot-to-check). Not
+verified against an actual `nix build` (no Nix in this sandbox) --
+verified as far as this environment allows; the path structure exactly
+matches what flake.nix's `postInstall` install commands reference.
+
+### Previous session
+Four more items:
+
+1. **Full custom-widget sweep, "make sure EVERYTHING in settings is
+   custom."** Replaced essentially every remaining native
+   `QPushButton`/text-mode `QToolButton` with `CustomButton`, and
+   every remaining `QCheckBox` with `CustomCheckBox`, across
+   settings_page.py, filters_settings_page.py, clip_config_row.py,
+   advanced_sound_dialog.py, hotkey_record_dialog.py, and -- since it
+   was still using native KDE checkboxes/a native "+" button in its
+   own Filters context menu, caught in the same sweep -- video_card.py.
+   Cleaned up every import left unused by these swaps. Found and fixed
+   one real bug along the way: several buttons called `.setFlat(True)`
+   after becoming `CustomButton`s, which crashed immediately --
+   `setFlat()` is `QPushButton`-only (`CustomButton` subclasses
+   `QToolButton`, which has no such method, and doesn't need it --
+   `CustomButton` already paints its own flat/borderless look
+   unconditionally). Caught by the FULL regression suite actually
+   failing outright, not silently -- removed the now-meaningless calls.
+   `QComboBox` deliberately NOT touched -- a genuine custom dropdown
+   (its own popup list, not just recoloring the closed box) is a
+   meaningfully bigger build than a coat of paint, flagged rather than
+   attempted here.
+2. **Clip Options' collapse arrows** -- new `collapse_toggle_button.py`,
+   `CollapseToggleButton`. A circle containing a ">" that smoothly
+   rotates 90 degrees (`QVariantAnimation`, 180ms, `OutCubic`) between
+   pointing right (collapsed) and down (expanded), replacing the old
+   `QToolButton` arrow-type indicator that just snapped between two
+   different glyphs.
+3. **Sort popover and Settings tabs now "grow out of" whichever button
+   opened them**, instead of just appearing -- new `scale_reveal.py`,
+   two different mechanisms for two different kinds of widget:
+   - `SortPopover` is a genuine top-level `Qt.Popup` window, so
+     `animate_popup_from_point()` animates its own geometry AND
+     opacity directly (0 -> full size, 0 -> full opacity, both
+     `OutCubic`) from a small point near the Sort button up to its
+     real final position/size -- nothing else's layout depends on a
+     popup's geometry, so animating it directly is both simpler and
+     correct.
+   - Settings' tab pages live inside a `QStackedWidget`, whose layout
+     fully owns and re-asserts each page's real geometry -- animating
+     that directly would just get fought and overridden on the very
+     next layout pass. Instead `reveal_from_point()` switches the page
+     instantly (unchanged `QStackedWidget.setCurrentIndex`, so nothing
+     about the real page is ever delayed), THEN grabs a pixmap
+     snapshot of the now-fully-correct page and overlays a temporary
+     animated copy of it growing from the clicked tab button's
+     position up to the page's real rect, deleting itself once the
+     animation finishes. Verified the overlay actually appears
+     immediately after the click, that the real page has ALREADY
+     switched (not waiting on the animation), and that the overlay
+     widget cleans itself up once the animation completes.
+4. **Library scanning can now be offloaded to the background daemon**
+   (new `AppSettings.offload_library_scan_to_daemon`, off by default,
+   toggle in Settings > Advanced > Performance). Per Max's own
+   suspicion that this is better for drive health: with it on,
+   `LibraryPage` skips its own `scan_and_ingest_new_videos()`/
+   `prune_missing_videos()`/`remove_stray_orig_entries()` calls
+   entirely (both at construction and on every `refresh()`) -- that
+   filesystem walk now happens in a NEW daemon thread
+   (`_library_scan_loop`, every 5s) instead, reusing the exact same
+   library.py functions. The GUI still calls each tab's own
+   `refresh()` either way (a plain DB re-query, no filesystem walk),
+   and picks up whatever the daemon just wrote via the EXISTING
+   `QFileSystemWatcher` on the DB file -- no new plumbing needed there,
+   since that watcher already exists for exactly this
+   "something external changed the DB" case. The setting is re-read
+   fresh every daemon loop iteration (config.load() is cheap), so
+   toggling it in the GUI takes effect within one interval on the
+   daemon side too, no restart needed either way -- same "reload
+   without restart" pattern `_reload_loop` already uses for hotkey
+   config changes. Verified in both directions: with the setting off,
+   the GUI's own scan still runs exactly as before; with it on, the
+   GUI's scan is confirmed skipped (a manually-dropped-in clip does
+   NOT appear until something else ingests it), and a daemon-style
+   scan followed by a plain `refresh()` picks it up correctly.
+
+### Previous session
+Seven more direct pieces of feedback on last session's work, all
+implemented and pixel-verified:
+
+1. **Sidebar rewritten for real this time.** Last session's "turquoise
+   layer underneath the old border system" was explicitly NOT what Max
+   wanted -- he asked again for "the same custom button type as
+   switching between local/uploaded videos in the library." Done
+   properly now: `_ScalingIconButton` (border-gradient images, hue
+   shift, per-button brightness multipliers, icon darkening, its own
+   pulse animation) is DELETED entirely, along with its `_darken_pixmap`
+   helper. `library_page.py`'s `_LibraryTabButton` is renamed to
+   `LibraryTabButton` (dropped the leading underscore since it's
+   genuinely shared across modules now) and gained a third `position`
+   value, `'full'` (rounds all four corners -- for a button that
+   doesn't touch its neighbors, unlike Local/Uploaded's `'left'`/
+   `'right'` pair). All three sidebar buttons (Library, Editor,
+   Settings) now use it with `position='full'`, and the sidebar's own
+   `QVBoxLayout` spacing/margins are set to `appearance.ui_padding` --
+   the EXACT same value the Library grid uses between cards, per Max's
+   explicit "ensure that the padding between them is the same padding
+   between videos" (not a separately-tuned constant that happens to
+   look similar). Verified pixel-level: the gap between buttons equals
+   `ui_padding` exactly, and every corner of every button now rounds
+   (previously Library/Editor shared a flush, unrounded seam -- gone
+   now that real padding separates them).
+2. **Search bubble tail -- found the actual geometric cause of the
+   harsh cutoff.** The previous fix's horizontal-tangent control point
+   sat at `base_y` (`_TAIL_OVERLAP` px INSIDE the body, added for the
+   separate outline-seam fix) rather than at `_TAIL_HEIGHT` (the
+   actual visible boundary where the tail meets the body). The
+   VISIBLE part of the curve -- everything above `_TAIL_HEIGHT` -- was
+   therefore cut off before ever reaching that horizontal tangent,
+   meeting the body's flat edge at whatever slope it happened to have
+   at that height. Fixed by splitting each side into a visible cubic
+   (peak down to `(base_x, _TAIL_HEIGHT)`, with the tangent
+   guaranteed horizontal exactly there since the control point shares
+   that exact y) plus a separate, purely straight, entirely-hidden
+   `lineTo` continuing the remaining `_TAIL_OVERLAP` px into the body
+   for the outline-seam fix -- decoupling "looks smooth where it
+   matters" from "genuinely overlaps for the union fix" instead of
+   asking one single curve to do both. (A pixel-width-per-row
+   measurement approach was tried first and initially looked like it
+   showed a remaining "jump" -- turned out to be a red herring: any
+   curve with a true horizontal tangent naturally concentrates most of
+   its horizontal unfolding in the row(s) right before it goes flat,
+   since dy/dt approaches zero there. That's the correct signature of
+   smooth flattening, not evidence against it -- confirmed by checking
+   the actual math (the control point's y exactly equals its
+   endpoint's y, which is what guarantees a horizontal tangent for a
+   cubic Bezier) rather than continuing to chase pixel measurements
+   that don't actually mean what they first appeared to.)
+3. **Enter now toggles the confirm checkbox** instead of independently
+   firing `search_confirmed` -- `line_edit.returnPressed` connects to
+   `confirm_checkbox.toggle()`, and the checkbox's `toggled` (not
+   `clicked`) signal is what actually emits `search_confirmed`, so
+   both a real click and a programmatic `.toggle()` fire it exactly
+   once and the checkbox's own visible state always reflects whichever
+   happened most recently.
+4. **Default thumbnail outline color** (the plain fill for an edited,
+   non-highlighted video) changed from `app_background()` to
+   `accent()` -- matches the info box's own color now, per direct
+   request (supersedes last session's confirmation that the old
+   app_background color was "right" -- that was true then, this is a
+   deliberate change now).
+5. **Every text field in Settings is now `CustomLineEdit`** (new file),
+   matching the search bar's own box style (rounded, card_background
+   fill, accent outline) -- text editing itself (cursor, selection,
+   IME) is untouched native QLineEdit behavior; only the background/
+   border painting is replaced, via the same "transparent stylesheet +
+   custom paintEvent drawn first" layering trick CustomButton and
+   _InfoBox already use. Covers all 14 real QLineEdit instances
+   across settings_page.py, filters_settings_page.py,
+   clip_config_row.py, and advanced_sound_dialog.py (opened FROM
+   Settings > Clipping, so in scope) -- verified by walking every
+   QLineEdit-family widget in a real constructed SettingsPage and
+   confirming each one is a CustomLineEdit (excluding QSpinBox's own
+   internal `qt_spinbox_lineedit` children, which are a different
+   widget category entirely, not something asked about). The Library
+   search bar's own line edit deliberately did NOT change to this
+   class -- it already sits inside SearchBubble's own custom-painted
+   comic-bubble shape, so wrapping it in a SECOND box would just
+   double up the background/border.
+6. **Custom scroll bar for the Library grid** -- new
+   `custom_scrollbar.py`, `CustomScrollBar(QScrollBar)`. 2x
+   `PM_ScrollBarExtent` wide, handle in `accent()` (info/button blue),
+   track in `card_background()` (video card blue). Uses
+   `QStyleOptionSlider` + the current style's own `subControlRect()`
+   to find the handle's actual geometry rather than computing it by
+   hand, which is what keeps real drag/click/wheel behavior intact
+   underneath the custom paint. Swapped in via
+   `SmoothScrollArea.setVerticalScrollBar()` -- last session's wheel-
+   animation logic (`wheelEvent`) needed zero changes since it already
+   only touches `verticalScrollBar().value()`, not the bar widget's
+   identity.
+7. **The 4 video-card action buttons (Edit/Copy/Filters/Delete)** now
+   fill with the card TEXT color instead of the usual accent, with
+   their own stroked outline in the card text's own outline color --
+   "similar to the text" -- and are roughly 2x their previous size
+   (48px tall + a larger font, vs. 24px/default font). `CustomButton`
+   gained `set_fill_color()`/`set_outline()` as opt-in overrides (both
+   default to None/0, so every OTHER CustomButton in the app --
+   Search/Refresh/Sort, the Sort popover's tabs, Settings' tabs --
+   is completely unaffected); the label's own text color now contrasts
+   against whichever fill is ACTUALLY in use (`contrast_text(bg)`,
+   computed after any hover/press darkening) rather than always
+   against the theme's plain `button_color()`, which matters now that
+   a button's fill isn't always the same accent color for every
+   CustomButton instance.
+
+Everything verified with real widget construction under offscreen Qt
+plus pixel-level checks, same discipline as every session before this
+one -- not just "it compiles."
+
+### Previous session
 A huge combined batch -- eleven items given together, plus a real,
 long-standing bug finally root-caused. Newest first isn't practical
 here given the volume; grouped by area instead.
@@ -2148,24 +2421,22 @@ widget-level testing note above):
   toggles tag-on-video, the other toggles include/exclude-from-search).
 
 ## Next up
-**Explicitly queued and re-requested this round, in the order Max gave
-them:**
-1. **Custom text fields app-wide** -- replace every native QLineEdit
-   (tag rename, hex color fields, hotkey capture, clip-title editing,
-   etc.) with a search-bar-style custom box (video-card-background
-   fill, accent outline, rounded). Not started -- a much broader sweep
-   across many files than anything else in the last batch, deliberately
-   deferred rather than rushed.
-2. **Sidebar full custom-button treatment, if wanted.** This session
-   added a turquoise background LAYER underneath `_ScalingIconButton`'s
-   existing rendering (border gradients, hue shift, per-button
-   brightness multipliers, icon darkening, pulse animation all still
-   intact) rather than a ground-up replacement matching Library's
-   simpler `_LibraryTabButton`. Worth confirming whether that scoped
-   version is what Max wanted, or whether he wants the border-
-   customization suite dropped entirely in favor of an exact match to
-   the Library tab buttons' simplicity.
-3. **Lazy-load the grid**: load the first ~36 videos so the app opens
+**One item flagged this session, not attempted:**
+- **Custom `QComboBox` styling.** Every native button/checkbox/text
+  field is now a custom widget (see "This session" above), but
+  `QComboBox` (category picker, filter-display mode, startup window
+  mode, etc.) is still native/KDE-styled -- a real custom dropdown
+  needs its own popup list, not just recoloring the closed box, which
+  is a meaningfully bigger build than anything else in this sweep.
+  Worth confirming whether Max wants this before starting it.
+
+**Nothing else explicitly re-requested is still outstanding** -- the
+previous round's two open items (custom text fields app-wide, and the
+sidebar's full custom-button treatment) are both done; see the
+"This session" entry above that one.
+
+**Still queued from earlier sessions:**
+1. **Lazy-load the grid**: load the first ~36 videos so the app opens
    immediately, then load more as the user scrolls further down,
    rather than building every card synchronously up front. Explicitly
    OK with videos still loading in the background per Max ("its okay
@@ -2173,9 +2444,6 @@ them:**
    initial batch-limited `_do_refresh()`, and a scroll-position
    listener on `_VideoGridTab.scroll` that appends the next batch when
    the user nears the bottom of what's currently loaded.
-4. **Custom scroll bar**: turquoise handle, app-background track,
-   outlined in the video-card color. A new `QScrollBar` subclass with
-   custom paint, swapped in via `QScrollArea.setVerticalScrollBar()`.
 
 **Open questions from recent sessions, still unconfirmed:**
 - Whether the Stats tab's three length rows (average/longest/shortest)
@@ -2231,7 +2499,46 @@ reordering as each phase actually lands -- treat it as "what's next,"
 not a fixed roadmap.
 
 ## Architecture pointers
-- **New this session:**
+- **New this most recent session** (sidebar rewrite, search bubble
+  taper fix, custom text fields, custom scroll bar, action button
+  styling):
+  - `afterglow/gui/library_page.py` -- `_LibraryTabButton` renamed to
+    `LibraryTabButton` (dropped the leading underscore -- genuinely
+    shared across modules now) and gained a third `position` value,
+    `'full'` (rounds all four corners, for a button that doesn't touch
+    its neighbors).
+  - `afterglow/gui/main_window.py` -- `_ScalingIconButton` and
+    `_darken_pixmap` are GONE (deleted, not deprecated). The sidebar's
+    three nav buttons are `LibraryTabButton(icon, 'full')` now.
+    `resizeEvent` computes each button's icon size directly (width-
+    based, same formula the old `icon_size_for_width` used) and calls
+    `set_icon_target_size()` -- no more per-button size_basis
+    distinction, since all three are narrow enough that width is
+    always the limiting dimension now.
+  - `afterglow/gui/custom_line_edit.py` -- NEW. `CustomLineEdit`,
+    applied everywhere a visible QLineEdit exists in Settings-adjacent
+    UI (settings_page.py, filters_settings_page.py,
+    clip_config_row.py, advanced_sound_dialog.py). NOT applied to
+    `_VideoGridTab.search_edit` (never shown -- pure text storage) or
+    `SearchBubble.line_edit` (already sits inside that widget's own
+    custom-painted bubble shape).
+  - `afterglow/gui/custom_scrollbar.py` -- NEW. `CustomScrollBar`,
+    swapped into `SmoothScrollArea` via `setVerticalScrollBar()`.
+  - `afterglow/gui/custom_button.py` -- `CustomButton` gained
+    `set_fill_color()` / `set_outline()`, both opt-in (None/0 by
+    default, so every other CustomButton is unaffected). The default-
+    path text color is now `contrast_text(bg)` computed against
+    whichever fill is ACTUALLY rendering (post hover/press darkening),
+    not always `button_text_color()`'s plain `button_color()` basis.
+  - `afterglow/gui/video_card.py` -- the plain (non-highlighted)
+    thumbnail border fill changed from `app_background()` to
+    `accent()`. `_build_action_buttons_row()` now calls
+    `set_fill_color(card_text_color)` / `set_outline(card_text_outline_
+    color, card_text_outline_width)` on each of its 4 buttons, plus
+    `setMinimumHeight(48)` and a larger font.
+- **New this session** (an earlier one -- kept for reference; note the
+  `_LibraryTabButton` name it mentions is now just `LibraryTabButton`,
+  per the rename directly above):
   - `afterglow/gui/library_page.py` -- `_composite_tab_icon()` and
     `_PulsingTabBar` are GONE (deleted, not deprecated) -- replaced by
     `_LibraryTabButton(QAbstractButton)`, a genuinely independent-

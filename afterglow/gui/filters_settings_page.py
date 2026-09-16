@@ -17,8 +17,8 @@ Three groups:
 from __future__ import annotations
 
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QGroupBox, QLabel, QPushButton,
-    QFileDialog, QComboBox, QCheckBox, QScrollArea, QFrame, QLineEdit,
+    QWidget, QVBoxLayout, QHBoxLayout, QGroupBox, QLabel,
+    QFileDialog, QComboBox, QScrollArea, QFrame, QLineEdit,
     QMessageBox, QTabWidget, QFormLayout, QInputDialog, QToolButton,
     QMenu, QWidgetAction,
 )
@@ -27,6 +27,9 @@ from PySide6.QtGui import QColor
 from .. import library
 from .. import config as config_module
 from .. import autofilter
+from .custom_line_edit import CustomLineEdit
+from .custom_button import CustomButton
+from .custom_checkbox import CustomCheckBox
 
 _ICON_LOCATIONS = [
     ("Above", "above"),
@@ -63,27 +66,27 @@ class _TagIconRow(QFrame):
         self.icon_preview.setStyleSheet("color: gray;")
         row.addWidget(self.icon_preview)
 
-        set_icon_btn = QPushButton("Set Icon...")
+        set_icon_btn = CustomButton("Set Icon...")
         set_icon_btn.clicked.connect(self._browse_icon)
         row.addWidget(set_icon_btn)
 
-        clear_btn = QPushButton("Clear Icon")
+        clear_btn = CustomButton("Clear Icon")
         clear_btn.clicked.connect(self._clear_icon)
         row.addWidget(clear_btn)
 
         # Filter Outline's per-tag color override (Settings > General
         # for the global default/toggle) -- empty means "use the
         # global default", same convention as icon_path above.
-        self.outline_color_edit = QLineEdit(self.outline_color)
+        self.outline_color_edit = CustomLineEdit(self.outline_color)
         self.outline_color_edit.setPlaceholderText("(default)")
         self.outline_color_edit.setMaxLength(9)
         self.outline_color_edit.setFixedWidth(80)
         row.addWidget(self.outline_color_edit)
-        outline_pick_btn = QPushButton("Outline...")
+        outline_pick_btn = CustomButton("Outline...")
         outline_pick_btn.clicked.connect(self._pick_outline_color)
         row.addWidget(outline_pick_btn)
 
-        rename_btn = QPushButton("Rename")
+        rename_btn = CustomButton("Rename")
         rename_btn.clicked.connect(self._rename)
         row.addWidget(rename_btn)
 
@@ -171,7 +174,7 @@ class _MultiFilterSelectButton(QToolButton):
             action = menu.addAction("(no filters yet)")
             action.setEnabled(False)
         for tag in all_tags:
-            checkbox = QCheckBox(tag, menu)
+            checkbox = CustomCheckBox(tag, menu)
             checkbox.setChecked(tag in self._selected)
             checkbox.toggled.connect(lambda checked, t=tag: self._toggle(t, checked))
             action = QWidgetAction(menu)
@@ -217,7 +220,7 @@ class _AutoFilterRow(QFrame):
         self._refresh_running_apps(keep_text=app_match)
         row.addWidget(self.app_combo, stretch=1)
 
-        refresh_apps_btn = QPushButton("\u21bb")  # "↻"
+        refresh_apps_btn = CustomButton("\u21bb")  # "↻"
         refresh_apps_btn.setToolTip("Refresh running app list")
         refresh_apps_btn.setFixedWidth(28)
         refresh_apps_btn.clicked.connect(lambda: self._refresh_running_apps())
@@ -230,7 +233,7 @@ class _AutoFilterRow(QFrame):
         self.mode_combo.setCurrentIndex(index if index >= 0 else 0)
         row.addWidget(self.mode_combo)
 
-        self.remove_btn = QPushButton("Remove")
+        self.remove_btn = CustomButton("Remove")
         row.addWidget(self.remove_btn)
 
     def _refresh_running_apps(self, keep_text: str | None = None) -> None:
@@ -270,11 +273,11 @@ class FiltersSettingsPage(QWidget):
         display_group = QGroupBox("Display")
         form = QFormLayout(display_group)
 
-        self.show_names_check = QCheckBox()
+        self.show_names_check = CustomCheckBox()
         self.show_names_check.setChecked(self._settings.filter_display.show_filter_names)
         form.addRow("Show Filter Names under Clips:", self.show_names_check)
 
-        self.show_icons_check = QCheckBox()
+        self.show_icons_check = CustomCheckBox()
         self.show_icons_check.setChecked(self._settings.filter_display.show_filter_icons)
         form.addRow("Show Filter Icons:", self.show_icons_check)
 
@@ -343,7 +346,7 @@ class FiltersSettingsPage(QWidget):
         scroll.setWidget(rows_container)
         layout.addWidget(scroll, stretch=1)
 
-        add_btn = QPushButton("+ Add Rule")
+        add_btn = CustomButton("+ Add Rule")
         add_btn.clicked.connect(lambda: self._add_auto_row())
         layout.addWidget(add_btn)
 

@@ -14,7 +14,7 @@ from PySide6.QtCore import Qt, Signal, QSize, QRectF
 from PySide6.QtGui import QPixmap, QPainter, QColor, QIcon, QFontMetrics, QPen
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QMenu, QMessageBox, QLineEdit,
-    QPushButton, QHBoxLayout, QInputDialog, QCheckBox, QWidgetAction,
+    QHBoxLayout, QInputDialog, QWidgetAction,
 )
 
 from .. import library, thumbnails, config as config_module
@@ -24,6 +24,7 @@ from .rounded_rect import rounded_rect_path, round_pixmap_corners
 from .theme import Theme
 from .outlined_label import OutlinedLabel
 from .custom_button import CustomButton
+from .custom_checkbox import CustomCheckBox
 
 THUMB_SIZE = QSize(400, 224)  # 16:9, doubled from the original 200x112
 FAVORITE_STAR = "\u2605"  # "★"
@@ -659,8 +660,8 @@ class VideoCard(QWidget):
 
         # Video-thumbnail border: the unedited-highlight gradient for an
         # unedited video (with highlighting enabled and the card not
-        # selected), otherwise a plain app_background()-colored fill --
-        # mutually exclusive, so every card gets exactly one border
+        # selected), otherwise a plain accent()-colored fill (matches
+        # the info box's own color) -- mutually exclusive, so every card gets exactly one border
         # treatment around its thumbnail, never both and never neither.
         # Both branches fill the SAME video_box margin region (radius,
         # position, and thickness all identical -- the only difference
@@ -693,15 +694,18 @@ class VideoCard(QWidget):
                 painter.setClipping(False)
             else:
                 # FILLS the same video_box margin region the gradient
-                # branch above fills, with app_background() as a flat
-                # color instead of a stretched gradient image -- NOT a
-                # thin stroke drawn at video_box's own OUTER edge (an
-                # earlier version of this did that, and it was wrong:
-                # video_box's outer edge sits border_width pixels away
-                # from the thumbnail's actual edge, so a stroke drawn
-                # there left a visible gap of plain card_background()
-                # color showing through in between. Reported directly
-                # as "a few pixels off, showing the video card color in
+                # branch above fills, with the info-box color
+                # (Theme.accent()) as a flat color instead of a
+                # stretched gradient image -- was app_background()
+                # until Max asked directly for this to match the info
+                # box's own color instead. NOT a thin stroke drawn at
+                # video_box's own OUTER edge (an earlier version of
+                # this did that, and it was wrong: video_box's outer
+                # edge sits border_width pixels away from the
+                # thumbnail's actual edge, so a stroke drawn there left
+                # a visible gap of plain card_background() color
+                # showing through in between. Reported directly as "a
+                # few pixels off, showing the video card color in
                 # between". Using the exact same fill-then-let-thumb_
                 # label-cover-the-center technique as the gradient
                 # branch guarantees this one matches it in BOTH
@@ -709,10 +713,10 @@ class VideoCard(QWidget):
                 # to keep two separate geometries in sync by hand.
                 if video_radius:
                     painter.setClipPath(rounded_rect_path(video_rect, video_radius))
-                    painter.fillRect(video_rect, self._theme.app_background())
+                    painter.fillRect(video_rect, self._theme.accent())
                     painter.setClipping(False)
                 else:
-                    painter.fillRect(video_rect, self._theme.app_background())
+                    painter.fillRect(video_rect, self._theme.accent())
 
         painter.end()
         return pixmap
@@ -801,7 +805,14 @@ class VideoCard(QWidget):
         acts on just THIS card's video, reusing the exact same handler
         methods the right-click menu's single-video actions use, so
         there's one source of truth for what each action actually
-        does."""
+        does.
+
+        Styled distinctly from every other CustomButton in the app --
+        filled with the card TEXT color (not the usual accent), with
+        its own stroked outline using the card text's own outline
+        color, "similar to the text" -- and roughly twice the size of
+        a default CustomButton (48px tall + a larger font, vs. the
+        24px/default-font used elsewhere)."""
         row = QWidget()
         layout = QHBoxLayout(row)
         layout.setContentsMargins(0, 4, 0, 0)
@@ -814,7 +825,12 @@ class VideoCard(QWidget):
         ]
         for label, handler in actions:
             btn = CustomButton(label)
-            btn.setMinimumHeight(24)
+            btn.setMinimumHeight(48)  # ~2x the 24px used elsewhere
+            font = btn.font()
+            font.setPointSizeF(font.pointSizeF() * 1.3 if font.pointSizeF() > 0 else 11.0)
+            btn.setFont(font)
+            btn.set_fill_color(self._appearance.card_text_color)
+            btn.set_outline(self._appearance.card_text_outline_color, self._appearance.card_text_outline_width)
             btn.clicked.connect(handler)
             layout.addWidget(btn)
         return row
@@ -841,7 +857,7 @@ class VideoCard(QWidget):
         menu = QMenu("Filters", parent_menu)
 
         def make_checkbox(tag: str, target_menu: QMenu) -> None:
-            checkbox = QCheckBox(tag, target_menu)
+            checkbox = CustomCheckBox(tag, target_menu)
             checkbox.setChecked(all(tag in v.tags for v in target_videos))
 
             def on_toggled(checked: bool, tag=tag) -> None:
@@ -874,8 +890,7 @@ class VideoCard(QWidget):
             make_checkbox(tag, menu)
 
         menu.addSeparator()
-        add_filter_btn = QPushButton("+ Add Filter")
-        add_filter_btn.setFlat(True)
+        add_filter_btn = CustomButton("+ Add Filter")
         add_filter_btn.clicked.connect(self._create_new_filter)
         add_filter_action = QWidgetAction(menu)
         add_filter_action.setDefaultWidget(add_filter_btn)

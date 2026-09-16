@@ -12,11 +12,14 @@ from __future__ import annotations
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QLabel, QLineEdit,
-    QSpinBox, QToolButton, QPushButton, QFileDialog, QFrame,
+    QSpinBox, QToolButton, QFileDialog, QFrame,
 )
 
 from ..hotkeys import ComboError, parse_combo
 from .hotkey_record_dialog import HotkeyRecordDialog
+from .custom_line_edit import CustomLineEdit
+from .collapse_toggle_button import CollapseToggleButton
+from .custom_button import CustomButton
 
 
 class ClipConfigRow(QFrame):
@@ -34,17 +37,14 @@ class ClipConfigRow(QFrame):
 
         # ---- collapsible header ----
         header = QHBoxLayout()
-        self.toggle_btn = QToolButton()
-        self.toggle_btn.setCheckable(True)
-        self.toggle_btn.setChecked(True)
-        self.toggle_btn.setArrowType(Qt.DownArrow)
+        self.toggle_btn = CollapseToggleButton(expanded=True)
         self.toggle_btn.clicked.connect(self._on_toggle)
         header.addWidget(self.toggle_btn)
 
         self.summary_label = QLabel()
         header.addWidget(self.summary_label, stretch=1)
 
-        self.delete_btn = QPushButton("Delete")
+        self.delete_btn = CustomButton("Delete")
         self.delete_btn.clicked.connect(self.delete_requested.emit)
         header.addWidget(self.delete_btn)
 
@@ -54,7 +54,7 @@ class ClipConfigRow(QFrame):
         self.body = QWidget()
         form = QFormLayout(self.body)
 
-        self.name_edit = QLineEdit(name)
+        self.name_edit = CustomLineEdit(name)
         self.name_edit.textChanged.connect(self._on_any_change)
         form.addRow("Name:", self.name_edit)
 
@@ -66,22 +66,22 @@ class ClipConfigRow(QFrame):
         form.addRow("Length:", self.length_spin)
 
         sound_row = QHBoxLayout()
-        self.sound_edit = QLineEdit(sound_path or "")
+        self.sound_edit = CustomLineEdit(sound_path or "")
         self.sound_edit.setPlaceholderText("(use default sound)")
         self.sound_edit.textChanged.connect(self._on_any_change)
-        sound_browse = QPushButton("Browse...")
+        sound_browse = CustomButton("Browse...")
         sound_browse.clicked.connect(self._browse_sound)
         sound_row.addWidget(self.sound_edit)
         sound_row.addWidget(sound_browse)
         form.addRow("Sound:", sound_row)
 
         hotkey_row = QHBoxLayout()
-        self.hotkey_edit = QLineEdit(hotkey or "")
+        self.hotkey_edit = CustomLineEdit(hotkey or "")
         self.hotkey_edit.setReadOnly(True)
         self.hotkey_edit.setPlaceholderText("(no hotkey set)")
-        record_btn = QPushButton("Record...")
+        record_btn = CustomButton("Record...")
         record_btn.clicked.connect(self._record_hotkey)
-        self.clear_hotkey_btn = QToolButton()
+        self.clear_hotkey_btn = CustomButton()
         self.clear_hotkey_btn.setText("\u2715")  # "✕"
         self.clear_hotkey_btn.setToolTip("Clear hotkey")
         self.clear_hotkey_btn.clicked.connect(self._clear_hotkey)
@@ -98,7 +98,6 @@ class ClipConfigRow(QFrame):
     def _on_toggle(self) -> None:
         expanded = self.toggle_btn.isChecked()
         self.body.setVisible(expanded)
-        self.toggle_btn.setArrowType(Qt.DownArrow if expanded else Qt.RightArrow)
 
     def _on_any_change(self, *_args) -> None:
         self._update_summary()

@@ -20,7 +20,7 @@ import tomllib
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QGroupBox, QLineEdit,
     QSpinBox, QDoubleSpinBox, QPushButton, QFileDialog, QLabel, QScrollArea,
-    QMessageBox, QCheckBox, QComboBox, QColorDialog, QStackedWidget, QButtonGroup,
+    QMessageBox, QComboBox, QColorDialog, QStackedWidget, QButtonGroup,
 )
 from PySide6.QtGui import QColor
 
@@ -31,6 +31,8 @@ from .clip_config_row import ClipConfigRow
 from .filters_settings_page import FiltersSettingsPage
 from .stats_settings_page import StatsPage
 from .custom_button import CustomButton
+from .custom_checkbox import CustomCheckBox
+from .custom_line_edit import CustomLineEdit
 
 
 class SettingsPage(QWidget):
@@ -102,6 +104,7 @@ class SettingsPage(QWidget):
         advanced_layout.addWidget(self._build_afterglow_theme_group())
         advanced_layout.addWidget(self._build_reset_group())
         advanced_layout.addWidget(self._build_import_export_group())
+        advanced_layout.addWidget(self._build_performance_group())
         advanced_layout.addStretch(1)
         _add_settings_tab("Advanced", advanced_page)
 
@@ -112,7 +115,7 @@ class SettingsPage(QWidget):
         save_row = QHBoxLayout()
         self.status_label = QLabel("")
         save_row.addWidget(self.status_label, stretch=1)
-        save_btn = QPushButton("Save Settings")
+        save_btn = CustomButton("Save Settings")
         save_btn.clicked.connect(self._save)
         save_row.addWidget(save_btn)
         outer.addLayout(save_row)
@@ -125,7 +128,7 @@ class SettingsPage(QWidget):
         group = QGroupBox("OBS Connection")
         form = QFormLayout(group)
 
-        self.obs_host_edit = QLineEdit(self._settings.obs.host)
+        self.obs_host_edit = CustomLineEdit(self._settings.obs.host)
         form.addRow("Host:", self.obs_host_edit)
 
         self.obs_port_spin = QSpinBox()
@@ -134,9 +137,9 @@ class SettingsPage(QWidget):
         form.addRow("Port:", self.obs_port_spin)
 
         pw_row = QHBoxLayout()
-        self.obs_password_edit = QLineEdit(self._settings.obs.password)
+        self.obs_password_edit = CustomLineEdit(self._settings.obs.password)
         self.obs_password_edit.setEchoMode(QLineEdit.Password)
-        show_btn = QPushButton("Show")
+        show_btn = CustomButton("Show")
         show_btn.setCheckable(True)
         show_btn.toggled.connect(
             lambda checked: self.obs_password_edit.setEchoMode(
@@ -161,7 +164,7 @@ class SettingsPage(QWidget):
         )
         form.addRow("Wait after OBS Replay Buffer Finishes:", self.obs_wait_after_finish_spin)
 
-        test_btn = QPushButton("Test Connection")
+        test_btn = CustomButton("Test Connection")
         test_btn.clicked.connect(self._test_obs_connection)
         form.addRow("", test_btn)
 
@@ -201,17 +204,17 @@ class SettingsPage(QWidget):
         form = QFormLayout(group)
 
         dir_row = QHBoxLayout()
-        self.clips_dir_edit = QLineEdit(self._settings.clips_dir)
-        dir_browse = QPushButton("Browse...")
+        self.clips_dir_edit = CustomLineEdit(self._settings.clips_dir)
+        dir_browse = CustomButton("Browse...")
         dir_browse.clicked.connect(self._browse_clips_dir)
         dir_row.addWidget(self.clips_dir_edit)
         dir_row.addWidget(dir_browse)
         form.addRow("Clips folder:", dir_row)
 
         sound_row = QHBoxLayout()
-        self.default_sound_edit = QLineEdit(self._settings.default_sound_path)
+        self.default_sound_edit = CustomLineEdit(self._settings.default_sound_path)
         self.default_sound_edit.setPlaceholderText("(no default sound)")
-        sound_browse = QPushButton("Browse...")
+        sound_browse = CustomButton("Browse...")
         sound_browse.clicked.connect(self._browse_default_sound)
         sound_row.addWidget(self.default_sound_edit)
         sound_row.addWidget(sound_browse)
@@ -224,7 +227,7 @@ class SettingsPage(QWidget):
         self._pending_advanced_sounds = dict(self._settings.advanced_sounds)
         self._pending_error_sounds = dict(self._settings.error_sounds)
         self._pending_default_error_sound = self._settings.default_error_sound_path
-        advanced_sound_btn = QPushButton("Advanced Sound...")
+        advanced_sound_btn = CustomButton("Advanced Sound...")
         advanced_sound_btn.clicked.connect(self._open_advanced_sound_dialog)
         form.addRow("", advanced_sound_btn)
 
@@ -238,7 +241,7 @@ class SettingsPage(QWidget):
         a = self._settings.appearance
 
         # ---- UI update (Phase 1) ----
-        self.rounded_corners_check = QCheckBox()
+        self.rounded_corners_check = CustomCheckBox()
         self.rounded_corners_check.setChecked(a.rounded_corners_enabled)
         form.addRow("Rounded Corners:", self.rounded_corners_check)
 
@@ -248,7 +251,7 @@ class SettingsPage(QWidget):
         self.rounded_corner_radius_spin.setValue(a.rounded_corner_radius)
         form.addRow("Corner Radius:", self.rounded_corner_radius_spin)
 
-        self.custom_buttons_check = QCheckBox()
+        self.custom_buttons_check = CustomCheckBox()
         self.custom_buttons_check.setChecked(a.custom_buttons_enabled)
         self.custom_buttons_check.setToolTip(
             "Custom-painted buttons matching your KDE theme's colors, in "
@@ -256,7 +259,7 @@ class SettingsPage(QWidget):
         )
         form.addRow("Custom Buttons:", self.custom_buttons_check)
 
-        self.afterglow_theme_check = QCheckBox()
+        self.afterglow_theme_check = CustomCheckBox()
         self.afterglow_theme_check.setChecked(a.afterglow_theme_enabled)
         self.afterglow_theme_check.setToolTip(
             "Overrides Custom Buttons' color source with fixed colors instead "
@@ -276,16 +279,16 @@ class SettingsPage(QWidget):
         form.addRow("Padding:", self.ui_padding_spin)
 
         card_text_row = QHBoxLayout()
-        self.card_text_color_edit = QLineEdit(a.card_text_color)
-        card_text_pick = QPushButton("Pick...")
+        self.card_text_color_edit = CustomLineEdit(a.card_text_color)
+        card_text_pick = CustomButton("Pick...")
         card_text_pick.clicked.connect(lambda: self._pick_color(self.card_text_color_edit))
         card_text_row.addWidget(self.card_text_color_edit)
         card_text_row.addWidget(card_text_pick)
         form.addRow("Card Text Color:", card_text_row)
 
         card_text_outline_row = QHBoxLayout()
-        self.card_text_outline_color_edit = QLineEdit(a.card_text_outline_color)
-        card_text_outline_pick = QPushButton("Pick...")
+        self.card_text_outline_color_edit = CustomLineEdit(a.card_text_outline_color)
+        card_text_outline_pick = CustomButton("Pick...")
         card_text_outline_pick.clicked.connect(lambda: self._pick_color(self.card_text_outline_color_edit))
         card_text_outline_row.addWidget(self.card_text_outline_color_edit)
         card_text_outline_row.addWidget(card_text_outline_pick)
@@ -306,7 +309,7 @@ class SettingsPage(QWidget):
         )
         form.addRow("Card Text Outline Width:", self.card_text_outline_width_spin)
 
-        self.filter_outline_check = QCheckBox()
+        self.filter_outline_check = CustomCheckBox()
         self.filter_outline_check.setChecked(a.filter_outline_enabled)
         self.filter_outline_check.setToolTip(
             "Outlines each filter icon's own shape (not a square) in the Card "
@@ -315,7 +318,7 @@ class SettingsPage(QWidget):
         )
         form.addRow("Filter Outline:", self.filter_outline_check)
 
-        self.resize_text_check = QCheckBox()
+        self.resize_text_check = CustomCheckBox()
         self.resize_text_check.setChecked(a.resize_text_to_fit)
         self.resize_text_check.setToolTip(
             "Shrinks a clip's title font just enough to keep it on one line "
@@ -373,9 +376,9 @@ class SettingsPage(QWidget):
         # AppearanceSettings.sidebar_border_image_path's own comment for
         # why this one isn't per-button like the multipliers above).
         sidebar_image_row = QHBoxLayout()
-        self.sidebar_border_image_edit = QLineEdit(a.sidebar_border_image_path)
+        self.sidebar_border_image_edit = CustomLineEdit(a.sidebar_border_image_path)
         self.sidebar_border_image_edit.setPlaceholderText("(use the built-in gradient)")
-        sidebar_image_browse = QPushButton("Browse...")
+        sidebar_image_browse = CustomButton("Browse...")
         sidebar_image_browse.clicked.connect(
             lambda: self._browse_border_image(self.sidebar_border_image_edit)
         )
@@ -422,9 +425,9 @@ class SettingsPage(QWidget):
         form.addRow("Unedited Highlight Brightness:", self.unedited_highlight_brightness_spin)
 
         unedited_image_row = QHBoxLayout()
-        self.unedited_border_image_edit = QLineEdit(a.unedited_border_image_path)
+        self.unedited_border_image_edit = CustomLineEdit(a.unedited_border_image_path)
         self.unedited_border_image_edit.setPlaceholderText("(use the built-in gradient)")
-        unedited_image_browse = QPushButton("Browse...")
+        unedited_image_browse = CustomButton("Browse...")
         unedited_image_browse.clicked.connect(
             lambda: self._browse_border_image(self.unedited_border_image_edit)
         )
@@ -439,9 +442,9 @@ class SettingsPage(QWidget):
         form.addRow("Unedited Border Hue Shift:", self.unedited_border_hue_shift_spin)
 
         selected_image_row = QHBoxLayout()
-        self.selected_border_image_edit = QLineEdit(a.selected_border_image_path)
+        self.selected_border_image_edit = CustomLineEdit(a.selected_border_image_path)
         self.selected_border_image_edit.setPlaceholderText("(use the built-in gold/white gradient)")
-        selected_image_browse = QPushButton("Browse...")
+        selected_image_browse = CustomButton("Browse...")
         selected_image_browse.clicked.connect(
             lambda: self._browse_border_image(self.selected_border_image_edit)
         )
@@ -574,11 +577,11 @@ class SettingsPage(QWidget):
         group = QGroupBox("Reset")
         layout = QVBoxLayout(group)
 
-        colors_btn = QPushButton("Revert to Default Colors")
+        colors_btn = CustomButton("Revert to Default Colors")
         colors_btn.clicked.connect(self._revert_default_colors)
         layout.addWidget(colors_btn)
 
-        settings_btn = QPushButton("Revert to Default Settings")
+        settings_btn = CustomButton("Revert to Default Settings")
         settings_btn.clicked.connect(self._revert_default_settings)
         layout.addWidget(settings_btn)
 
@@ -604,11 +607,11 @@ class SettingsPage(QWidget):
         group = QGroupBox("Import / Export Settings")
         layout = QVBoxLayout(group)
 
-        export_btn = QPushButton("Export Settings...")
+        export_btn = CustomButton("Export Settings...")
         export_btn.clicked.connect(self._export_settings)
         layout.addWidget(export_btn)
 
-        import_btn = QPushButton("Import Settings...")
+        import_btn = CustomButton("Import Settings...")
         import_btn.clicked.connect(self._import_settings)
         layout.addWidget(import_btn)
 
@@ -616,6 +619,27 @@ class SettingsPage(QWidget):
             "Exports/imports the whole config file (all tabs, not just "
             "Advanced) as a single .toml file. Importing replaces every "
             "current setting and reopens this page to reflect it."
+        )
+        note.setWordWrap(True)
+        layout.addWidget(note)
+        return group
+
+    def _build_performance_group(self) -> QGroupBox:
+        group = QGroupBox("Performance")
+        layout = QVBoxLayout(group)
+
+        self.offload_scan_checkbox = CustomCheckBox("Offload library scanning to the background daemon")
+        self.offload_scan_checkbox.setChecked(self._settings.offload_library_scan_to_daemon)
+        self.offload_scan_checkbox.toggled.connect(self._save)
+        layout.addWidget(self.offload_scan_checkbox)
+
+        note = QLabel(
+            "When on, the app itself skips scanning the clips folder and "
+            "cleaning up the library on every open/refresh -- the background "
+            "daemon does that continuously instead (it's already running for "
+            "hotkey capture), and the app just reads whatever it's already "
+            "found. Fewer redundant filesystem scans overall. Takes effect "
+            "immediately, no restart needed for either the app or the daemon."
         )
         note.setWordWrap(True)
         layout.addWidget(note)
@@ -670,9 +694,9 @@ class SettingsPage(QWidget):
 
     def _build_color_row(self, initial_hex: str) -> tuple[QHBoxLayout, QLineEdit]:
         row = QHBoxLayout()
-        edit = QLineEdit(initial_hex)
+        edit = CustomLineEdit(initial_hex)
         edit.setMaxLength(9)  # "#RRGGBB" or "#AARRGGBB"
-        pick_btn = QPushButton("Pick...")
+        pick_btn = CustomButton("Pick...")
         pick_btn.clicked.connect(lambda: self._pick_color(edit))
         row.addWidget(edit)
         row.addWidget(pick_btn)
@@ -711,7 +735,7 @@ class SettingsPage(QWidget):
         scroll.setWidget(self.rows_container)
         outer.addWidget(scroll, stretch=1)
 
-        add_btn = QPushButton("+ Add Clip Option")
+        add_btn = CustomButton("+ Add Clip Option")
         add_btn.clicked.connect(lambda: self._add_row())
         outer.addWidget(add_btn)
 
@@ -768,6 +792,7 @@ class SettingsPage(QWidget):
         self._settings.advanced_sounds = dict(self._pending_advanced_sounds)
         self._settings.error_sounds = dict(self._pending_error_sounds)
         self._settings.default_error_sound_path = self._pending_default_error_sound
+        self._settings.offload_library_scan_to_daemon = self.offload_scan_checkbox.isChecked()
 
         a = self._settings.appearance
         a.rounded_corners_enabled = self.rounded_corners_check.isChecked()

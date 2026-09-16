@@ -28,6 +28,8 @@ import time
 
 from . import db
 from . import clips
+from . import config
+from . import library
 from .clips import ClipConfig
 from .hotkeys import ComboStateMachine, EvdevHotkeyListener
 
@@ -35,6 +37,17 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 logger = logging.getLogger("clipping-daemon")
 
 RELOAD_INTERVAL_SEC = 2.0
+
+# How often this checks whether offload_library_scan_to_daemon is on
+# and, if so, does the actual filesystem scan/ingest/prune -- separate
+# from RELOAD_INTERVAL_SEC (hotkey config reload) since a filesystem
+# walk is real work worth doing less often than a cheap DB fingerprint
+# check. The setting itself is re-read from disk every iteration
+# (config.load() is cheap -- just a TOML parse), so toggling it in the
+# GUI takes effect here within one interval, no daemon restart needed,
+# matching the same "reload without restart" pattern _reload_loop
+# already uses for hotkey config changes.
+LIBRARY_SCAN_INTERVAL_SEC = 5.0
 
 # If a single capture takes longer than this, the worker loop stops
 # waiting on it and moves on to any further queued hotkey presses, rather
@@ -97,6 +110,32 @@ class ClipDaemon:
             except Exception as e:
                 logger.error(f"Error reloading clip configs: {e}")
             time.sleep(RELOAD_INTERVAL_SEC)
+
+    # ------------------------------------------------------------ library scan
+
+    def _library_scan_loop(self) -> None:
+        """Does the SAME filesystem scan/ingest/prune LibraryPage's own
+        refresh() normally does -- see library_page.py's __init__/
+        refresh() -- but only while offload_library_scan_to_daemon is
+        on, and only from here, so it happens exactly once per interval
+        regardless of how many times the GUI itself gets opened/
+        refreshed in that window, rather than once per GUI refresh on
+        top of whatever this loop is already doing."""
+        while not self._stop_flag.is_set():
+            try:
+                if config.load().offload_library_scan_to_daemon:
+                    newly_added = library.scan_and_ingest_new_videos()
+                    removed_ids = library.prune_missing_videos()
+                    stray_ids = library.remove_stray_orig_entries()
+                    if newly_added or removed_ids or stray_ids:
+                        logger.info(
+                            f"Library scan: +{len(newly_added)} new, "
+                            f"-{len(removed_ids)} missing, "
+                            f"-{len(stray_ids)} stray .orig entries"
+                        )
+            except Exception as e:
+                logger.error(f"Error during library scan: {e}")
+            time.sleep(LIBRARY_SCAN_INTERVAL_SEC)
 
     # ------------------------------------------------------------ trigger worker
 
@@ -167,6 +206,7 @@ class ClipDaemon:
 
         threading.Thread(target=self._reload_loop, daemon=True).start()
         threading.Thread(target=self._trigger_worker_loop, daemon=True).start()
+        threading.Thread(target=self._library_scan_loop, daemon=True).start()
 
         combos = self.state_machine.registered_combos()
         logger.info(f"Daemon ready. Active hotkeys: {combos or '(none configured yet)'}")

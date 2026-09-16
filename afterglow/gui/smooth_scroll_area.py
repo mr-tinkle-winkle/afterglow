@@ -16,8 +16,10 @@ gives one continuous, smoothly-accelerating scroll for a fast swipe.
 """
 from __future__ import annotations
 
-from PySide6.QtCore import QEasingCurve, QPropertyAnimation
+from PySide6.QtCore import Qt, QEasingCurve, QPropertyAnimation
 from PySide6.QtWidgets import QScrollArea
+
+from .custom_scrollbar import CustomScrollBar
 
 
 class SmoothScrollArea(QScrollArea):
@@ -31,6 +33,15 @@ class SmoothScrollArea(QScrollArea):
         super().__init__(parent)
         self._anim: QPropertyAnimation | None = None
         self._anim_target: int = 0
+        # Custom-painted (2x width, accent handle, card_background
+        # track) rather than the native KDE-styled bar, per Max's
+        # direct request. setVerticalScrollBar takes ownership of the
+        # old one and installs this one in its place -- QScrollArea's
+        # own scrolling logic (value range, page steps, this class's
+        # own wheelEvent animation above) all keep working unchanged
+        # since only the BAR WIDGET's painting changed, not the
+        # QAbstractSlider machinery underneath it.
+        self.setVerticalScrollBar(CustomScrollBar(Qt.Vertical))
 
     def wheelEvent(self, event) -> None:
         bar = self.verticalScrollBar()

@@ -17,7 +17,7 @@ from PySide6.QtGui import QPainter, QPixmap, QColor
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLineEdit,
     QScrollArea, QLabel, QStackedWidget, QMessageBox,
-    QStyle, QInputDialog, QPushButton, QGroupBox, QRadioButton,
+    QStyle, QInputDialog, QGroupBox, QRadioButton,
     QButtonGroup, QAbstractButton, QApplication,
 )
 
@@ -45,7 +45,7 @@ FILTER_STATE_INCLUDE = "include"
 FILTER_STATE_EXCLUDE = "exclude"
 
 
-class _LibraryTabButton(QAbstractButton):
+class LibraryTabButton(QAbstractButton):
     """Local/Uploaded's own custom page-switch button -- replaces
     QTabWidget's default page-header behavior (asked to be replaced
     several times; see HANDOFF.md). Two independent icon sizes are now
@@ -53,17 +53,25 @@ class _LibraryTabButton(QAbstractButton):
     since there's no more QTabBar single-shared-iconSize limitation to
     work around via the old canvas-compositing trick.
 
-    Rounding matches the same "don't round a corner that's touching
-    another element" rule used everywhere else: the left (Local) button
-    rounds only its own left corners, the right (Uploaded) button only
-    its right corners -- the seam between them stays sharp on both."""
+    Also reused (unchanged) for the main sidebar's Library/Editor/
+    Settings buttons -- see main_window.py -- per Max's direct request
+    to replace those with "the same custom button type" as this one,
+    dropping the old border-gradient/hue-shift/icon-darkening system
+    entirely in favor of this simpler turquoise fill.
 
-    def __init__(self, icon_pixmap: QPixmap, position: str, parent=None):
+    Rounding matches the same "don't round a corner that's touching
+    another element" rule used everywhere else: position='left' rounds
+    only the left corners, 'right' only the right corners (for a pair
+    that touch, like Local/Uploaded), and 'full' rounds all four (for
+    a button that doesn't touch its neighbors, like the sidebar's three
+    now that real padding sits between them)."""
+
+    def __init__(self, icon_pixmap: QPixmap, position: str = "full", parent=None):
         super().__init__(parent)
         self.setCheckable(True)
         self.setCursor(Qt.PointingHandCursor)
         self._icon_pixmap = icon_pixmap
-        self._position = position  # 'left' | 'right'
+        self._position = position  # 'left' | 'right' | 'full'
         self._icon_target_size = 32
         appearance = config_module.load().appearance
         self._appearance = appearance
@@ -86,6 +94,9 @@ class _LibraryTabButton(QAbstractButton):
         rect = QRectF(self.rect())
         radius = self._appearance.rounded_corner_radius if self._appearance.rounded_corners_enabled else 0
         is_left = self._position == "left"
+        is_right = self._position == "right"
+        round_left = is_left or self._position == "full"
+        round_right = is_right or self._position == "full"
 
         bg = self._theme.turquoise()
         if not self.isChecked():
@@ -98,8 +109,8 @@ class _LibraryTabButton(QAbstractButton):
         if radius:
             path = rounded_rect_path(
                 rect, radius,
-                top_left=is_left, bottom_left=is_left,
-                top_right=not is_left, bottom_right=not is_left,
+                top_left=round_left, bottom_left=round_left,
+                top_right=round_right, bottom_right=round_right,
             )
             painter.fillPath(path, bg)
         else:
@@ -385,8 +396,7 @@ class _VideoGridTab(QWidget):
         for tag in uncategorized:
             _make_checkbox(tag, layout)
 
-        add_filter_btn = QPushButton("+ Add Filter")
-        add_filter_btn.setFlat(True)
+        add_filter_btn = CustomButton("+ Add Filter")
         add_filter_btn.clicked.connect(self._add_new_filter)
         layout.addWidget(add_filter_btn)
 
@@ -733,10 +743,15 @@ class LibraryPage(QWidget):
         # Ingest/prune before the tabs build their initial grids, so the
         # very first render already reflects reality (manually-dropped-in
         # clips included) rather than showing stale/incomplete entries
-        # until the next refresh.
-        library.scan_and_ingest_new_videos()
-        library.prune_missing_videos()
-        library.remove_stray_orig_entries()
+        # until the next refresh. Skipped when offload_library_scan_to_
+        # daemon is on -- the daemon does this continuously in the
+        # background instead (see daemon.py), and the DB already
+        # reflects reality by the time this GUI queries it, without
+        # this process ALSO walking the filesystem redundantly.
+        if not config_module.load().offload_library_scan_to_daemon:
+            library.scan_and_ingest_new_videos()
+            library.prune_missing_videos()
+            library.remove_stray_orig_entries()
 
         self.local_tab = _VideoGridTab(uploaded_only=False, local_only=True)
         self.uploaded_tab = _VideoGridTab(uploaded_only=True, local_only=False)
@@ -771,9 +786,9 @@ class LibraryPage(QWidget):
         header = QHBoxLayout()
         header.setSpacing(0)
 
-        self.local_btn = _LibraryTabButton(resource_qpixmap("local_videos.png"), "left")
+        self.local_btn = LibraryTabButton(resource_qpixmap("local_videos.png"), "left")
         self.local_btn.setToolTip("Local")
-        self.uploaded_btn = _LibraryTabButton(resource_qpixmap("uploaded_videos.png"), "right")
+        self.uploaded_btn = LibraryTabButton(resource_qpixmap("uploaded_videos.png"), "right")
         self.uploaded_btn.setToolTip("Uploaded")
         self._page_button_group = QButtonGroup(self)
         self._page_button_group.setExclusive(True)
@@ -1006,19 +1021,25 @@ class LibraryPage(QWidget):
         """Called by MainWindow whenever the Library page becomes visible,
         so edits/deletes made from the Editor page are reflected, and any
         clip files removed outside the app (deleted manually, etc.) drop
-        out of the list instead of lingering as broken entries forever."""
-        newly_added = library.scan_and_ingest_new_videos()
-        if newly_added:
-            print(f"Picked up {len(newly_added)} video{'s' if len(newly_added) != 1 else ''} "
-                  f"found in the clips folder that weren't in the library yet.")
-        removed_ids = library.prune_missing_videos()
-        if removed_ids:
-            print(f"Removed {len(removed_ids)} library entr{'y' if len(removed_ids) == 1 else 'ies'} "
-                  f"whose file no longer exists on disk.")
-        stray_orig_ids = library.remove_stray_orig_entries()
-        if stray_orig_ids:
-            print(f"Removed {len(stray_orig_ids)} .orig backup file{'s' if len(stray_orig_ids) != 1 else ''} "
-                  f"that had been mistakenly listed as library entries.")
+        out of the list instead of lingering as broken entries forever.
+        Skipped when offload_library_scan_to_daemon is on -- see this
+        class's __init__ for the full reasoning; the tabs' own
+        refresh() below still runs either way, since that's just a DB
+        re-query (cheap, no filesystem walk) that needs to happen
+        regardless of who's doing the scanning."""
+        if not config_module.load().offload_library_scan_to_daemon:
+            newly_added = library.scan_and_ingest_new_videos()
+            if newly_added:
+                print(f"Picked up {len(newly_added)} video{'s' if len(newly_added) != 1 else ''} "
+                      f"found in the clips folder that weren't in the library yet.")
+            removed_ids = library.prune_missing_videos()
+            if removed_ids:
+                print(f"Removed {len(removed_ids)} library entr{'y' if len(removed_ids) == 1 else 'ies'} "
+                      f"whose file no longer exists on disk.")
+            stray_orig_ids = library.remove_stray_orig_entries()
+            if stray_orig_ids:
+                print(f"Removed {len(stray_orig_ids)} .orig backup file{'s' if len(stray_orig_ids) != 1 else ''} "
+                      f"that had been mistakenly listed as library entries.")
         self.local_tab.refresh()
         self.uploaded_tab.refresh()
 
@@ -1028,7 +1049,7 @@ class LibraryPage(QWidget):
         Size in Settings > General), against self._current_tab_icon_size
         as the 100% baseline. Called at construction and from
         apply_scale() whenever the baseline changes. No more shared-
-        iconSize limitation to work around (see _LibraryTabButton) --
+        iconSize limitation to work around (see LibraryTabButton) --
         each button just gets its own target size directly."""
         appearance = config_module.load().appearance
         base = self._current_tab_icon_size

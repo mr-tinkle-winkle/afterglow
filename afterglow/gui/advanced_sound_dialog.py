@@ -9,11 +9,13 @@ main form directly.
 from __future__ import annotations
 
 from PySide6.QtWidgets import (
-    QDialog, QVBoxLayout, QFormLayout, QHBoxLayout, QLineEdit, QPushButton,
+    QDialog, QVBoxLayout, QFormLayout, QHBoxLayout, QLineEdit,
     QFileDialog, QLabel, QDialogButtonBox, QWidget,
 )
 
 from .. import keyframes
+from .custom_line_edit import CustomLineEdit
+from .custom_button import CustomButton
 
 _SOUND_FILE_FILTER = "Audio Files (*.wav *.mp3 *.ogg *.flac);;All Files (*)"
 
@@ -57,9 +59,9 @@ class AdvancedSoundDialog(QDialog):
         row_widget = QWidget()
         row = QHBoxLayout(row_widget)
         row.setContentsMargins(0, 0, 0, 0)
-        edit = QLineEdit(current_path)
+        edit = CustomLineEdit(current_path)
         edit.setPlaceholderText("(none)")
-        browse = QPushButton("Browse...")
+        browse = CustomButton("Browse...")
         browse.clicked.connect(lambda: self._browse(edit))
         row.addWidget(edit)
         row.addWidget(browse)
