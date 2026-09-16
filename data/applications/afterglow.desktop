@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Afterglow
+Comment=OBS-triggered clip capture, local clip library, editor, and YouTube upload
+Exec=afterglow
+Icon=afterglow
+Terminal=false
+Categories=AudioVideo;Video;Recorder;
+StartupWMClass=afterglow

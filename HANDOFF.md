@@ -328,6 +328,31 @@ Seven consecutive batches of Library/Settings/appearance
 features/bug fixes, given together each time. Newest first.
 
 ### This session
+**Build-breaking bug, reported directly from a real `nixos-rebuild-flaked`
+failure log:** `flake.nix`'s `postInstall` has always expected
+`data/applications/afterglow.desktop` and a full `data/icons/hicolor/
+<size>x<size>/apps/afterglow.png` icon set (9 sizes: 16/22/24/32/48/64/
+128/256/512) to exist in the repo -- but neither ever actually existed;
+these were apparently expected by whichever earlier session wrote that
+part of flake.nix but never followed through on creating the files
+themselves, so the build has presumably been broken this way for a
+while, just not hit/reported until now. Fixed: added
+`data/applications/afterglow.desktop` (standard freedesktop entry --
+Name, Comment, Exec=afterglow, Icon=afterglow, Categories=AudioVideo;
+Video;Recorder;) and the full 9-size icon set, generated from
+`library.png` (the sidebar's own Library icon) resized down via
+Pillow, since no dedicated app logo/icon has ever been provided --
+flagged here as a placeholder specifically so a future session (or
+Max directly) knows to swap in a real one if/when he has one, rather
+than assuming this was a deliberate icon choice. Verified: the
+`.desktop` file parses correctly as valid INI/desktop-entry syntax,
+and every one of the 9 generated PNGs is confirmed to actually be
+its claimed size (not just resized-then-forgot-to-check). Not
+verified against an actual `nix build` (no Nix in this sandbox) --
+verified as far as this environment allows; the path structure exactly
+matches what flake.nix's `postInstall` install commands reference.
+
+### Previous session
 Four more items:
 
 1. **Full custom-widget sweep, "make sure EVERYTHING in settings is
