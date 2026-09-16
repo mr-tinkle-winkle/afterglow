@@ -45,6 +45,7 @@ from .editor_page import EditorPage
 from .resources import resource_qpixmap
 from .scaling import compute_scale
 from .theme import Theme
+from .scale_reveal import crossfade_to_index
 
 # Indices into self.stack -- fixed at construction time (see __init__).
 _SETTINGS_INDEX = 0
@@ -230,7 +231,7 @@ class MainWindow(QMainWindow):
             index = _LIBRARY_INDEX
             self.library_page.show_status_message("Select a video.")
 
-        self.stack.setCurrentIndex(index)
+        crossfade_to_index(self.stack, index)
         # Library reflects any edits/deletes made from the Editor page
         # (e.g. an Undo changing has_edit, or a delete elsewhere) whenever
         # it's navigated back to, rather than needing a manual refresh.
@@ -240,4 +241,4 @@ class MainWindow(QMainWindow):
     def _open_in_editor(self, video_id: int) -> None:
         self.editor_page.load_video(video_id)
         self.editor_nav_btn.setChecked(True)
-        self.stack.setCurrentIndex(_EDITOR_INDEX)
+        crossfade_to_index(self.stack, _EDITOR_INDEX)

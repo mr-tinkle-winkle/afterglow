@@ -328,6 +328,175 @@ Seven consecutive batches of Library/Settings/appearance
 features/bug fixes, given together each time. Newest first.
 
 ### This session
+Continuing straight from the last handoff -- same batch, picking up
+where it left off after packaging what was already done.
+
+**Video previewer -- first working version.** New
+`video_preview_dialog.py`, `VideoPreviewDialog(QDialog)`. Opens on a
+plain (unmodified) left-click directly on a card's thumbnail; shows
+title (with the favorite star if set), tags, and length/file-size/
+date, alongside a real embedded player reusing `MpvVideoWidget` (the
+exact same embedding editor_page.py uses) at a much larger size than
+a Library card -- play/pause, a seek scrubber, volume + mute, a
+fullscreen toggle, and a Watch Speed spinbox mirroring the Editor's
+own (same range/step/decimals/suffix, same "resets to 1x, preview-
+only" behavior). No trimming -- this is read-only playback, distinct
+from the Editor.
+
+No answer was ever given to the two clarifying questions asked before
+starting (click behavior vs. the existing multi-select; Local-only vs.
+Uploaded scope), so both were decided as reasonable defaults rather
+than continuing to block:
+- **Scope: Local videos only for now.** Uploaded already has its own
+  separate, previously-speced double-click -> embed/fallback-to-
+  YouTube behavior; this new dialog doesn't touch that.
+- **Click behavior, and a real conflict found while implementing it:**
+  a plain left-click on a card ALREADY drives multi-select (unchanged
+  here), and double-click was ALREADY wired to open the Editor
+  (`VideoCard.mouseDoubleClickEvent`) -- discovered while
+  investigating exactly where "left click" could safely hook in
+  without breaking either. Landed on: an UNMODIFIED (no Ctrl/Shift)
+  left-click, only when it lands on the thumbnail specifically (not
+  the info box or action buttons), opens the preview -- but only
+  after a 250ms delay, cancelled if a genuine double-click arrives in
+  that window. Ctrl/Shift-clicks (multi-select) never trigger it.
+  This is the standard Qt technique for disambiguating a single click
+  from the first half of a double-click, since Qt has no built-in
+  event that already tells you which one you're in until the second
+  press either does or doesn't arrive. Verified all three cases
+  directly with synthesized mouse events: a plain click opens the
+  preview after the delay and does NOT fire edit_requested; a
+  double-click fires edit_requested (opens the Editor) and does NOT
+  also flash the preview open first; a Ctrl-click never opens the
+  preview at all.
+
+Play/pause, fullscreen, and the volume/mute button are all custom-
+painted (a triangle/two bars, four corner brackets, a speaker cone +
+arcs) rather than needing a provided icon asset for any of them --
+per Max's own "see which of these you can do yourself." The scrubber
+and volume level are real `QSlider`s (dragging, click-to-seek, and
+keyboard stepping all come for free from that) recolored via
+stylesheet to match the theme, rather than built from scratch.
+
+Caught one real bug immediately via the test suite, not by luck:
+`MpvVideoWidget.is_paused` is a `@property` (confirmed directly from
+editor_page.py's own usage, which never calls it with parentheses) --
+an early draft of this dialog called it as `is_paused()`, which would
+have crashed on the very first Play/Pause click. Fixed both call
+sites before this ever reached a real run.
+
+Verified end-to-end against a real ffmpeg-generated clip (with a
+stubbed-out `mpv` module tracking every property write, since this
+sandbox has no libmpv): play/pause actually flips the underlying
+`pause` property both ways; the volume slider drives `set_volume`
+exactly; mute/unmute round-trips through the last non-zero volume
+correctly; the speed spinbox drives `set_speed`; dragging the
+scrubber and releasing it calls `seek()` at the mathematically
+correct position for the fraction dragged to.
+
+**Not done this round, still deferred:** custom spinboxes/dropdowns
+in Settings (unchanged from last note -- still the biggest remaining
+piece, a real dropdown needs its own popup list styled like the
+search bar's text-bubble attachment).
+
+### Previous session
+Five more items from Max's latest feedback round, all implemented and
+verified:
+
+1. **Smooth scrolling everywhere**, not just the Library grid. Every
+   `QScrollArea` instantiation across the app (filters_settings_page.py
+   x2, settings_page.py, stats_settings_page.py, and the Sort
+   popover's own `_wrap_scrollable` in library_page.py) now uses
+   `SmoothScrollArea` instead of plain `QScrollArea` -- a one-line swap
+   at each call site since `SmoothScrollArea` only overrides
+   `wheelEvent`, nothing else about `QScrollArea`'s API changed.
+2. **Found and fixed the actual cause of the action buttons' "inconsistent
+   outline."** `CustomButton`'s outline was being stroked on a
+   SEPARATELY inset copy of the button's rect, with the corner radius
+   ALSO independently reduced by the same inset amount
+   (`max(0, radius - inset)`). Insetting a rect and shrinking its
+   corner radius by the same linear amount does NOT produce a
+   concentric rounded shape -- straight edges scale one way, corner
+   arcs scale differently -- so the gap between the fill's rounded
+   corner and the outline's own (separately-computed) rounded corner
+   visibly widened or narrowed right at each corner, while staying
+   constant along the straight edges. That inconsistency IS what
+   looked "off." Fixed by tracing the outline stroke on the EXACT SAME
+   rect + radius the fill already uses -- Qt centers a stroke on its
+   own path by default, so the pen's outer half simply has no widget
+   area left to draw into (invisible, not distorted) rather than
+   needing a manual inset at all. Verified at the code level that the
+   fill's clip path and the outline's stroke path are now built from
+   one identical `rounded_rect_path(rect, radius)` call, not two
+   separately-computed ones -- a more reliable check than pixel
+   measurements here, since "is this shape geometrically concentric"
+   is exactly what the bug was about.
+3. **Custom group box headers** -- new `custom_group_box.py`,
+   `CustomGroupBox`. A drop-in replacement for the exact
+   `QGroupBox("Title")` + `QVBoxLayout(group)` construction pattern
+   already used everywhere (Qt seeds a newly-attached layout's margins
+   from the widget's own `contentsMargins`, which `CustomGroupBox`
+   sets in `__init__` to reserve room for its own painted title, so
+   no call site needed to change beyond the class name itself).
+   Replaces every `QGroupBox` in settings_page.py and
+   filters_settings_page.py, AND the Sort popover's tag-category
+   grouping in library_page.py's `_build_filters_page` -- the "sort
+   tab" headers Max meant. Rounded, accent-colored border with a
+   punched-out gap behind the title text (same idea as a native
+   groupbox's own title notch), filled with the actual palette window
+   color so the border doesn't visibly run behind the text.
+4. **Clip Options now glide open/closed**, synced to the SAME
+   `_ANIM_DURATION_MS` (180ms) and easing curve the `>` arrow's own
+   rotation already uses (imported directly from
+   `collapse_toggle_button.py` rather than a second hardcoded 180,
+   so the two can't silently drift out of sync later) -- animates the
+   body's `maximumHeight` from 0 up to its natural `sizeHint()` height
+   (or the reverse), rather than the old instant
+   `setVisible(expanded)` teleport. The surrounding `QVBoxLayout`
+   reflows everything below the row smoothly frame-by-frame as a
+   direct result, since animating maximumHeight (not a one-shot
+   resize) is what gives the layout something to keep re-measuring
+   against on every frame. Releases the height cap entirely once an
+   expand finishes (so a later content change, e.g. picking a longer
+   sound file path, isn't stuck capped at that one snapshot), and
+   hides the body entirely once a collapse finishes (matching the old
+   behavior's end state). Verified both directions actually reach
+   their correct end state, not just that an animation started.
+5. **Fade between page changes** -- new `crossfade_to_index()` in
+   scale_reveal.py, used for both Local<->Uploaded
+   (`LibraryPage._switch_page`) and the main sidebar's Library/Editor/
+   Settings (`MainWindow._on_nav_clicked` and `_open_in_editor`). Same
+   "don't fight the real widget's layout, animate a disposable
+   snapshot on top of it instead" principle `ScaleRevealOverlay`
+   already established: the actual page switch
+   (`QStackedWidget.setCurrentIndex`) happens immediately and
+   normally, and only a grabbed snapshot of whatever USED to be
+   showing gets overlaid on top and animated to transparent, revealing
+   the already-fully-correct new page underneath as it fades --
+   rather than attempting a true two-layer cross-blend, which would
+   need both pages' geometry animated simultaneously and would fight
+   the stack's own layout the same way a direct scale animation would
+   have. Verified the overlay appears immediately after a page switch
+   and cleans itself up once the fade finishes.
+
+Hit one real bug while writing item 5 (not a product bug, a mistake in
+my own edit): a `str_replace` meant to insert `crossfade_to_index`
+before `animate_popup_from_point` accidentally consumed that
+function's own `def` line, leaving its body orphaned under the wrong
+function -- caught immediately by the very next compile check (a
+plain `ImportError`, not a subtle runtime issue), fixed by restoring
+the missing `def` line.
+
+**Not done this round, explicitly deferred:** custom spinboxes/
+dropdowns in Settings (spinboxes need custom-painted increment/
+decrement controls; dropdowns need a real popup list styled like the
+search bar's own text-bubble attachment -- both meaningfully bigger
+builds than anything else in this batch), and the video previewer
+(queued from last session, no answer yet on the two open questions
+about click behavior vs. the existing multi-select and Local-only vs.
+Uploaded scope).
+
+### Previous session
 Max provided a real app icon (replacing the `library.png`-derived
 placeholder from last session) and gave three more animation notes:
 

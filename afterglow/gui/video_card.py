@@ -10,7 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 from datetime import datetime
 
-from PySide6.QtCore import Qt, Signal, QSize, QRectF
+from PySide6.QtCore import Qt, Signal, QSize, QRectF, QTimer
 from PySide6.QtGui import QPixmap, QPainter, QColor, QIcon, QFontMetrics, QPen
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QMenu, QMessageBox, QLineEdit,
@@ -188,6 +188,7 @@ class VideoCard(QWidget):
         super().__init__(parent)
         self.video_id = video.id
         self._video = video
+        self._preview_pending = False
         self._highlight_enabled = highlight_enabled
         settings = config_module.load()
         self._appearance = settings.appearance
@@ -737,17 +738,33 @@ class VideoCard(QWidget):
     def mousePressEvent(self, event) -> None:
         if event.button() == Qt.LeftButton:
             self.clicked.emit(self.video_id, event.modifiers())
-            # Explicitly accept (rather than falling through to
-            # QWidget's default, which ignores it) -- an ignored event
-            # bubbles up to the parent's own mousePressEvent, which
-            # would otherwise immediately clear the selection this
-            # just set via the grid container's own background-click
-            # handling (see _SelectionClearingContainer).
+            # A plain (unmodified) left-click directly on the thumbnail
+            # opens the preview player, "like Medal" -- but Ctrl/Shift
+            # clicks (multi-select) never do, and this is delayed
+            # rather than immediate so a DOUBLE-click (which still
+            # opens the Editor, unchanged -- see mouseDoubleClickEvent)
+            # doesn't ALSO flash the preview open first. Qt has no
+            # single "click vs double-click" event of its own; this
+            # delay-then-cancel-if-a-second-click-arrives approach is
+            # the standard way to disambiguate the two.
+            no_modifiers = event.modifiers() == Qt.NoModifier
+            on_thumbnail = self.thumb_label.geometry().contains(event.pos())
+            if no_modifiers and on_thumbnail:
+                self._preview_pending = True
+                QTimer.singleShot(250, self._open_preview_if_still_pending)
             event.accept()
             return
         super().mousePressEvent(event)
 
+    def _open_preview_if_still_pending(self) -> None:
+        if self._preview_pending:
+            self._preview_pending = False
+            from .video_preview_dialog import VideoPreviewDialog
+            dialog = VideoPreviewDialog(self._video, parent=self.window())
+            dialog.exec()
+
     def mouseDoubleClickEvent(self, event) -> None:
+        self._preview_pending = False  # cancel the pending single-click preview -- see mousePressEvent
         self.edit_requested.emit(self.video_id)
 
     def _show_context_menu(self, pos) -> None:

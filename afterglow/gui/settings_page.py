@@ -18,7 +18,7 @@ from __future__ import annotations
 import tomllib
 
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QGroupBox, QLineEdit,
+    QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QLineEdit,
     QSpinBox, QDoubleSpinBox, QPushButton, QFileDialog, QLabel, QScrollArea,
     QMessageBox, QComboBox, QColorDialog, QStackedWidget, QButtonGroup,
 )
@@ -33,6 +33,8 @@ from .stats_settings_page import StatsPage
 from .custom_button import CustomButton
 from .custom_checkbox import CustomCheckBox
 from .custom_line_edit import CustomLineEdit
+from .custom_group_box import CustomGroupBox
+from .smooth_scroll_area import SmoothScrollArea
 
 
 class SettingsPage(QWidget):
@@ -124,8 +126,8 @@ class SettingsPage(QWidget):
 
     # ------------------------------------------------------------ OBS group
 
-    def _build_obs_group(self) -> QGroupBox:
-        group = QGroupBox("OBS Connection")
+    def _build_obs_group(self) -> CustomGroupBox:
+        group = CustomGroupBox("OBS Connection")
         form = QFormLayout(group)
 
         self.obs_host_edit = CustomLineEdit(self._settings.obs.host)
@@ -199,8 +201,8 @@ class SettingsPage(QWidget):
 
     # ------------------------------------------------------------ clipping group
 
-    def _build_clipping_group(self) -> QGroupBox:
-        group = QGroupBox("Clip Capture")
+    def _build_clipping_group(self) -> CustomGroupBox:
+        group = CustomGroupBox("Clip Capture")
         form = QFormLayout(group)
 
         dir_row = QHBoxLayout()
@@ -235,8 +237,8 @@ class SettingsPage(QWidget):
 
     # ------------------------------------------------------------ appearance group
 
-    def _build_appearance_group(self) -> QGroupBox:
-        group = QGroupBox("Appearance")
+    def _build_appearance_group(self) -> CustomGroupBox:
+        group = CustomGroupBox("Appearance")
         form = QFormLayout(group)
         a = self._settings.appearance
 
@@ -538,8 +540,8 @@ class SettingsPage(QWidget):
 
     # ------------------------------------------------------------ Afterglow Theme group
 
-    def _build_afterglow_theme_group(self) -> QGroupBox:
-        group = QGroupBox("Afterglow Theme")
+    def _build_afterglow_theme_group(self) -> CustomGroupBox:
+        group = CustomGroupBox("Afterglow Theme")
         form = QFormLayout(group)
         a = self._settings.appearance
 
@@ -567,14 +569,14 @@ class SettingsPage(QWidget):
 
         return group
 
-    def _build_reset_group(self) -> QGroupBox:
+    def _build_reset_group(self) -> CustomGroupBox:
         """Recovery tools for exactly the class of problem that's come
         up repeatedly: a color or setting default changes in a new
         build, but an already-saved config keeps showing the OLD
         value, and it can look indistinguishable from a real rendering
         bug from the outside. Added directly on Max's request --
         "before assuming there is a bug" -- as the first thing to try."""
-        group = QGroupBox("Reset")
+        group = CustomGroupBox("Reset")
         layout = QVBoxLayout(group)
 
         colors_btn = CustomButton("Revert to Default Colors")
@@ -596,7 +598,7 @@ class SettingsPage(QWidget):
         layout.addWidget(note)
         return group
 
-    def _build_import_export_group(self) -> QGroupBox:
+    def _build_import_export_group(self) -> CustomGroupBox:
         """Export the ENTIRE current config (not just appearance) to an
         arbitrary file, or replace it wholesale from one -- per Max's
         request, for handing a "new default settings" file back to a
@@ -604,7 +606,7 @@ class SettingsPage(QWidget):
         hand. Distinct from the Reset group above: Reset always goes to
         this BUILD's own code defaults; Import/Export moves a real,
         specific config file in and out of the app."""
-        group = QGroupBox("Import / Export Settings")
+        group = CustomGroupBox("Import / Export Settings")
         layout = QVBoxLayout(group)
 
         export_btn = CustomButton("Export Settings...")
@@ -624,8 +626,8 @@ class SettingsPage(QWidget):
         layout.addWidget(note)
         return group
 
-    def _build_performance_group(self) -> QGroupBox:
-        group = QGroupBox("Performance")
+    def _build_performance_group(self) -> CustomGroupBox:
+        group = CustomGroupBox("Performance")
         layout = QVBoxLayout(group)
 
         self.offload_scan_checkbox = CustomCheckBox("Offload library scanning to the background daemon")
@@ -723,11 +725,11 @@ class SettingsPage(QWidget):
 
     # ------------------------------------------------------------ clip options group
 
-    def _build_clip_options_group(self) -> QGroupBox:
-        group = QGroupBox("Clip Options")
+    def _build_clip_options_group(self) -> CustomGroupBox:
+        group = CustomGroupBox("Clip Options")
         outer = QVBoxLayout(group)
 
-        scroll = QScrollArea()
+        scroll = SmoothScrollArea()
         scroll.setWidgetResizable(True)
         self.rows_container = QWidget()
         self.rows_layout = QVBoxLayout(self.rows_container)

@@ -17,7 +17,7 @@ Three groups:
 from __future__ import annotations
 
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QGroupBox, QLabel,
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QFileDialog, QComboBox, QScrollArea, QFrame, QLineEdit,
     QMessageBox, QTabWidget, QFormLayout, QInputDialog, QToolButton,
     QMenu, QWidgetAction,
@@ -28,6 +28,8 @@ from .. import library
 from .. import config as config_module
 from .. import autofilter
 from .custom_line_edit import CustomLineEdit
+from .custom_group_box import CustomGroupBox
+from .smooth_scroll_area import SmoothScrollArea
 from .custom_button import CustomButton
 from .custom_checkbox import CustomCheckBox
 
@@ -270,7 +272,7 @@ class FiltersSettingsPage(QWidget):
         page = QWidget()
         layout = QVBoxLayout(page)
 
-        display_group = QGroupBox("Display")
+        display_group = CustomGroupBox("Display")
         form = QFormLayout(display_group)
 
         self.show_names_check = CustomCheckBox()
@@ -290,9 +292,9 @@ class FiltersSettingsPage(QWidget):
 
         layout.addWidget(display_group)
 
-        icons_group = QGroupBox("Tag Icons")
+        icons_group = CustomGroupBox("Tag Icons")
         icons_layout = QVBoxLayout(icons_group)
-        scroll = QScrollArea()
+        scroll = SmoothScrollArea()
         scroll.setWidgetResizable(True)
         rows_container = QWidget()
         self.rows_layout = QVBoxLayout(rows_container)
@@ -338,7 +340,7 @@ class FiltersSettingsPage(QWidget):
         info.setStyleSheet("color: gray;")
         layout.addWidget(info)
 
-        scroll = QScrollArea()
+        scroll = SmoothScrollArea()
         scroll.setWidgetResizable(True)
         rows_container = QWidget()
         self.auto_rows_layout = QVBoxLayout(rows_container)

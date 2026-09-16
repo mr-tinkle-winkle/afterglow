@@ -17,7 +17,7 @@ from PySide6.QtGui import QPainter, QPixmap, QColor
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLineEdit,
     QScrollArea, QLabel, QStackedWidget, QMessageBox,
-    QStyle, QInputDialog, QGroupBox, QRadioButton,
+    QStyle, QInputDialog, QRadioButton,
     QButtonGroup, QAbstractButton, QApplication,
 )
 
@@ -33,6 +33,8 @@ from .smooth_scroll_area import SmoothScrollArea
 from .sort_popover import SortPopover
 from .search_bubble import SearchBubble
 from .pixmap_effects import tint_pixmap_cached
+from .custom_group_box import CustomGroupBox
+from .scale_reveal import crossfade_to_index
 from .custom_checkbox import CustomCheckBox
 
 # Approximate on-screen width of one card (thumbnail + its own internal
@@ -387,7 +389,7 @@ class _VideoGridTab(QWidget):
         # for a submenu to open TO, so each category is just its own
         # labeled group instead, in the same vertical flow).
         for category_name, tag_names in grouped.items():
-            group = QGroupBox(category_name)
+            group = CustomGroupBox(category_name)
             group_layout = QVBoxLayout(group)
             for tag in tag_names:
                 _make_checkbox(tag, group_layout)
@@ -465,7 +467,7 @@ class _VideoGridTab(QWidget):
         (a Filters page with many tags could otherwise grow the whole
         popover past the screen) while keeping the popover's own
         painted background visible through it."""
-        scroll = QScrollArea()
+        scroll = SmoothScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QScrollArea.NoFrame)
         scroll.setFixedHeight(320)
@@ -927,7 +929,7 @@ class LibraryPage(QWidget):
         return self._stack.currentWidget()
 
     def _switch_page(self, index: int) -> None:
-        self._stack.setCurrentIndex(index)
+        crossfade_to_index(self._stack, index)
         self._sync_search_bubble_for_active_tab()
 
     # ------------------------------------------------------------ shared search bubble
