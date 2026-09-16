@@ -768,23 +768,38 @@ class LibraryPage(QWidget):
         # _VideoGridTab) even though the buttons/popups that control them
         # are shared UI. Icon-only (per Max's provided icon set) rather
         # than text-labeled placeholders now.
+        #
+        # Circular and 2x the previous implicit size, with real padding
+        # between them, per Max's direct request -- these three (only
+        # these three) use CustomButton.set_circular() rather than the
+        # theme's normal rounded-corner-radius shape. TOOLBAR_BUTTON_
+        # DIAMETER doubles what a default un-styled QToolButton's own
+        # sizeHint() was landing on here before (roughly 36px for an
+        # icon-sized button with no explicit size set at all).
+        TOOLBAR_BUTTON_DIAMETER = 72
+        TOOLBAR_BUTTON_SPACING = 16
         self._search_icon = resource_qpixmap("search_icon.png")
         self._search_icon_active = resource_qpixmap("search_icon_active.png")
         self.search_btn = CustomButton("Search")
         self.search_btn.setToolTip("Search")
         self.search_btn.set_icon_pixmap(self._search_icon)
+        self.search_btn.set_circular(TOOLBAR_BUTTON_DIAMETER)
         self.search_btn.clicked.connect(self._toggle_search_bubble)
         header.addWidget(self.search_btn)
+        header.addSpacing(TOOLBAR_BUTTON_SPACING)
 
         self.refresh_btn = CustomButton("Refresh")
         self.refresh_btn.setToolTip("Refresh")
         self.refresh_btn.set_icon_pixmap(resource_qpixmap("refresh_icon.png"))
+        self.refresh_btn.set_circular(TOOLBAR_BUTTON_DIAMETER)
         self.refresh_btn.clicked.connect(lambda: self._active_tab().refresh())
         header.addWidget(self.refresh_btn)
+        header.addSpacing(TOOLBAR_BUTTON_SPACING)
 
         self.sort_btn = CustomButton("Sort")
         self.sort_btn.setToolTip("Sort")
         self.sort_btn.set_icon_pixmap(resource_qpixmap("sort_icon.png"))
+        self.sort_btn.set_circular(TOOLBAR_BUTTON_DIAMETER)
         self.sort_btn.clicked.connect(self._open_sort_popover)
         header.addWidget(self.sort_btn)
 

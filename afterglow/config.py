@@ -117,7 +117,7 @@ class AppearanceSettings:
     # doubles the selection ring's width every time, since all of
     # these (the unedited-highlight border, the plain edited-video
     # border, and the selection ring) share this one setting.
-    unedited_selected_border_width: int = 72
+    unedited_selected_border_width: int = 144
     # Darkened 35% (100 -> 65) directly on Max's request.
     unedited_highlight_brightness: int = 65
     filter_icon_size: int = 54
@@ -223,14 +223,18 @@ class AppearanceSettings:
     # Exact hex given directly by Max, most recently. Previous values
     # (computed derivations, etc.) are documented in this file's git
     # history / HANDOFF.md rather than here now that this is simply a
-    # literal value he specified.
+    # literal value he specified. The immediately-previous round of
+    # this (all three of accent/card_background/library set to the
+    # same #152c4f) was a copy-paste mistake on Max's own end, not an
+    # intentional "make them all identical" choice -- corrected here to
+    # the actual three distinct values he meant to send.
     afterglow_color_accent: str = "#152c4f"
-    afterglow_color_card_background: str = "#152c4f"
+    afterglow_color_card_background: str = "#091e37"
     # Given directly by Max, most recently -- meant to eventually
     # become the actual app-wide background (not yet wired everywhere
     # -- see HANDOFF.md).
     afterglow_color_app_background: str = "#0d1621"
-    afterglow_color_library: str = "#152c4f"
+    afterglow_color_library: str = "#050f18"
     # Used for the Local/Uploaded tab icons' own background
     # specifically (not the library page background above, despite the
     # similar name -- see Theme.turquoise()'s own docstring for why).
@@ -377,12 +381,33 @@ def load() -> AppSettings:
         appearance_raw["afterglow_color_library"] = AppearanceSettings.afterglow_color_library
     if appearance_raw.get("afterglow_color_turquoise") == "#05a4b9":
         appearance_raw["afterglow_color_turquoise"] = AppearanceSettings.afterglow_color_turquoise
-    if appearance_raw.get("unedited_selected_border_width") in (9, 18, 36):
-        # Doubled three times in quick succession (9 -> 18 -> 36 -> 72),
-        # each time directly on Max's own request once he could see it
-        # rendered for real -- same stale-default reasoning as the
-        # color migrations above. A GENUINELY custom value (anything
-        # other than these three specific old defaults) is left alone.
+    # The above (#152c4f for all three of accent/card_background/
+    # library) turned out to be a copy-paste mistake on Max's own end,
+    # not an intentional "make them identical" choice -- corrected to
+    # the three actual distinct values he meant to send. accent's
+    # correct value happens to also be #152c4f, so it needs no
+    # migration of its own here (nothing to change); card_background
+    # and library do. Same stale-default reasoning as every migration
+    # above -- only resets a config still holding that specific
+    # previous (mistaken) value, never a genuinely custom one.
+    if appearance_raw.get("afterglow_color_card_background") == "#152c4f":
+        appearance_raw["afterglow_color_card_background"] = AppearanceSettings.afterglow_color_card_background
+    if appearance_raw.get("afterglow_color_library") == "#152c4f":
+        appearance_raw["afterglow_color_library"] = AppearanceSettings.afterglow_color_library
+    if appearance_raw.get("unedited_selected_border_width") in (9, 18, 36, 50, 72):
+        # Doubled several times in quick succession (9 -> 18 -> 36 -> 72
+        # -> 144), each time directly on Max's own request once he
+        # could see it rendered for real -- same stale-default
+        # reasoning as the color migrations above. 50 is included here
+        # too even though it was never an actual code default: the
+        # Settings page's border-width spinbox had its range capped at
+        # 0-50 while the real default had already grown past that (to
+        # 72), so QSpinBox silently CLAMPED the displayed/saved value
+        # to 50 on every Settings page visit + Save -- meaning 50 in a
+        # saved config is almost certainly that bug's damage, not a
+        # real choice, and is safe to treat the same way as the other
+        # stale defaults here. A GENUINELY custom value (anything other
+        # than these five specific numbers) is left alone.
         appearance_raw["unedited_selected_border_width"] = AppearanceSettings.unedited_selected_border_width
     appearance = AppearanceSettings(**appearance_raw)
     top_level = {

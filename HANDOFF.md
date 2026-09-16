@@ -328,6 +328,93 @@ Seven consecutive batches of Library/Settings/appearance
 features/bug fixes, given together each time. Newest first.
 
 ### This session
+Max caught his own copy-paste mistake from two sessions ago: the
+"everything is the same color" report from last session wasn't a code
+bug after all (confirmed then, holds up now) -- he'd meant to send
+three DIFFERENT hex values for accent/card_background/library and
+accidentally pasted the same one into all three. Corrected:
+- `afterglow_color_card_background`: `#152c4f` -> `#091e37`
+- `afterglow_color_library`: `#152c4f` -> `#050f18`
+- `afterglow_color_accent` ("button/info blue"): confirmed unchanged
+  at `#152c4f` -- this one really was meant to be that value.
+- Turquoise and app_background: confirmed correct as-is, untouched.
+
+Migration added for configs still holding the mistaken all-`#152c4f`
+values (same stale-default pattern as every prior palette change) --
+scoped per-field, so a config where accent is `#152c4f` is left alone
+(that's still correct), while card_background/library at `#152c4f`
+specifically get bumped to their new correct values. Verified this
+doesn't clobber a genuinely custom value on an unrelated field
+(planted a custom `#ff00ff` card_background alongside no accent/
+library entries and confirmed it survives a `load()` untouched) --
+worth checking given how many fields this migration now touches.
+
+### Previous session
+Two more direct pieces of feedback, plus a real bug found while
+investigating the second one:
+
+1. **Search/Refresh/Sort made circular, 2x size, with real spacing.**
+   `CustomButton.set_circular(diameter)` is new -- forces a perfect
+   circle via `setFixedSize(diameter, diameter)` + a `radius = height/2`
+   paint path, independent of the Afterglow Theme rounded-corner-radius
+   setting (which still governs everything else). Used for exactly
+   these three buttons in `LibraryPage`'s header (72px diameter, up
+   from whatever an unstyled `QToolButton`'s own default sizeHint was
+   landing on before -- roughly 36px), with 16px of real spacing
+   between them via `header.addSpacing()` calls (the Local/Uploaded
+   buttons on the other side of the header still touch with zero
+   spacing, unaffected). Verified pixel-level that the shape is
+   actually circular (corner pixel differs from center fill), not just
+   "square with a big enough radius to look round from a distance."
+2. **Found and fixed the REAL bug behind "changing the border
+   thickness in the past doesn't seem to have worked."** Max reported
+   this while asking for the unedited/selected border to double again
+   (144px) -- investigated rather than just bumping the number again.
+   The actual cause: `settings_page.py`'s
+   `unedited_selected_border_width_spin` had its range capped at
+   `(0, 50)` while the real default (config.py) had ALREADY grown past
+   that twice, to 72, in earlier sessions. `QSpinBox.setValue()`
+   silently CLAMPS an out-of-range value instead of raising -- so every
+   time Settings was opened, this field silently displayed 50 instead
+   of the real 72, and clicking Save for ANY reason (even touching an
+   entirely unrelated field elsewhere on the page) would write that
+   clamped 50 back over the real setting, permanently undoing however
+   many times the default had been bumped. Fixed two ways: raised the
+   range to `(0, 400)` (real headroom past the new 144 default, so the
+   same mistake doesn't quietly recur the next time this needs to
+   grow), and added `50` to the existing stale-default migration list
+   for this field (alongside 9/18/36/72) -- since a saved config
+   showing exactly 50 is almost certainly this bug's damage rather
+   than a genuine choice, and gets bumped forward to 144 the same way
+   the other stale defaults do. Verified three ways: the spinbox now
+   shows 144 (not clamped) on a fresh default config; a saved config
+   with any of the five known-stale values (including 50) migrates to
+   144 on load; and `VideoCard.video_box`'s actual on-screen size
+   reflects the new 144px margin directly (`THUMB_SIZE + 2*144`), not
+   just that the config field holds the right number.
+
+**Investigated, NOT changed, needs Max's input:** "everything in the
+Library page is the same color now... this remains even after I reset
+my colors." Checked `Theme.accent()` / `card_background()` /
+`library_background()` directly -- each still correctly reads its own
+distinct config field (`afterglow_color_accent` /
+`afterglow_color_card_background` / `afterglow_color_library`
+respectively; confirmed no copy-paste bug). The reason they all render
+identically is that last session's palette request set all THREE of
+those fields to the literal same hex (`#152c4f`) on purpose. "Revert to
+Default Colors" is also working exactly as coded (`_revert_default_colors`
+resets to `AppearanceSettings()`'s own defaults) -- it doesn't change
+anything because the CURRENT default already IS that same flat scheme,
+not because the button is broken. So: not a bug, but also clearly not
+what Max wants now that he's seeing it rendered -- flagged rather than
+guessed at, since picking new specific hex values isn't something to
+do without his input. The one piece he confirmed as already correct
+(the edited-video border's color, which uses `app_background()`) makes
+sense under this explanation too: that field was NOT part of last
+session's "make these three the same" request, so it's still visibly
+distinct from the rest.
+
+### Previous session
 Direct follow-up feedback on last session's four items, plus one more
 long-queued item (Local/Uploaded's own custom page headers) finally
 tackled. Seven pieces, given together:

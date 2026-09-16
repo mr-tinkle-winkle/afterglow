@@ -30,6 +30,7 @@ class CustomButton(QToolButton):
         self._appearance = appearance
         self._theme = Theme(appearance)
         self._icon_pixmap = None  # QPixmap | None -- drawn instead of text when set
+        self._circular = False
 
     def set_icon_pixmap(self, pixmap) -> None:
         """Draw `pixmap` (scaled, centered, with a small margin) instead
@@ -41,20 +42,37 @@ class CustomButton(QToolButton):
         self._icon_pixmap = pixmap
         self.update()
 
+    def set_circular(self, diameter: int) -> None:
+        """Force this button into a perfect circle of the given
+        diameter, regardless of the Afterglow Theme rounded-corner
+        radius setting -- used for the Library header's Search/
+        Refresh/Sort buttons specifically, per Max's direct request
+        for those three (not a general CustomButton shape option)."""
+        self._circular = True
+        self.setFixedSize(diameter, diameter)
+        self.update()
+
     def paintEvent(self, event) -> None:
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
         painter.setRenderHint(QPainter.SmoothPixmapTransform)
 
         rect = QRectF(self.rect())
-        radius = self._appearance.rounded_corner_radius if self._appearance.rounded_corners_enabled else 0
-        # Clamp to half the button's own (usually short) height -- a
-        # small button fully rounded into a pill shape at the default
-        # 24px radius is fine, but rounded_rect_path's own half-of-
-        # smaller-dimension clamp already handles this; being explicit
-        # here just keeps a very short button from ever wanting a
-        # radius bigger than its own height in the first place.
-        radius = min(radius, rect.height() / 2) if radius else 0
+        if self._circular:
+            # A perfect circle regardless of the theme's own corner-
+            # radius setting -- width == height by construction
+            # (set_circular() uses setFixedSize with equal sides), so
+            # half of either dimension is the correct circle radius.
+            radius = rect.height() / 2
+        else:
+            radius = self._appearance.rounded_corner_radius if self._appearance.rounded_corners_enabled else 0
+            # Clamp to half the button's own (usually short) height -- a
+            # small button fully rounded into a pill shape at the default
+            # 24px radius is fine, but rounded_rect_path's own half-of-
+            # smaller-dimension clamp already handles this; being explicit
+            # here just keeps a very short button from ever wanting a
+            # radius bigger than its own height in the first place.
+            radius = min(radius, rect.height() / 2) if radius else 0
 
         bg = self._theme.button_color()
         if self.isDown():

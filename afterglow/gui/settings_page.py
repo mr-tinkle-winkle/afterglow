@@ -362,7 +362,20 @@ class SettingsPage(QWidget):
         form.addRow("Border around Settings?", self.settings_border_combo)
 
         self.unedited_selected_border_width_spin = QSpinBox()
-        self.unedited_selected_border_width_spin.setRange(0, 50)
+        # Range max used to be 50 while the actual default (see
+        # config.py) had already been doubled past that several times
+        # (72, then 144) -- QSpinBox.setValue() silently CLAMPS an
+        # out-of-range value rather than erroring, so every time this
+        # page was opened the field silently displayed 50 instead of
+        # the real value, and clicking Save (for ANY reason, even an
+        # unrelated field) would write that clamped 50 back over the
+        # real setting. This is almost certainly the actual bug behind
+        # "changing the thickness in the past doesn't seem to have
+        # worked" -- found directly by comparing this range against
+        # AppearanceSettings' own default, not guessed. Raised well
+        # past the current default so the same mistake doesn't quietly
+        # recur the next time this value needs to grow.
+        self.unedited_selected_border_width_spin.setRange(0, 400)
         self.unedited_selected_border_width_spin.setValue(a.unedited_selected_border_width)
         form.addRow("Unedited/Selected Border Width:", self.unedited_selected_border_width_spin)
 
