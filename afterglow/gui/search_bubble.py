@@ -33,14 +33,15 @@ separate "click elsewhere" handling needed.
 """
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, QRectF, QPoint, Signal
+from PySide6.QtCore import Qt, QRectF, QPoint, QRect, Signal
 from PySide6.QtGui import QPainter, QPainterPath
-from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLineEdit
+from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLineEdit, QLayout
 
 from .. import config as config_module
 from .rounded_rect import rounded_rect_path
 from .theme import Theme, contrast_text
 from .custom_checkbox import CustomCheckBox
+from .scale_reveal import animate_popup_from_point
 
 _TAIL_HEIGHT = 20   # visible height of the tail above the body's top edge
 _TAIL_OVERLAP = 8   # how far the tail's base extends PAST that edge, into the body -- see module docstring, point 1
@@ -67,11 +68,32 @@ class SearchBubble(QWidget):
         self._radius = appearance.rounded_corner_radius if appearance.rounded_corners_enabled else 12
         self._tail_x = _WIDTH // 2  # bubble is always centered under its anchor -- see show_below()
 
-        self.setFixedSize(_WIDTH, _TAIL_HEIGHT + _BODY_HEIGHT)
+        # resize(), NOT setFixedSize() -- a hard fixed size clamps any
+        # later setGeometry() call straight back to it immediately,
+        # which silently defeated the whole point of
+        # animate_popup_from_point()'s small-starting-rect: the widget
+        # was never actually able to render smaller than its final
+        # size, so the "grow" animation only ever showed the (barely
+        # visible, offscreen-QPA-dependent) opacity fade, not real
+        # growth. Nothing else lays this widget out -- it's a
+        # standalone top-level popup -- so there's nothing that
+        # actually needs a hard size floor/ceiling here.
+        self.resize(_WIDTH, _TAIL_HEIGHT + _BODY_HEIGHT)
 
         row = QHBoxLayout(self)
         row.setContentsMargins(14, _TAIL_HEIGHT + 8, 14, 8)
         row.setSpacing(8)
+        # Without this, Qt auto-computes a minimumSize for the whole
+        # widget from the layout's own children (the line edit +
+        # checkbox both have real minimum-size hints), and clamps any
+        # setGeometry() call smaller than that straight back up to it
+        # -- the SAME bug setFixedSize() caused above (see this
+        # widget's resize() comment), just coming from the layout's
+        # own automatic constraint instead of an explicit one. This is
+        # safe here specifically because show_below() always sets an
+        # exact final geometry itself; nothing relies on the layout's
+        # own size negotiation to pick this widget's size.
+        row.setSizeConstraint(QLayout.SetNoConstraint)
 
         self.line_edit = QLineEdit(self)
         self.line_edit.setPlaceholderText("Search title or description...")
@@ -174,17 +196,18 @@ class SearchBubble(QWidget):
         painter.end()
 
     def show_below(self, anchor: QWidget) -> None:
-        """Position directly BELOW `anchor` (the Search button), centered
-        on it -- not off to one side, per Max's direct correction --
-        with the tail (always at the bubble's own horizontal center)
-        pointing up at the button, floating _TAIL_GAP px clear of it
-        rather than touching (per his direct correction on this round
-        too) -- the gap is just blank space added to the move()
-        position, since the tail's own tip already sits at the very
-        top (y=0) of this widget's fixed geometry."""
+        """Grows out of `anchor`'s own icon rather than just appearing
+        -- per Max's direct request, same "resize out of the icon"
+        treatment as SortPopover now has. Still centered under the
+        button with the tail floating _TAIL_GAP px clear of it (both
+        unchanged from before) -- animate_popup_from_point just
+        computes a small starting rect near the anchor's own center
+        and animates geometry + opacity from there up to this final
+        position/size, rather than jumping straight to it."""
         anchor_global = anchor.mapToGlobal(QPoint(0, anchor.height()))
         center_x = anchor_global.x() + anchor.width() // 2
-        self.move(center_x - _WIDTH // 2, anchor_global.y() + _TAIL_GAP)
-        self.show()
+        final_geometry = QRect(center_x - _WIDTH // 2, anchor_global.y() + _TAIL_GAP, self.width(), self.height())
+        origin = anchor.mapToGlobal(anchor.rect().center())
+        animate_popup_from_point(self, origin, final_geometry)
         self.line_edit.setFocus()
         self.update()

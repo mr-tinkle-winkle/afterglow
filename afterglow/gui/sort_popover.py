@@ -24,7 +24,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt, QRectF, QPoint, QRect
 from PySide6.QtGui import QPainter, QColor
-from PySide6.QtWidgets import QWidget, QHBoxLayout, QVBoxLayout, QStackedWidget, QAbstractButton
+from PySide6.QtWidgets import QWidget, QHBoxLayout, QVBoxLayout, QStackedWidget, QAbstractButton, QLayout
 
 from .. import config as config_module
 from .rounded_rect import rounded_rect_path
@@ -123,6 +123,12 @@ class SortPopover(QWidget):
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
+        # Same fix as SearchBubble's own layout -- see its comment.
+        # Without this, Qt clamps any setGeometry() call smaller than
+        # the layout's own computed minimum (driven by the tab buttons
+        # + stack's own size hints) straight back up to it, defeating
+        # animate_popup_from_point()'s small-starting-rect.
+        outer.setSizeConstraint(QLayout.SetNoConstraint)
 
         tab_row = QHBoxLayout()
         tab_row.setContentsMargins(0, 0, 0, 0)
@@ -139,7 +145,16 @@ class SortPopover(QWidget):
         self._stack = _RoundedContentArea(theme, radius)
         outer.addWidget(self._stack)
 
-        self.setFixedWidth(320)
+        # resize(), NOT setFixedWidth() -- a hard fixed width clamps
+        # any later setGeometry() call's width straight back to it
+        # immediately, which would defeat animate_popup_from_point()'s
+        # small-starting-rect the same way it did for SearchBubble
+        # (see that class's own comment on this exact bug). show_below()
+        # re-asserts this same 320px width after adjustSize() every
+        # time it's shown, so the popover's width is still effectively
+        # constant -- just not via a hard constraint that would also
+        # apply mid-animation.
+        self.resize(320, self.height())
         self._tab_buttons[0].setChecked(True)
 
     def set_page_widget(self, index: int, widget: QWidget) -> None:
@@ -167,10 +182,14 @@ class SortPopover(QWidget):
         appearing -- per Max's direct request for the Sort popover and
         Settings tab pages both to "come out of their buttons by
         scaling" instead of an instant appearance. adjustSize() first
-        (unchanged) to get this popover's real final size before
-        animate_popup_from_point computes the small starting rect
-        relative to it."""
+        (unchanged) to get this popover's real final height from its
+        current content, then re-assert the 320px width (adjustSize()
+        can change it based on content otherwise -- see __init__'s own
+        comment on why width is no longer a hard setFixedWidth
+        constraint) before animate_popup_from_point computes the small
+        starting rect relative to this final size."""
         self.adjustSize()
+        self.resize(320, self.height())
         pos = anchor.mapToGlobal(QPoint(0, anchor.height()))
         final_geometry = QRect(pos, self.size())
         origin = anchor.mapToGlobal(anchor.rect().center())

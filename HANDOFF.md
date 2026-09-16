@@ -328,6 +328,63 @@ Seven consecutive batches of Library/Settings/appearance
 features/bug fixes, given together each time. Newest first.
 
 ### This session
+Max provided a real app icon (replacing the `library.png`-derived
+placeholder from last session) and gave three more animation notes:
+
+1. **New app icon applied.** Regenerated the full 9-size icon set
+   (16 through 512) from the provided image via the same Pillow resize
+   pipeline as before -- same `data/icons/hicolor/<size>x<size>/apps/
+   afterglow.png` paths flake.nix's `postInstall` expects, just sourced
+   from the real icon now instead of the placeholder. Verified each
+   generated file is actually its claimed size.
+2. **Settings animation removed.** The "grow out of the clicked tab
+   button" overlay effect added last session (`reveal_from_point`,
+   called from `_on_settings_tab_clicked`) is gone -- tab switching is
+   back to a plain, instant `QStackedWidget.setCurrentIndex()`, per
+   Max's direct "get rid of the animations in the settings."
+3. **Search bubble now grows out of the Search icon**, matching what
+   Sort already had. `SearchBubble.show_below()` now calls the same
+   `animate_popup_from_point()` SortPopover uses, computing its usual
+   final position/size and animating geometry + opacity from a small
+   point at the Search button's own center up to it, instead of
+   jumping straight there.
+4. **Found and fixed a real bug while verifying #3 actually looked
+   right, not just that SOME animation was running.** Both
+   `SearchBubble` (`setFixedSize`) and `SortPopover` (`setFixedWidth`)
+   had hard size constraints that silently clamped
+   `animate_popup_from_point()`'s small starting geometry straight back
+   up to the FINAL size the instant `setGeometry()` was called --
+   meaning the animation was technically executing (the position
+   component moved correctly) but the size never actually appeared to
+   shrink, defeating the entire point of a "grow" effect. A SECOND,
+   independent source of the same clamping was also found and fixed:
+   even after removing those explicit constraints, each widget's own
+   `QLayout` (a `QHBoxLayout`/`QVBoxLayout` with real child widgets --
+   a line edit + checkbox for the bubble, tab buttons + a stack for the
+   popover) was AUTOMATICALLY computing and enforcing a minimum size
+   from those children's own size hints, which caused the exact same
+   clamping via a completely different mechanism. Fixed both: replaced
+   `setFixedSize`/`setFixedWidth` with plain `resize()` calls (a
+   one-time hint, not a hard floor/ceiling), and set
+   `QLayout.setSizeConstraint(QLayout.SetNoConstraint)` on both
+   widgets' own top-level layouts so Qt stops trying to auto-derive a
+   minimum size from their children at all -- safe in both cases
+   specifically because `show_below()` always asserts an exact final
+   geometry itself, so nothing actually depends on the layout's own
+   size negotiation to pick these widgets' size. Verified by checking
+   each popup's ACTUAL size in the very first frame after the
+   triggering click (not after letting the animation run) -- both now
+   genuinely measure roughly 24x24px at that moment, growing to their
+   real final size (260x64 for the bubble, 320xcontent-height for the
+   popover) only as the animation progresses. Two of my own smoke-test
+   assertions had to be updated alongside this fix -- they'd been
+   written checking geometry/pixel state immediately after a
+   `show_below()` call, back when that was still instantaneous;
+   they now wait for the animation to settle first, which is exactly
+   what exposed this bug's fix needed verifying properly rather than
+   just trusting the animation "ran."
+
+### Previous session
 **Build-breaking bug, reported directly from a real `nixos-rebuild-flaked`
 failure log:** `flake.nix`'s `postInstall` has always expected
 `data/applications/afterglow.desktop` and a full `data/icons/hicolor/

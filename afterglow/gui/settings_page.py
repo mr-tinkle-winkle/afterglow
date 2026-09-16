@@ -33,7 +33,6 @@ from .stats_settings_page import StatsPage
 from .custom_button import CustomButton
 from .custom_checkbox import CustomCheckBox
 from .custom_line_edit import CustomLineEdit
-from .scale_reveal import reveal_from_point
 
 
 class SettingsPage(QWidget):
@@ -74,7 +73,7 @@ class SettingsPage(QWidget):
             if index == 0:
                 btn.setChecked(True)
 
-        self._tab_button_group.idClicked.connect(self._on_settings_tab_clicked)
+        self._tab_button_group.idClicked.connect(self._settings_stack.setCurrentIndex)
 
         # A tab per settings cluster. "Clipping" is everything that used
         # to be the page's single "General" section (OBS/clip-capture
@@ -122,20 +121,6 @@ class SettingsPage(QWidget):
         outer.addLayout(save_row)
 
         self._load_clip_configs()
-
-    def _on_settings_tab_clicked(self, index: int) -> None:
-        """Switches pages as normal (instant, via QStackedWidget), then
-        overlays a brief "grow out of the button that was clicked"
-        animation on top of the newly-shown page -- per Max's direct
-        request. See scale_reveal.py's own docstring for why this is
-        an overlay rather than animating the real page's geometry
-        directly (the QStackedWidget's own layout would just fight and
-        override that)."""
-        self._settings_stack.setCurrentIndex(index)
-        button = self._tab_button_group.button(index)
-        if button is not None:
-            origin = button.mapToGlobal(button.rect().center())
-            reveal_from_point(self._settings_stack.currentWidget(), origin)
 
     # ------------------------------------------------------------ OBS group
 
