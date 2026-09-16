@@ -77,11 +77,16 @@ class CardInfoSettings:
     favorite-star, toggled from the Library's "Info" dropdown (next to
     Sort By). Render order on the card is: title, then length + file
     size on one line (size after length), then creation date, then
-    filters -- each independently toggleable here."""
+    filters, then (if enabled) the action-buttons row -- each
+    independently toggleable here."""
     show_filters: bool = True
     show_length: bool = False
     show_file_size: bool = False
     show_creation_date: bool = False
+    # Edit/Copy/Filters/Delete as their own clickable buttons directly
+    # on the card, below the filters section, rather than only reachable
+    # via the right-click context menu. On by default per Max's request.
+    show_action_buttons: bool = True
 
 
 @dataclass
@@ -117,7 +122,7 @@ class AppearanceSettings:
     # doubles the selection ring's width every time, since all of
     # these (the unedited-highlight border, the plain edited-video
     # border, and the selection ring) share this one setting.
-    unedited_selected_border_width: int = 144
+    unedited_selected_border_width: int = 6
     # Darkened 35% (100 -> 65) directly on Max's request.
     unedited_highlight_brightness: int = 65
     filter_icon_size: int = 54
@@ -191,7 +196,7 @@ class AppearanceSettings:
     # text on videos" without specifying just the title; flagged in
     # HANDOFF.md in case just the title was actually meant).
     card_text_color: str = "#9bcbff"
-    card_text_outline_color: str = "#3669a0"
+    card_text_outline_color: str = "#24466d"
     # 3x the previous hardcoded value (1.0), now an actual setting --
     # only ever applied to the TITLE specifically (the three smaller
     # info/date/tag-name lines stay at 0 -- fill only, no stroke --
@@ -394,20 +399,43 @@ def load() -> AppSettings:
         appearance_raw["afterglow_color_card_background"] = AppearanceSettings.afterglow_color_card_background
     if appearance_raw.get("afterglow_color_library") == "#152c4f":
         appearance_raw["afterglow_color_library"] = AppearanceSettings.afterglow_color_library
-    if appearance_raw.get("unedited_selected_border_width") in (9, 18, 36, 50, 72):
-        # Doubled several times in quick succession (9 -> 18 -> 36 -> 72
-        # -> 144), each time directly on Max's own request once he
-        # could see it rendered for real -- same stale-default
-        # reasoning as the color migrations above. 50 is included here
-        # too even though it was never an actual code default: the
-        # Settings page's border-width spinbox had its range capped at
-        # 0-50 while the real default had already grown past that (to
-        # 72), so QSpinBox silently CLAMPED the displayed/saved value
-        # to 50 on every Settings page visit + Save -- meaning 50 in a
-        # saved config is almost certainly that bug's damage, not a
-        # real choice, and is safe to treat the same way as the other
-        # stale defaults here. A GENUINELY custom value (anything other
-        # than these five specific numbers) is left alone.
+    if appearance_raw.get("card_text_outline_color") == "#3669a0":
+        appearance_raw["card_text_outline_color"] = AppearanceSettings.card_text_outline_color
+    # FOUND THE ACTUAL ROOT CAUSE of "asked to double this ~4 times and
+    # it either hasn't worked or hasn't happened": Max confirmed this
+    # is the SAME field that gets replaced by the unedited highlight --
+    # i.e. exactly this one, unedited_selected_border_width -- and that
+    # it's rendering at 3px on his real machine, nowhere near any of
+    # the values below. The rename migration two blocks above
+    # ("unedited_highlight_width" -> "unedited_selected_border_width")
+    # carries an old config's value over VERBATIM under the new field
+    # name -- so a config still on the pre-rename name with its
+    # original small value (almost certainly 3, this field's actual
+    # oldest default) got renamed correctly, but that carried-over
+    # value never matched any number in the list below, so it sailed
+    # through every one of these migrations untouched while the CODE
+    # default kept climbing (9 -> 18 -> 36 -> 72 -> 144) in a direction
+    # his real saved config could never follow. Every one of Max's past
+    # "please double it" requests was reasonably based on what he
+    # ACTUALLY saw rendered (a small few-pixel border that never
+    # budged), not on the increasingly large code default -- which
+    # explains the ever-growing gap. 3 is now added to this list so a
+    # config carrying that original value finally gets carried forward
+    # too, and the actual default is reset to a sane small number (6,
+    # exactly double the reported 3px) instead of the wildly
+    # disconnected 144 several sessions had climbed to without ever
+    # actually being seen. 144 itself is ALSO added here so anyone
+    # (this sandbox's own test configs included) sitting on that
+    # now-understood-to-be-mistaken value gets corrected too.
+    if appearance_raw.get("unedited_selected_border_width") in (3, 9, 18, 36, 50, 72, 144):
+        # 50 is included even though it was never an actual code
+        # default: the Settings page's border-width spinbox had its
+        # range capped at 0-50 while the real default had already
+        # grown past that, so QSpinBox silently CLAMPED the displayed/
+        # saved value to 50 on every Settings page visit + Save --
+        # meaning 50 in a saved config is almost certainly that bug's
+        # damage, not a real choice. A GENUINELY custom value (anything
+        # other than these seven specific numbers) is left alone.
         appearance_raw["unedited_selected_border_width"] = AppearanceSettings.unedited_selected_border_width
     appearance = AppearanceSettings(**appearance_raw)
     top_level = {
@@ -423,6 +451,32 @@ def load() -> AppSettings:
     )
     _ensure_dirs(settings)
     return settings
+
+
+def export_to_file(path: "Path | str") -> None:
+    """Write the current settings out to an arbitrary file (not the
+    normal CONFIG_FILE location) -- for backing up a configuration or
+    handing a "new default settings" file to someone else, per Max's
+    own request. Same TOML format as the real config file."""
+    settings = load()
+    data = asdict(settings)
+    with open(path, "wb") as f:
+        tomli_w.dump(data, f)
+
+
+def import_from_file(path: "Path | str") -> AppSettings:
+    """Read settings from an arbitrary file and adopt them as the app's
+    actual current config. Routed through the real CONFIG_FILE + load()
+    (rather than parsing the picked file directly into an AppSettings)
+    so an exported file from an older build still goes through every
+    migration/rename load() already knows how to do, instead of failing
+    outright on a since-renamed or removed field."""
+    with open(path, "rb") as f:
+        raw = tomllib.load(f)
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    with open(CONFIG_FILE, "wb") as f:
+        tomli_w.dump(raw, f)
+    return load()
 
 
 def save(settings: AppSettings) -> None:

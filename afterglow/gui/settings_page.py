@@ -15,10 +15,12 @@ stable across edits.
 """
 from __future__ import annotations
 
+import tomllib
+
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QGroupBox, QLineEdit,
     QSpinBox, QDoubleSpinBox, QPushButton, QFileDialog, QLabel, QScrollArea,
-    QMessageBox, QTabWidget, QCheckBox, QComboBox, QColorDialog,
+    QMessageBox, QCheckBox, QComboBox, QColorDialog, QStackedWidget, QButtonGroup,
 )
 from PySide6.QtGui import QColor
 
@@ -28,6 +30,7 @@ from ..clips import ClipError
 from .clip_config_row import ClipConfigRow
 from .filters_settings_page import FiltersSettingsPage
 from .stats_settings_page import StatsPage
+from .custom_button import CustomButton
 
 
 class SettingsPage(QWidget):
@@ -39,39 +42,72 @@ class SettingsPage(QWidget):
 
         outer = QVBoxLayout(self)
 
+        # ---- header row: one fully separate, fully-rounded custom
+        # button per settings page, each with real padding between them
+        # (NOT touching/corner-skipped like the Library's Local/
+        # Uploaded pair) -- per Max's direct instruction for this new
+        # UI styling pass. Text for now; CustomButton already supports
+        # set_icon_pixmap()/set_circular() for when Max provides the
+        # actual per-tab icons and asks for these to become circles,
+        # same as the Library header's Search/Refresh/Sort buttons --
+        # no new plumbing needed for that later step.
+        TAB_BUTTON_SPACING = 12
+        self._settings_stack = QStackedWidget()
+        self._tab_button_group = QButtonGroup(self)
+        self._tab_button_group.setExclusive(True)
+        tab_header = QHBoxLayout()
+        tab_header.setSpacing(0)
+
+        def _add_settings_tab(label: str, page: QWidget) -> None:
+            index = self._settings_stack.count()
+            self._settings_stack.addWidget(page)
+            btn = CustomButton(label)
+            btn.setCheckable(True)
+            btn.setMinimumHeight(36)
+            self._tab_button_group.addButton(btn, index)
+            if tab_header.count() > 0:
+                tab_header.addSpacing(TAB_BUTTON_SPACING)
+            tab_header.addWidget(btn)
+            if index == 0:
+                btn.setChecked(True)
+
+        self._tab_button_group.idClicked.connect(self._settings_stack.setCurrentIndex)
+
         # A tab per settings cluster. "Clipping" is everything that used
         # to be the page's single "General" section (OBS/clip-capture
         # settings) -- renamed once an actual appearance-focused
         # "General" tab existed, since "General" then meant something
         # more specific than "everything else."
-        tabs = QTabWidget()
         clipping_page = QWidget()
         clipping_layout = QVBoxLayout(clipping_page)
         clipping_layout.addWidget(self._build_obs_group())
         clipping_layout.addWidget(self._build_clipping_group())
         clipping_layout.addWidget(self._build_clip_options_group(), stretch=1)
-        tabs.addTab(clipping_page, "Clipping")
+        _add_settings_tab("Clipping", clipping_page)
 
         general_page = QWidget()
         general_layout = QVBoxLayout(general_page)
         general_layout.addWidget(self._build_appearance_group())
         general_layout.addStretch(1)
-        tabs.addTab(general_page, "General")
+        _add_settings_tab("General", general_page)
 
         self.filters_settings_page = FiltersSettingsPage()
-        tabs.addTab(self.filters_settings_page, "Filters")
+        _add_settings_tab("Filters", self.filters_settings_page)
 
         self.stats_page = StatsPage()
-        tabs.addTab(self.stats_page, "Stats")
+        _add_settings_tab("Stats", self.stats_page)
 
         advanced_page = QWidget()
         advanced_layout = QVBoxLayout(advanced_page)
         advanced_layout.addWidget(self._build_afterglow_theme_group())
         advanced_layout.addWidget(self._build_reset_group())
+        advanced_layout.addWidget(self._build_import_export_group())
         advanced_layout.addStretch(1)
-        tabs.addTab(advanced_page, "Advanced")
+        _add_settings_tab("Advanced", advanced_page)
 
-        outer.addWidget(tabs, stretch=1)
+        tab_header.addStretch(1)
+        outer.addLayout(tab_header)
+        outer.addWidget(self._settings_stack, stretch=1)
 
         save_row = QHBoxLayout()
         self.status_label = QLabel("")
@@ -556,6 +592,59 @@ class SettingsPage(QWidget):
         note.setWordWrap(True)
         layout.addWidget(note)
         return group
+
+    def _build_import_export_group(self) -> QGroupBox:
+        """Export the ENTIRE current config (not just appearance) to an
+        arbitrary file, or replace it wholesale from one -- per Max's
+        request, for handing a "new default settings" file back to a
+        future Claude session rather than describing every field by
+        hand. Distinct from the Reset group above: Reset always goes to
+        this BUILD's own code defaults; Import/Export moves a real,
+        specific config file in and out of the app."""
+        group = QGroupBox("Import / Export Settings")
+        layout = QVBoxLayout(group)
+
+        export_btn = QPushButton("Export Settings...")
+        export_btn.clicked.connect(self._export_settings)
+        layout.addWidget(export_btn)
+
+        import_btn = QPushButton("Import Settings...")
+        import_btn.clicked.connect(self._import_settings)
+        layout.addWidget(import_btn)
+
+        note = QLabel(
+            "Exports/imports the whole config file (all tabs, not just "
+            "Advanced) as a single .toml file. Importing replaces every "
+            "current setting and reopens this page to reflect it."
+        )
+        note.setWordWrap(True)
+        layout.addWidget(note)
+        return group
+
+    def _export_settings(self) -> None:
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export Settings", "afterglow-settings.toml", "TOML Files (*.toml)"
+        )
+        if not path:
+            return
+        try:
+            config_module.export_to_file(path)
+        except OSError as exc:
+            QMessageBox.warning(self, "Export Failed", f"Could not write settings to {path}:\n{exc}")
+
+    def _import_settings(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(self, "Import Settings", "", "TOML Files (*.toml)")
+        if not path:
+            return
+        try:
+            config_module.import_from_file(path)
+        except (OSError, tomllib.TOMLDecodeError) as exc:
+            QMessageBox.warning(self, "Import Failed", f"Could not read settings from {path}:\n{exc}")
+            return
+        QMessageBox.information(
+            self, "Settings Imported",
+            "Settings were imported successfully. Reopen Settings to see the new values everywhere.",
+        )
 
     def _revert_default_colors(self) -> None:
         defaults = config_module.AppearanceSettings()

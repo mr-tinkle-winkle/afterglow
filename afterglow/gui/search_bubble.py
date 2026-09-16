@@ -33,22 +33,31 @@ separate "click elsewhere" handling needed.
 """
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, QRectF, QPoint
+from PySide6.QtCore import Qt, QRectF, QPoint, Signal
 from PySide6.QtGui import QPainter, QPainterPath
-from PySide6.QtWidgets import QWidget, QVBoxLayout, QLineEdit
+from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLineEdit
 
 from .. import config as config_module
 from .rounded_rect import rounded_rect_path
 from .theme import Theme, contrast_text
+from .custom_checkbox import CustomCheckBox
 
-_TAIL_HEIGHT = 14   # visible height of the tail above the body's top edge
+_TAIL_HEIGHT = 20   # visible height of the tail above the body's top edge
 _TAIL_OVERLAP = 8   # how far the tail's base extends PAST that edge, into the body -- see module docstring, point 1
 _TAIL_WIDTH = 44
+_TAIL_GAP = 6        # blank space between the anchor button and the tail's own tip -- "float just a bit off" the button
 _WIDTH = 260
 _BODY_HEIGHT = 44
 
 
 class SearchBubble(QWidget):
+    # Emitted when the person actually wants to run the search --
+    # pressing Enter in the field, or clicking the confirm checkbox
+    # next to it -- NOT on every keystroke. Typing alone only updates
+    # what's visibly in the box; LibraryPage reads line_edit.text()
+    # itself when this fires, rather than this signal carrying the text.
+    search_confirmed = Signal()
+
     def __init__(self, parent=None):
         super().__init__(parent, Qt.Popup | Qt.FramelessWindowHint)
         self.setAttribute(Qt.WA_TranslucentBackground, True)
@@ -60,8 +69,9 @@ class SearchBubble(QWidget):
 
         self.setFixedSize(_WIDTH, _TAIL_HEIGHT + _BODY_HEIGHT)
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(14, _TAIL_HEIGHT + 8, 14, 8)
+        row = QHBoxLayout(self)
+        row.setContentsMargins(14, _TAIL_HEIGHT + 8, 14, 8)
+        row.setSpacing(8)
 
         self.line_edit = QLineEdit(self)
         self.line_edit.setPlaceholderText("Search title or description...")
@@ -73,7 +83,18 @@ class SearchBubble(QWidget):
         self.line_edit.setStyleSheet(
             f"QLineEdit {{ background: transparent; border: none; color: {text_color}; }}"
         )
-        layout.addWidget(self.line_edit)
+        # Search no longer runs live-as-you-type -- only on Enter or the
+        # confirm checkbox below, per Max's direct instruction (typing
+        # alone used to trigger _do_refresh on every keystroke via a
+        # chain this widget doesn't own; that wiring now waits for one
+        # of these two signals instead -- see LibraryPage).
+        self.line_edit.returnPressed.connect(self.search_confirmed.emit)
+        row.addWidget(self.line_edit, stretch=1)
+
+        self.confirm_checkbox = CustomCheckBox()
+        self.confirm_checkbox.setToolTip("Search")
+        self.confirm_checkbox.clicked.connect(self.search_confirmed.emit)
+        row.addWidget(self.confirm_checkbox)
 
     def _build_path(self) -> QPainterPath:
         body_rect = QRectF(0, _TAIL_HEIGHT, _WIDTH, _BODY_HEIGHT)
@@ -84,25 +105,31 @@ class SearchBubble(QWidget):
         peak_y = 0.0
         base_left = self._tail_x - _TAIL_WIDTH / 2
         base_right = self._tail_x + _TAIL_WIDTH / 2
-        # A rounded tip (small flat-ish top) rather than a sharp point --
-        # the two cubics curve inward from each base corner and meet
-        # just shy of dead-center at the peak, which is what gives the
-        # "flows into the bubble" look instead of a straight-edged
-        # triangle (point 2 above).
-        tip_half_width = _TAIL_WIDTH * 0.12
-        curve_reach = (base_y - peak_y) * 0.6
+        # A genuine POINT at the top now (not a small rounded/flat tip
+        # like before) -- per Max's direct correction, the tail should
+        # "reach a point where it ends at the top." The curve itself
+        # is one cubic per side, with the first control point pulled
+        # HORIZONTALLY toward the peak (same y as the base, not above
+        # it) so the curve leaves the body's flat top edge on a near-
+        # horizontal tangent -- "it should flatten out as it reaches
+        # the text bubble" -- rather than shooting straight up from the
+        # base corner. The second control point sits close to the
+        # peak itself, which is what pulls the curve sharply back
+        # inward at the top and gives it the pronounced "bump"/arc
+        # shape Max described, instead of a straight diagonal edge.
+        flare = _TAIL_WIDTH * 0.35
+        arc_reach = (base_y - peak_y) * 0.25
 
         tail_path = QPainterPath()
         tail_path.moveTo(base_left, base_y)
         tail_path.cubicTo(
-            base_left, base_y - curve_reach,
-            self._tail_x - tip_half_width, peak_y + curve_reach * 0.4,
-            self._tail_x - tip_half_width, peak_y,
+            base_left + flare, base_y,
+            self._tail_x, peak_y + arc_reach,
+            self._tail_x, peak_y,
         )
-        tail_path.lineTo(self._tail_x + tip_half_width, peak_y)
         tail_path.cubicTo(
-            self._tail_x + tip_half_width, peak_y + curve_reach * 0.4,
-            base_right, base_y - curve_reach,
+            self._tail_x, peak_y + arc_reach,
+            base_right - flare, base_y,
             base_right, base_y,
         )
         tail_path.lineTo(base_left, base_y)
@@ -127,10 +154,14 @@ class SearchBubble(QWidget):
         """Position directly BELOW `anchor` (the Search button), centered
         on it -- not off to one side, per Max's direct correction --
         with the tail (always at the bubble's own horizontal center)
-        pointing straight up at the button."""
+        pointing up at the button, floating _TAIL_GAP px clear of it
+        rather than touching (per his direct correction on this round
+        too) -- the gap is just blank space added to the move()
+        position, since the tail's own tip already sits at the very
+        top (y=0) of this widget's fixed geometry."""
         anchor_global = anchor.mapToGlobal(QPoint(0, anchor.height()))
         center_x = anchor_global.x() + anchor.width() // 2
-        self.move(center_x - _WIDTH // 2, anchor_global.y())
+        self.move(center_x - _WIDTH // 2, anchor_global.y() + _TAIL_GAP)
         self.show()
         self.line_edit.setFocus()
         self.update()

@@ -23,6 +23,7 @@ from .pixmap_effects import resolve_border_pixmap, hue_shift_pixmap_cached, silh
 from .rounded_rect import rounded_rect_path, round_pixmap_corners
 from .theme import Theme
 from .outlined_label import OutlinedLabel
+from .custom_button import CustomButton
 
 THUMB_SIZE = QSize(400, 224)  # 16:9, doubled from the original 200x112
 FAVORITE_STAR = "\u2605"  # "★"
@@ -338,6 +339,18 @@ class VideoCard(QWidget):
         # has nothing to show) whenever its setting is on, same
         # same-size-regardless-of-per-video-data reasoning as the icon
         # row above.
+        #
+        # SMALL_TEXT_OUTLINE_SCALE: the info/date/tag lines below are
+        # all fixed at 10px (see each one's own setStyleSheet call),
+        # much smaller than the title -- using the SAME outline width
+        # on both made the smaller text's outline look proportionally
+        # much thicker relative to its own glyph strokes, reported
+        # directly. Scaled down rather than given a totally separate
+        # setting, so a single "Text Outline Width" slider still
+        # controls both, just proportionally.
+        SMALL_TEXT_OUTLINE_SCALE = 0.5
+        small_text_outline_width = self._appearance.card_text_outline_width * SMALL_TEXT_OUTLINE_SCALE
+
         if info_settings.show_length or info_settings.show_file_size:
             parts = []
             if info_settings.show_length:
@@ -361,10 +374,13 @@ class VideoCard(QWidget):
             # complete, untouched glyph shape on top, so it never
             # disappears regardless of outline width; verified directly
             # even at the full default width (3.0) on 10px text, the
-            # fill stays clearly present.
+            # fill stays clearly present. Scaled DOWN from that full
+            # width now (see SMALL_TEXT_OUTLINE_SCALE above), not
+            # dropped back to 0 -- this text still gets a real, just
+            # proportionally thinner, outline.
             info_label.set_colors(
                 self._appearance.card_text_color, self._appearance.card_text_outline_color,
-                outline_width=self._appearance.card_text_outline_width,
+                outline_width=small_text_outline_width,
             )
             info_layout.addWidget(info_label)
 
@@ -375,7 +391,7 @@ class VideoCard(QWidget):
             date_label.setAlignment(Qt.AlignCenter)
             date_label.set_colors(
                 self._appearance.card_text_color, self._appearance.card_text_outline_color,
-                outline_width=self._appearance.card_text_outline_width,
+                outline_width=small_text_outline_width,
             )
             info_layout.addWidget(date_label)
 
@@ -394,9 +410,18 @@ class VideoCard(QWidget):
                 tag_label.setAlignment(Qt.AlignCenter)
                 tag_label.set_colors(
                     self._appearance.card_text_color, self._appearance.card_text_outline_color,
-                    outline_width=self._appearance.card_text_outline_width,
+                    outline_width=small_text_outline_width,
                 )
                 info_layout.addWidget(tag_label)
+
+        # Action-buttons row: Edit/Copy/Filters/Delete as their own
+        # clickable buttons on the card itself, below Filters -- an
+        # alternative to reaching them via right-click, on by default.
+        # Acts on THIS card's video only (not the current multi-
+        # selection), unlike the right-click menu's bulk actions --
+        # these are per-card buttons, not a selection-wide action.
+        if info_settings.show_action_buttons:
+            info_layout.addWidget(self._build_action_buttons_row())
 
         outer_layout.addWidget(self.info_box)
 
@@ -769,6 +794,38 @@ class VideoCard(QWidget):
             self._bulk_copy_to_clipboard(target_ids)
         elif chosen == delete_action:
             self._bulk_delete(target_ids)
+
+    def _build_action_buttons_row(self) -> QWidget:
+        """Edit/Copy/Filters/Delete, in that order, as real buttons on
+        the card -- text for now (Max: icons for these later). Each
+        acts on just THIS card's video, reusing the exact same handler
+        methods the right-click menu's single-video actions use, so
+        there's one source of truth for what each action actually
+        does."""
+        row = QWidget()
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(0, 4, 0, 0)
+        layout.setSpacing(4)
+        actions = [
+            ("Edit", lambda: self.edit_requested.emit(self.video_id)),
+            ("Copy", lambda: self._bulk_copy_to_clipboard({self.video_id})),
+            ("Filters", self._open_filters_menu_for_self),
+            ("Delete", lambda: self._bulk_delete({self.video_id})),
+        ]
+        for label, handler in actions:
+            btn = CustomButton(label)
+            btn.setMinimumHeight(24)
+            btn.clicked.connect(handler)
+            layout.addWidget(btn)
+        return row
+
+    def _open_filters_menu_for_self(self) -> None:
+        """The "Filters" action button opens the SAME side-opening
+        category submenu the right-click menu's Filters entry does
+        (_build_filters_menu), just exec'd directly instead of nested
+        under another menu item -- scoped to this one video only."""
+        filters_menu = self._build_filters_menu(self, {self.video_id}, [self._video])
+        filters_menu.exec(self.mapToGlobal(self.rect().center()))
 
     def _build_filters_menu(self, parent_menu: QMenu, target_ids: set[int],
                              target_videos: list["library.Video"]) -> QMenu:

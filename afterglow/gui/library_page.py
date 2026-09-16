@@ -17,7 +17,7 @@ from PySide6.QtGui import QPainter, QPixmap, QColor
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLineEdit,
     QScrollArea, QLabel, QStackedWidget, QMessageBox,
-    QCheckBox, QStyle, QInputDialog, QPushButton, QGroupBox, QRadioButton,
+    QStyle, QInputDialog, QPushButton, QGroupBox, QRadioButton,
     QButtonGroup, QAbstractButton, QApplication,
 )
 
@@ -32,6 +32,8 @@ from .custom_button import CustomButton
 from .smooth_scroll_area import SmoothScrollArea
 from .sort_popover import SortPopover
 from .search_bubble import SearchBubble
+from .pixmap_effects import tint_pixmap_cached
+from .custom_checkbox import CustomCheckBox
 
 # Approximate on-screen width of one card (thumbnail + its own internal
 # margins + the grid's inter-column spacing) -- used only to decide how
@@ -120,14 +122,15 @@ class _LibraryTabButton(QAbstractButton):
         super().leaveEvent(event)
 
 
-class FilterCheckBox(QCheckBox):
-    """A checkbox for one tag in the Filters dropdown that also supports
-    a third "block" state: right-clicking it (instead of left-clicking
-    to include) excludes any clip carrying that tag. Qt's QCheckBox has
-    no native tri-state visual for "blocked" (its own tristate mode is
-    for a hierarchical "some children checked" meaning, not this), so
-    the excluded state is shown via a crossed-out box glyph + red text
-    on the label rather than the checkbox's own indicator."""
+class FilterCheckBox(CustomCheckBox):
+    """A checkbox for one tag in the Filters page that also supports a
+    third "block" state: right-clicking it (instead of left-clicking to
+    include) excludes any clip carrying that tag. Custom-painted (see
+    CustomCheckBox) rather than a native QCheckBox -- checkmark icon for
+    "include", the x icon (Max: "for blocked in library filters and not
+    anywhere else") for "block", empty box for neither. This is the ONE
+    place the x icon is used; every other CustomCheckBox in the app only
+    ever shows the checkmark or nothing."""
 
     state_changed = Signal(str, str)  # tag_name, new state
 
@@ -135,9 +138,17 @@ class FilterCheckBox(QCheckBox):
         super().__init__(tag_name, parent)
         self._tag_name = tag_name
         self._state = FILTER_STATE_NONE
+        self._x_icon = resource_qpixmap("x_icon.png")
         self.toggled.connect(self._on_toggled)
         self.setContextMenuPolicy(Qt.CustomContextMenu)
         self.customContextMenuRequested.connect(self._on_right_click)
+
+    def _icon_for_state(self):
+        if self._state == FILTER_STATE_EXCLUDE:
+            return self._x_icon
+        if self._state == FILTER_STATE_INCLUDE:
+            return self._checkmark
+        return None
 
     def set_state(self, state: str) -> None:
         self._state = state
@@ -148,11 +159,10 @@ class FilterCheckBox(QCheckBox):
 
     def _refresh_label(self) -> None:
         if self._state == FILTER_STATE_EXCLUDE:
-            self.setText(f"\u2612 {self._tag_name} (blocked)")
-            self.setStyleSheet("color: #d9534f;")
+            self.setText(f"{self._tag_name} (blocked)")
         else:
             self.setText(self._tag_name)
-            self.setStyleSheet("")
+        self.update()
 
     def _on_toggled(self, checked: bool) -> None:
         self._state = FILTER_STATE_INCLUDE if checked else FILTER_STATE_NONE
@@ -253,6 +263,17 @@ class _VideoGridTab(QWidget):
 
         self.scroll = SmoothScrollArea()
         self.scroll.setWidgetResizable(True)
+        # A horizontal scrollbar should never legitimately appear here --
+        # the column count is computed to fit the available width (see
+        # _relayout) -- but a one-off rounding difference between that
+        # calculation and the grid's own actual spacing/margins could
+        # still leave content a pixel or two wider than the viewport,
+        # which is enough to trigger Qt's default ScrollBarAsNeeded
+        # policy. Reported directly as appearing "sometimes." Turning it
+        # off outright is simpler and more robust than chasing an exact
+        # rounding fix: there's nothing meant to be reachable by
+        # scrolling horizontally in this grid regardless.
+        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.grid_container = _SelectionClearingContainer()
         self.grid_container.background_clicked.connect(self._clear_selection)
         self.grid_layout = QGridLayout(self.grid_container)
@@ -328,7 +349,7 @@ class _VideoGridTab(QWidget):
         layout = QVBoxLayout(page)
         layout.setContentsMargins(8, 8, 8, 8)
 
-        favorite_checkbox = QCheckBox(f"{FAVORITE_STAR} Favorite")
+        favorite_checkbox = CustomCheckBox(f"{FAVORITE_STAR} Favorite")
         favorite_checkbox.setChecked(self._favorite_only)
         favorite_checkbox.toggled.connect(self._toggle_favorite_filter)
         layout.addWidget(favorite_checkbox)
@@ -369,7 +390,7 @@ class _VideoGridTab(QWidget):
         add_filter_btn.clicked.connect(self._add_new_filter)
         layout.addWidget(add_filter_btn)
 
-        highlight_checkbox = QCheckBox("Highlight Unedited")
+        highlight_checkbox = CustomCheckBox("Highlight Unedited")
         highlight_checkbox.setChecked(self._highlight_unedited)
         highlight_checkbox.toggled.connect(self._toggle_highlight_unedited)
         layout.addWidget(highlight_checkbox)
@@ -417,9 +438,10 @@ class _VideoGridTab(QWidget):
             ("Show Video Length", "show_length", card_info.show_length),
             ("Show File Size", "show_file_size", card_info.show_file_size),
             ("Show Creation Date", "show_creation_date", card_info.show_creation_date),
+            ("Show Action Buttons", "show_action_buttons", card_info.show_action_buttons),
         ]
         for label, field_name, checked in info_options:
-            checkbox = QCheckBox(label)
+            checkbox = CustomCheckBox(label)
             checkbox.setChecked(checked)
             checkbox.toggled.connect(lambda is_checked, f=field_name: self._set_card_info_field(f, is_checked))
             layout.addWidget(checkbox)
@@ -735,6 +757,8 @@ class LibraryPage(QWidget):
         self._stack.addWidget(self.local_tab)
         self._stack.addWidget(self.uploaded_tab)
 
+        appearance = config_module.load().appearance
+
         # ---- header row: Local/Uploaded's own custom page buttons, the
         # empty space next to them, then the shared Search/Refresh/Sort
         # toolbar -- replaces BOTH the old QTabWidget default page-header
@@ -778,8 +802,19 @@ class LibraryPage(QWidget):
         # icon-sized button with no explicit size set at all).
         TOOLBAR_BUTTON_DIAMETER = 72
         TOOLBAR_BUTTON_SPACING = 16
-        self._search_icon = resource_qpixmap("search_icon.png")
-        self._search_icon_active = resource_qpixmap("search_icon_active.png")
+        # Icons are retinted to the card text color (darkened 15%,
+        # i.e. .darker(115) in Qt's own inverse-percentage convention
+        # -- same idiom as every other "N% darker" spot in this
+        # codebase) rather than shown in their own original artwork
+        # colors, per Max's direct instruction. tint_pixmap_cached
+        # preserves each icon's alpha/shape and just recolors it, so
+        # they read as part of the same text system as everything else
+        # on a card instead of standing out as separately-colored art.
+        icon_tint = QColor(appearance.card_text_color).darker(115)
+        self._search_icon = tint_pixmap_cached("search_icon", resource_qpixmap("search_icon.png"), icon_tint)
+        self._search_icon_active = tint_pixmap_cached(
+            "search_icon_active", resource_qpixmap("search_icon_active.png"), icon_tint
+        )
         self.search_btn = CustomButton("Search")
         self.search_btn.setToolTip("Search")
         self.search_btn.set_icon_pixmap(self._search_icon)
@@ -790,7 +825,9 @@ class LibraryPage(QWidget):
 
         self.refresh_btn = CustomButton("Refresh")
         self.refresh_btn.setToolTip("Refresh")
-        self.refresh_btn.set_icon_pixmap(resource_qpixmap("refresh_icon.png"))
+        self.refresh_btn.set_icon_pixmap(
+            tint_pixmap_cached("refresh_icon", resource_qpixmap("refresh_icon.png"), icon_tint)
+        )
         self.refresh_btn.set_circular(TOOLBAR_BUTTON_DIAMETER)
         self.refresh_btn.clicked.connect(lambda: self._active_tab().refresh())
         header.addWidget(self.refresh_btn)
@@ -798,7 +835,9 @@ class LibraryPage(QWidget):
 
         self.sort_btn = CustomButton("Sort")
         self.sort_btn.setToolTip("Sort")
-        self.sort_btn.set_icon_pixmap(resource_qpixmap("sort_icon.png"))
+        self.sort_btn.set_icon_pixmap(
+            tint_pixmap_cached("sort_icon", resource_qpixmap("sort_icon.png"), icon_tint)
+        )
         self.sort_btn.set_circular(TOOLBAR_BUTTON_DIAMETER)
         self.sort_btn.clicked.connect(self._open_sort_popover)
         header.addWidget(self.sort_btn)
@@ -812,7 +851,8 @@ class LibraryPage(QWidget):
         # popover_pages for why this is safe: only one tab is ever
         # visible/interactive at a time).
         self.search_bubble = SearchBubble(self)
-        self.search_bubble.line_edit.textChanged.connect(self._on_shared_search_changed)
+        self.search_bubble.line_edit.textChanged.connect(self._on_search_text_typed)
+        self.search_bubble.search_confirmed.connect(self._on_search_confirmed)
         self.sort_popover = SortPopover(self)
 
         # Base size for the two page buttons' icons -- same "4.5x the
@@ -891,16 +931,20 @@ class LibraryPage(QWidget):
             self._sync_search_bubble_for_active_tab()
             self.search_bubble.show_below(self.search_btn)
 
-    def _on_shared_search_changed(self, text: str) -> None:
-        """The bubble's own line edit is the one visible search field,
-        shared across both tabs -- every keystroke writes straight into
-        whichever tab is CURRENTLY active's own (never-shown)
-        search_edit, which is what actually drives that tab's existing
-        textChanged -> _do_refresh wiring. Switching tabs re-syncs the
-        bubble's displayed text FROM the newly active tab instead (see
-        _sync_search_bubble_for_active_tab), so each tab's own search
-        query is preserved independently even though there's only one
-        visible text field."""
+    def _on_search_text_typed(self, text: str) -> None:
+        """Typing alone no longer runs the search (see SearchBubble's
+        own docstring) -- this only updates the Search button's icon so
+        it reflects what's currently TYPED, even before it's actually
+        been confirmed. The active tab's own search text (and therefore
+        the actual filtering) is only updated in _on_search_confirmed."""
+        self._update_search_icon(text)
+
+    def _on_search_confirmed(self) -> None:
+        """Fired by SearchBubble.search_confirmed -- Enter pressed, or
+        its confirm checkbox clicked. This is the ONE place that writes
+        into the active tab's own search_edit, which is what actually
+        drives that tab's existing textChanged -> _do_refresh wiring."""
+        text = self.search_bubble.line_edit.text()
         self._active_tab().search_edit.setText(text)
         self._update_search_icon(text)
 

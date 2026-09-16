@@ -26,7 +26,7 @@ since these buttons are only ever built once.
 """
 from __future__ import annotations
 
-from PySide6.QtCore import QSize, Qt
+from PySide6.QtCore import QSize, Qt, QRectF
 from PySide6.QtGui import QPainter, QRegion, QColor, QIcon, QPixmap, QImage
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QToolButton,
@@ -41,6 +41,7 @@ from .resources import resource_qicon, resource_qpixmap
 from .scaling import compute_scale
 from .pixmap_effects import resolve_border_pixmap, hue_shift_pixmap_cached
 from .theme import Theme
+from .rounded_rect import rounded_rect_path
 from .pulse_animation import PulseAnimator
 
 # Indices into self.stack -- fixed at construction time (see __init__).
@@ -103,19 +104,37 @@ def _darken_pixmap(pixmap: QPixmap, darken_factor: float) -> QPixmap:
 class _ScalingIconButton(QToolButton):
     """A QToolButton whose icon is resized to fill the button's own
     footprint (minus a small padding) instead of staying at a fixed
-    pixel size regardless of how big the button itself gets."""
+    pixel size regardless of how big the button itself gets.
+
+    Also now paints a turquoise background behind everything else --
+    "custom buttons akin to the current library local and uploaded
+    tabs, use turquoise for them as well" -- added as a layer UNDER the
+    existing border-gradient/icon rendering rather than a full rewrite
+    of this class, so the whole border-customization suite (gradient
+    images, hue shift, per-button brightness multipliers, active/
+    inactive icon darkening, the pulse animation) keeps working exactly
+    as it already did; only a new painted layer was added beneath it.
+    round_top/round_bottom skip rounding on whichever edge touches a
+    neighboring sidebar button (Library's bottom touches Editor's top),
+    same "don't round a touching seam" convention as the Library page's
+    own Local/Uploaded buttons and the Sort popover's tab strip."""
 
     ICON_PADDING = 14
 
     def __init__(self, icon_name: str, tooltip: str, appearance: "config_module.AppearanceSettings",
                  icon_size_percent: int, parent=None, size_basis: str = "min",
                  gradient_image_name: str | None = None, border_mode: str = "always",
-                 border_brightness_multiplier: int = 100):
+                 border_brightness_multiplier: int = 100,
+                 round_top: bool = True, round_bottom: bool = True):
         super().__init__(parent)
         self.setToolTip(tooltip)
         self.setCheckable(True)
         self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
         self.setAutoRaise(True)
+        self._appearance = appearance
+        self._theme = Theme(appearance)
+        self._round_top = round_top
+        self._round_bottom = round_bottom
         # Fully flat/transparent regardless of checked state -- without
         # this, the native style's own "checked" background fill (which
         # varies by theme/style) was what made the active button's
@@ -155,6 +174,7 @@ class _ScalingIconButton(QToolButton):
         self._normal_icon = QIcon(normal_pixmap)
         self._dark_icon = QIcon(_darken_pixmap(normal_pixmap, INACTIVE_ICON_DARKEN_FACTOR))
         self.toggled.connect(lambda _checked: self._apply_icon_for_state())
+        self.toggled.connect(lambda _checked: self.update())  # repaints the turquoise background layer too
 
         # "min": size to whichever of width/height is smaller (used by
         # Library/Editor, which are tall and narrow -- width is always
@@ -205,6 +225,28 @@ class _ScalingIconButton(QToolButton):
         return True  # "always"
 
     def paintEvent(self, event) -> None:
+        # Turquoise background layer, drawn FIRST (everything else --
+        # border gradient, icon -- draws on top of it normally
+        # afterward). Full turquoise when this is the active page,
+        # darker when it isn't -- same convention as the Library page's
+        # own Local/Uploaded buttons.
+        bg_painter = QPainter(self)
+        bg_painter.setRenderHint(QPainter.Antialiasing)
+        bg = self._theme.turquoise()
+        if not self.isChecked():
+            bg = bg.darker(140)
+        radius = self._appearance.rounded_corner_radius if self._appearance.rounded_corners_enabled else 0
+        if radius:
+            path = rounded_rect_path(
+                QRectF(self.rect()), radius,
+                top_left=self._round_top, top_right=self._round_top,
+                bottom_left=self._round_bottom, bottom_right=self._round_bottom,
+            )
+            bg_painter.fillPath(path, bg)
+        else:
+            bg_painter.fillRect(self.rect(), bg)
+        bg_painter.end()
+
         if self._gradient_pixmap is not None and self._border_visible():
             # Same effect as VideoCard's unedited-clip highlight (a
             # gradient image behind the content, only visible as a
@@ -339,11 +381,13 @@ class MainWindow(QMainWindow):
             "library.png", "Library", appearance, appearance.library_icon_size,
             gradient_image_name="library_bg_gradient.png",
             border_brightness_multiplier=appearance.library_border_brightness_multiplier,
+            round_top=True, round_bottom=False,  # bottom touches Editor's top -- see class docstring
         )
         self.editor_nav_btn = _ScalingIconButton(
             "editor.png", "Editor", appearance, appearance.editor_icon_size,
             gradient_image_name="editor_bg_gradient.png",
             border_brightness_multiplier=appearance.editor_border_brightness_multiplier,
+            round_top=False, round_bottom=True,  # top touches Library's bottom
         )
         # size_basis="width": Settings has a small FIXED height (below),
         # so sizing its icon off min(width, height) like the other two

@@ -16,7 +16,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtGui import QPixmap, QImage, QColor
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QPixmap, QImage, QColor, QPainter
 
 
 def resolve_border_pixmap(custom_image_path: str, default_pixmap: QPixmap) -> QPixmap:
@@ -201,3 +202,36 @@ def silhouette_outline_pixmap_cached(cache_key: str, pixmap: QPixmap, color: QCo
     if key not in _outline_cache:
         _outline_cache[key] = silhouette_outline_pixmap(pixmap, color, width)
     return _outline_cache[key]
+
+
+def tint_pixmap(pixmap: QPixmap, color: QColor) -> QPixmap:
+    """Recolor every pixel of `pixmap` to a single flat `color`,
+    preserving the pixmap's existing alpha channel (so the icon's
+    silhouette/shape is kept, but whatever colors/gradient it shipped
+    with are replaced entirely) -- used for the Search/Refresh/Sort
+    toolbar icons, which are recolored to match the card text color
+    rather than shown in their own original artwork colors. A single
+    composited QPainter pass (CompositionMode_SourceIn), not a
+    per-pixel Python loop like hue_shift_pixmap -- cheap enough to not
+    strictly need caching, but cached below anyway for consistency
+    with this module's other pixmap effects and because these three
+    icons get reloaded/retinted together every time the header is
+    rebuilt."""
+    result = QPixmap(pixmap.size())
+    result.fill(Qt.transparent)
+    painter = QPainter(result)
+    painter.drawPixmap(0, 0, pixmap)
+    painter.setCompositionMode(QPainter.CompositionMode_SourceIn)
+    painter.fillRect(result.rect(), color)
+    painter.end()
+    return result
+
+
+_tint_cache: dict[tuple[str, str], QPixmap] = {}
+
+
+def tint_pixmap_cached(cache_key: str, pixmap: QPixmap, color: QColor) -> QPixmap:
+    key = (cache_key, color.name())
+    if key not in _tint_cache:
+        _tint_cache[key] = tint_pixmap(pixmap, color)
+    return _tint_cache[key]
