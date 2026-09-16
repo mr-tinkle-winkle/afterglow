@@ -1,0 +1,637 @@
+"""
+The Editor page. Per your requirement: it must remember whatever video was
+last being edited even after navigating away to Settings/Library and back.
+
+That persistence falls out naturally from how MainWindow is structured --
+each page is constructed exactly once and kept alive inside the
+QStackedWidget for the lifetime of the app (switching pages just changes
+which widget is visible, it never destroys/recreates them). So
+EditorPage's `self.current_video_id` simply stays whatever it was, with
+no extra save/restore logic needed. This is why load_video() below is the
+ONLY place state changes -- there's no "on page shown, reload state" path,
+because there's nothing to reload from; it never went away.
+
+This delivery adds the actual trim UI on top of the video playback built
+previously: drag handles on a timeline set the start/end range, dragging
+a handle live-seeks the preview to that point (Medal-style "see where the
+cut lands"), a Frame Perfect Accuracy checkbox controls trim precision
+vs. speed, and Local Save commits the trim via library.apply_trim().
+Save & Upload is wired up but not functional yet -- YouTube upload isn't
+built. The audio graph editor (per-segment volume/mute/trim/reposition)
+is still a separate, later phase.
+"""
+from __future__ import annotations
+
+from PySide6.QtCore import Qt, QTimer
+from PySide6.QtWidgets import (
+    QWidget, QVBoxLayout, QLabel, QHBoxLayout, QPushButton,
+    QCheckBox, QMessageBox, QLineEdit, QToolButton, QMenu, QWidgetAction,
+    QDialog, QDialogButtonBox, QDoubleSpinBox, QSizePolicy,
+)
+# QPushButton already imported above -- used for the toolbar Save/Undo
+# buttons and now also for the "+ Add Filter" item embedded in the
+# Filters dropdown (see _rebuild_editor_filters_menu).
+
+from .. import library
+from .mpv_widget import MpvVideoWidget
+from .trim_timeline import TrimTimeline
+from .volume_bar import VolumeBar
+
+FAVORITE_STAR = "\u2605"  # "★"
+
+
+class CreateFilterDialog(QDialog):
+    """"Create New Filter": a name field plus "Apply to current video?" --
+    used from the Editor's + button next to its Filters dropdown."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Create New Filter")
+        layout = QVBoxLayout(self)
+
+        self.name_edit = QLineEdit()
+        self.name_edit.setPlaceholderText("Filter name")
+        layout.addWidget(self.name_edit)
+
+        self.apply_checkbox = QCheckBox("Apply to current video?")
+        self.apply_checkbox.setChecked(True)
+        layout.addWidget(self.apply_checkbox)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def filter_name(self) -> str:
+        return self.name_edit.text().strip()
+
+    def apply_to_current(self) -> bool:
+        return self.apply_checkbox.isChecked()
+
+
+def _format_time(seconds: float) -> str:
+    seconds = max(0, int(seconds))
+    minutes, secs = divmod(seconds, 60)
+    return f"{minutes}:{secs:02d}"
+
+
+# Tolerance for "close enough to count as at the end/start" comparisons
+# around the preview-bound clamp and restart-seek logic below -- mpv's
+# last actually-decoded frame is very often a hair before the nominal
+# duration (frame timing/rounding), so exact equality comparisons there
+# are unreliable.
+_EOF_EPSILON_SEC = 0.15
+
+
+class EditorPage(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.current_video_id: int | None = None
+        self._duration: float = 0.0
+        # Tracked directly from position_changed rather than derived from
+        # a seek slider's quantized 0-1000 integer range (the old
+        # approach) -- that round-trip through integer steps was
+        # precise enough to visually look right, but not precise enough
+        # for the >= self._preview_end comparison in _toggle_play_pause
+        # below: rounding could land a hair under preview_end, silently
+        # skipping the "jump back to start" branch and making Play/Space
+        # right at the trim end look like it did nothing.
+        self._current_pos: float = 0.0
+        # Set right after an explicit restart-seek (Play/Space pressed
+        # while stopped at/past the end) and cleared by a short timer
+        # rather than by inspecting the next position report's value.
+        # Needed because mpv's seek() is async: a position report
+        # reflecting where playback was BEFORE the seek can still be "in
+        # flight" and arrive just after we call seek()+play(), which
+        # would otherwise immediately re-trigger the preview_end clamp
+        # below and look like either "does nothing" (untrimmed -- the
+        # stale report is right at the old end, so is_paused flips true
+        # again almost instantly) or "plays for a moment then stops"
+        # (trimmed -- same mechanism, just with the seek target being
+        # preview_start instead of 0).
+        #
+        # A first version tried to distinguish "stale" from "fresh"
+        # reports by checking whether the reported position was close to
+        # the seek target -- but that broke down for a short trim
+        # selection where the very first fresh post-seek report can
+        # legitimately already be close to preview_end (e.g. a short
+        # clip decoding faster than the position-update interval),
+        # getting misread as still-stale and leaving the guard stuck on
+        # indefinitely. A flat time-based debounce sidesteps that
+        # entirely: ignore ALL position reports for a short fixed window
+        # after a restart-seek, then resume normal processing
+        # unconditionally, regardless of what value shows up.
+        self._awaiting_restart_seek = False
+        # Live playback preview is bounded to the current UNSAVED trim
+        # selection -- Play always starts from the trim start, and
+        # playback auto-pauses at the trim end, so scrubbing through a
+        # long capture to find your cut points doesn't mean sitting
+        # through everything after them too. Deliberately separate from
+        # trim_timeline.start/end: those update continuously while a
+        # handle is being dragged (for the live label), but the preview
+        # bounds below only update once the handle is released, so the
+        # clamp point doesn't jitter mid-drag.
+        self._preview_start: float = 0.0
+        self._preview_end: float = 0.0
+
+        # Prev/Next editor navigation -- set once by MainWindow via
+        # set_neighbor_provider() (a callable: video_id -> (prev_video,
+        # next_video), library.Video-or-None each), then queried fresh
+        # every time _refresh_display() runs, so it always reflects
+        # whichever Library tab's CURRENT sort/filter/search the video
+        # was actually opened from -- not a one-time snapshot taken back
+        # when Edit was first clicked, which could go stale if the
+        # Library's view changes while this video is open for editing.
+        self._neighbor_provider = None
+        self._prev_video_id: int | None = None
+        self._next_video_id: int | None = None
+
+        layout = QVBoxLayout(self)
+
+        # ---- title (editable) + filters, at the very top ----
+        title_row = QHBoxLayout()
+        self.title_edit = QLineEdit()
+        self.title_edit.setPlaceholderText("No video selected")
+        self.title_edit.setEnabled(False)
+        self.title_edit.editingFinished.connect(self._on_title_edited)
+        title_row.addWidget(self.title_edit, stretch=1)
+
+        self.favorite_btn = QToolButton()
+        self.favorite_btn.setText(FAVORITE_STAR)
+        self.favorite_btn.setCheckable(True)
+        self.favorite_btn.setToolTip("Favorite this clip")
+        self.favorite_btn.setEnabled(False)
+        self.favorite_btn.toggled.connect(self._on_favorite_toggled)
+        title_row.addWidget(self.favorite_btn)
+
+        self.filters_btn = QToolButton()
+        self.filters_btn.setText("Filters")
+        self.filters_btn.setPopupMode(QToolButton.InstantPopup)
+        self.filters_btn.setEnabled(False)
+        title_row.addWidget(self.filters_btn)
+        layout.addLayout(title_row)
+
+        self.video_widget = MpvVideoWidget()
+        # Play/pause is now click-the-video-or-press-space (see
+        # MpvVideoWidget) instead of a dedicated button.
+        self.video_widget.clicked.connect(self._toggle_play_pause)
+        # MpvVideoWidget's own default size policy is Preferred/Preferred,
+        # not Expanding -- previously harmless, since addWidget(widget,
+        # stretch=1) directly on the outer QVBoxLayout obeys an explicit
+        # stretch factor regardless of the widget's own policy. Once the
+        # video moved into its own nested video_row QHBoxLayout below (for
+        # the prev/next arrows), that stopped being true: a *sub-layout*
+        # added via addLayout(..., stretch=1) only actually claims extra
+        # vertical space from the outer layout if something inside it
+        # reports wanting to expand -- neither the arrow buttons
+        # (Fixed/Fixed) nor video_widget (Preferred/Preferred) did, so the
+        # whole row collapsed to a short band near the top with all the
+        # window's remaining height left empty below it. Setting this
+        # explicitly is what actually fixes it.
+        self.video_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+
+        # Prev/Next flank the video itself (not the transport row below)
+        # -- cycles to the previous/next video according to whatever the
+        # Library tab this video was opened from is CURRENTLY sorted/
+        # filtered/searched by (see set_neighbor_provider below), not a
+        # fixed/independent ordering of the Editor's own. Disabled with
+        # no tooltip at either end of that list, or if no video is
+        # loaded at all.
+        video_row = QHBoxLayout()
+        self.prev_video_btn = QToolButton()
+        self.prev_video_btn.setText("\u25c0")  # "◀"
+        self.prev_video_btn.setEnabled(False)
+        self.prev_video_btn.setToolButtonStyle(Qt.ToolButtonTextOnly)
+        self.prev_video_btn.clicked.connect(self._go_to_prev_video)
+        video_row.addWidget(self.prev_video_btn)
+        video_row.addWidget(self.video_widget, stretch=1)
+        self.next_video_btn = QToolButton()
+        self.next_video_btn.setText("\u25b6")  # "▶"
+        self.next_video_btn.setEnabled(False)
+        self.next_video_btn.setToolButtonStyle(Qt.ToolButtonTextOnly)
+        self.next_video_btn.clicked.connect(self._go_to_next_video)
+        video_row.addWidget(self.next_video_btn)
+        layout.addLayout(video_row, stretch=1)
+
+        self.video_widget.position_changed.connect(self._on_position_changed)
+        self.video_widget.duration_known.connect(self._on_duration_known)
+        self.video_widget.playback_ended.connect(self._on_playback_ended)
+
+        # ---- transport ----
+        transport_row = QHBoxLayout()
+        self.time_label = QLabel("0:00 / 0:00")
+        transport_row.addWidget(self.time_label)
+        transport_row.addStretch(1)
+        layout.addLayout(transport_row)
+
+        # ---- trim timeline (the only seek/scrub bar -- see class docstring) ----
+        self.trim_timeline = TrimTimeline()
+        self.trim_timeline.setEnabled(False)
+        self.trim_timeline.range_changed.connect(self._on_trim_range_changed)
+        self.trim_timeline.seek_requested.connect(self._on_trim_seek_requested)
+        self.trim_timeline.drag_started.connect(self._on_trim_drag_started)
+        self.trim_timeline.drag_finished.connect(self._on_trim_drag_finished)
+        layout.addWidget(self.trim_timeline)
+
+        self.trim_range_label = QLabel("Start: 0:00   End: 0:00   Selected: 0:00")
+        self.trim_range_label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(self.trim_range_label)
+
+        # ---- volume (fills ~1/4 of the row, rest is blank space) ----
+        volume_row = QHBoxLayout()
+        self.volume_bar = VolumeBar()
+        self.volume_bar.value_changed.connect(self._on_volume_changed)
+        volume_row.addWidget(self.volume_bar, stretch=1)
+        # The volume bar and this trailing spacer are the row's only two
+        # stretchable items, so a 1:3 ratio gives the bar exactly 1/4 of
+        # the row's width -- "about a fourth of the width it currently
+        # does" -- with the remaining 3/4 showing as blank space.
+        volume_row.addStretch(3)
+        layout.addLayout(volume_row)
+
+        self.video_widget.set_volume(self.volume_bar.value)
+
+        speed_row = QHBoxLayout()
+        speed_row.addWidget(QLabel("Watch Speed:"))
+        self.speed_spin = QDoubleSpinBox()
+        self.speed_spin.setRange(0.05, 4.0)
+        self.speed_spin.setSingleStep(0.1)
+        self.speed_spin.setDecimals(2)
+        self.speed_spin.setValue(1.0)
+        self.speed_spin.setSuffix("x")
+        self.speed_spin.setToolTip(
+            "Preview-only playback speed (e.g. 0.1x = 10% speed) -- doesn't "
+            "affect the saved clip in any way. Resets to 1.00x whenever a "
+            "different video is loaded."
+        )
+        self.speed_spin.valueChanged.connect(self._on_speed_changed)
+        speed_row.addWidget(self.speed_spin)
+        speed_row.addStretch(1)
+        layout.addLayout(speed_row)
+
+        coming_soon_label = QLabel(
+            "The audio graph editor (per-segment volume/mute/trim/reposition) "
+            "is coming in a later build phase."
+        )
+        coming_soon_label.setStyleSheet("color: gray;")
+        coming_soon_label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(coming_soon_label)
+
+        # ---- save controls ----
+        save_row = QHBoxLayout()
+        self.frame_perfect_checkbox = QCheckBox("Frame Perfect Accuracy")
+        self.frame_perfect_checkbox.setToolTip(
+            "Exact frame-accurate trim (slower, full re-encode). Off uses a "
+            "fast keyframe-based trim -- fine for most clips, but the actual "
+            "cut point may land on the nearest keyframe rather than exactly "
+            "where you dragged the handle."
+        )
+        save_row.addWidget(self.frame_perfect_checkbox)
+        save_row.addStretch(1)
+
+        self.local_save_btn = QPushButton("Local Save")
+        self.local_save_btn.setEnabled(False)
+        self.local_save_btn.clicked.connect(self._local_save)
+        save_row.addWidget(self.local_save_btn)
+
+        self.save_upload_btn = QPushButton("Save && Upload")
+        self.save_upload_btn.setEnabled(False)
+        self.save_upload_btn.clicked.connect(self._save_and_upload)
+        save_row.addWidget(self.save_upload_btn)
+        layout.addLayout(save_row)
+
+        button_row = QHBoxLayout()
+        self.undo_btn = QPushButton("Undo Edits")
+        self.undo_btn.setEnabled(False)
+        self.undo_btn.clicked.connect(self._undo)
+        button_row.addWidget(self.undo_btn)
+
+        self.clear_backup_btn = QPushButton("Clear Edit Backup")
+        self.clear_backup_btn.setToolTip(
+            "Delete this video's edit backup to free up space. The edit "
+            "itself stays applied -- you just give up the ability to Undo."
+        )
+        self.clear_backup_btn.setEnabled(False)
+        self.clear_backup_btn.clicked.connect(self._clear_edit_backup)
+        button_row.addWidget(self.clear_backup_btn)
+        layout.addLayout(button_row)
+
+    # ------------------------------------------------------------ loading
+
+    def load_video(self, video_id: int) -> None:
+        self.current_video_id = video_id
+        self._duration = 0.0
+        # Watch Speed is a live preview-only control, not a per-video
+        # setting -- reset it every time a (possibly different) video is
+        # loaded rather than carrying whatever speed was left over from
+        # whatever was being watched before, which would be surprising
+        # ("why is this playing at 2x?") for a video that was never
+        # explicitly set to that.
+        self.speed_spin.blockSignals(True)
+        self.speed_spin.setValue(1.0)
+        self.speed_spin.blockSignals(False)
+        self.video_widget.set_speed(1.0)
+        self._refresh_display()
+
+    def set_neighbor_provider(self, provider) -> None:
+        """provider: (video_id: int) -> tuple[Video | None, Video | None],
+        the (previous, next) video according to whatever ordering the
+        video was actually opened from. Set once by MainWindow at
+        startup (see main_window.py) -- queried fresh on every
+        _refresh_display() call rather than cached, so Prev/Next always
+        reflect the CURRENT state of that ordering."""
+        self._neighbor_provider = provider
+
+    def apply_scale(self, factor: float) -> None:
+        self.trim_timeline.set_scale(factor)
+        self.volume_bar.set_scale(factor)
+
+    def hideEvent(self, event) -> None:
+        # The loaded clip stays loaded when navigating to another page
+        # (see this file's module docstring -- the page itself is never
+        # destroyed), but playback shouldn't keep running unattended in
+        # the background -- pause it, same as any other "left the video
+        # paused, come back to it later" pause.
+        super().hideEvent(event)
+        if self.current_video_id is not None and not self.video_widget.is_paused:
+            self.video_widget.pause()
+
+    def _refresh_display(self) -> None:
+        if self.current_video_id is None:
+            self.title_edit.clear()
+            self.title_edit.setEnabled(False)
+            self.filters_btn.setEnabled(False)
+            self.filters_btn.setMenu(None)
+            self.favorite_btn.setEnabled(False)
+            self.undo_btn.setEnabled(False)
+            self.clear_backup_btn.setEnabled(False)
+            self.trim_timeline.setEnabled(False)
+            self.local_save_btn.setEnabled(False)
+            self.save_upload_btn.setEnabled(False)
+            self.prev_video_btn.setEnabled(False)
+            self.prev_video_btn.setToolTip("")
+            self.next_video_btn.setEnabled(False)
+            self.next_video_btn.setToolTip("")
+            self._prev_video_id = None
+            self._next_video_id = None
+            return
+
+        video = library.get_video(self.current_video_id)
+        self.video_widget.load(video.path)
+        self.video_widget.setFocus()  # so Space works right away, without needing a click first
+        self.trim_timeline.setEnabled(True)
+        self.local_save_btn.setEnabled(True)
+        self.save_upload_btn.setEnabled(True)
+
+        self.title_edit.setEnabled(True)
+        self.title_edit.setText(video.title)
+        self.filters_btn.setEnabled(True)
+        self.favorite_btn.setEnabled(True)
+        self.favorite_btn.blockSignals(True)
+        self.favorite_btn.setChecked(video.favorite)
+        self.favorite_btn.blockSignals(False)
+        self._rebuild_editor_filters_menu(video)
+
+        # Both require an actual backup to act on -- once Clear Edit Backup
+        # (or a prior Undo) has removed it, has_edit can still be true
+        # (the trim is still applied) but there's nothing left to undo or
+        # clear.
+        can_undo = video.has_edit and video.backup_path is not None
+        self.undo_btn.setEnabled(can_undo)
+        self.clear_backup_btn.setEnabled(can_undo)
+
+        prev_video = next_video = None
+        if self._neighbor_provider is not None:
+            prev_video, next_video = self._neighbor_provider(self.current_video_id)
+        self.prev_video_btn.setEnabled(prev_video is not None)
+        self.prev_video_btn.setToolTip(prev_video.title if prev_video else "")
+        self._prev_video_id = prev_video.id if prev_video else None
+        self.next_video_btn.setEnabled(next_video is not None)
+        self.next_video_btn.setToolTip(next_video.title if next_video else "")
+        self._next_video_id = next_video.id if next_video else None
+
+    def _on_title_edited(self) -> None:
+        if self.current_video_id is None:
+            return
+        new_title = self.title_edit.text().strip()
+        video = library.get_video(self.current_video_id)
+        if not new_title:
+            # Don't allow blanking the title out -- revert the box rather
+            # than saving an empty one.
+            self.title_edit.setText(video.title)
+            return
+        if new_title != video.title:
+            library.rename_video(self.current_video_id, title=new_title)
+
+    def _rebuild_editor_filters_menu(self, video: "library.Video") -> None:
+        menu = QMenu(self.filters_btn)
+        all_tags = library.all_known_tags()
+        if not all_tags:
+            action = menu.addAction("(no filters yet)")
+            action.setEnabled(False)
+        for tag in all_tags:
+            checkbox = QCheckBox(tag, menu)
+            checkbox.setChecked(tag in video.tags)
+            checkbox.toggled.connect(lambda checked, t=tag: self._toggle_video_filter(t, checked))
+            action = QWidgetAction(menu)
+            action.setDefaultWidget(checkbox)
+            menu.addAction(action)
+
+        menu.addSeparator()
+        add_filter_btn = QPushButton("+ Add Filter")
+        add_filter_btn.setFlat(True)
+        add_filter_btn.clicked.connect(self._open_create_filter_dialog)
+        add_filter_action = QWidgetAction(menu)
+        add_filter_action.setDefaultWidget(add_filter_btn)
+        menu.addAction(add_filter_action)
+
+        self.filters_btn.setMenu(menu)
+
+    def _on_favorite_toggled(self, checked: bool) -> None:
+        if self.current_video_id is None:
+            return
+        library.set_favorite(self.current_video_id, checked)
+
+    def _toggle_video_filter(self, tag: str, checked: bool) -> None:
+        if self.current_video_id is None:
+            return
+        if checked:
+            library.add_tag_to_video(self.current_video_id, tag)
+        else:
+            library.remove_tag_from_video(self.current_video_id, tag)
+
+    def _open_create_filter_dialog(self) -> None:
+        if self.current_video_id is None:
+            return
+        dialog = CreateFilterDialog(self)
+        if dialog.exec() != QDialog.Accepted:
+            return
+        name = dialog.filter_name()
+        if not name:
+            return
+        if dialog.apply_to_current():
+            library.add_tag_to_video(self.current_video_id, name)
+        else:
+            library.create_tag(name)
+        video = library.get_video(self.current_video_id)
+        self._rebuild_editor_filters_menu(video)
+
+    # ------------------------------------------------------------ transport
+
+    def _toggle_play_pause(self) -> None:
+        if self.current_video_id is None:
+            return
+        if self.video_widget.is_paused:
+            # Starting playback from outside (or at the tail of) the
+            # current trim selection jumps to the trim start first,
+            # rather than resuming from wherever the playhead happened
+            # to be left -- otherwise "Play" after scrubbing past the end
+            # bound would just immediately hit it again and stop.
+            #
+            # A small epsilon tolerance on the preview_end comparison
+            # matters here specifically for an UNTRIMMED video (preview_
+            # end == the exact media duration): the actual last decoded
+            # frame's timestamp is very often a hair less than the
+            # nominal duration (frame timing/rounding), so a strict
+            # position >= self._preview_end could stay permanently false
+            # even once mpv itself has reached end-of-file and paused
+            # there (via keep_open) -- which meant Play/Space at the
+            # true end of an untrimmed video did nothing at all, since
+            # neither branch below ever triggered.
+            position = self._current_position()
+            at_or_past_end = position >= self._preview_end - _EOF_EPSILON_SEC
+            if position < self._preview_start or at_or_past_end:
+                self.video_widget.seek(self._preview_start)
+                # Optimistic update, and suppress the clamp in
+                # _on_position_changed for a short window until any
+                # stale pre-seek report has had time to arrive and be
+                # ignored -- seek() is async, so a stale report of the
+                # OLD (pre-seek, near/at the end) position can still
+                # arrive right after this and would otherwise
+                # immediately re-trigger the end-of-preview clamp,
+                # making it look like restarting "did nothing" or
+                # "played for only a moment." See the attribute's own
+                # comment in __init__ for why this is a timer, not a
+                # position-value check.
+                self._current_pos = self._preview_start
+                self._awaiting_restart_seek = True
+                QTimer.singleShot(250, self._clear_restart_seek_guard)
+            self.video_widget.play()
+        else:
+            self.video_widget.pause()
+
+    def _clear_restart_seek_guard(self) -> None:
+        self._awaiting_restart_seek = False
+
+    def _on_volume_changed(self, value: int) -> None:
+        self.video_widget.set_volume(value)
+
+    def _on_speed_changed(self, value: float) -> None:
+        self.video_widget.set_speed(value)
+
+    def _go_to_prev_video(self) -> None:
+        if self._prev_video_id is not None:
+            self.load_video(self._prev_video_id)
+
+    def _go_to_next_video(self) -> None:
+        if self._next_video_id is not None:
+            self.load_video(self._next_video_id)
+
+    def _current_position(self) -> float:
+        return self._current_pos
+
+    def _on_position_changed(self, position: float) -> None:
+        if self._awaiting_restart_seek:
+            # Ignore every report during the debounce window
+            # unconditionally, rather than trying to tell a stale one
+            # apart from a fresh one by value -- see __init__'s comment
+            # on why the value-based version of this was fragile.
+            return
+
+        self._current_pos = position
+        if (
+            not self.video_widget.is_paused
+            and self._preview_end > 0
+            and position >= self._preview_end - _EOF_EPSILON_SEC
+        ):
+            # Live preview is bounded to the unsaved trim selection --
+            # stop right at the trim end instead of playing on into
+            # footage that's about to be cut.
+            self.video_widget.pause()
+            self.video_widget.seek(self._preview_end)
+            self._current_pos = self._preview_end
+            return
+        self.time_label.setText(f"{_format_time(position)} / {_format_time(self._duration)}")
+        self.trim_timeline.set_playhead(position)
+
+    def _on_duration_known(self, duration: float) -> None:
+        self._duration = duration
+        self.time_label.setText(f"0:00 / {_format_time(duration)}")
+        self.trim_timeline.set_duration(duration)
+        self._preview_start = 0.0
+        self._preview_end = duration
+        self._update_trim_range_label(0.0, duration)
+
+    def _on_playback_ended(self) -> None:
+        pass  # nothing to reset -- there's no Play/Pause button label anymore
+
+    # ------------------------------------------------------------ trim timeline
+
+    def _on_trim_drag_started(self) -> None:
+        # Dragging a handle while the video is playing makes the live-seek
+        # feedback confusing to watch -- pause first, matching how Medal
+        # and similar tools behave while scrubbing trim handles.
+        self.video_widget.pause()
+
+    def _on_trim_range_changed(self, start: float, end: float) -> None:
+        self._update_trim_range_label(start, end)
+
+    def _on_trim_drag_finished(self, start: float, end: float) -> None:
+        # Commit the new preview bounds only now, on release -- not on
+        # every intermediate range_changed while the handle is still
+        # moving, so the live-playback clamp doesn't jitter mid-drag.
+        self._preview_start = start
+        self._preview_end = end
+
+    def _on_trim_seek_requested(self, position: float) -> None:
+        self.video_widget.seek(position)
+
+    def _update_trim_range_label(self, start: float, end: float) -> None:
+        self.trim_range_label.setText(
+            f"Start: {_format_time(start)}   End: {_format_time(end)}   "
+            f"Selected: {_format_time(end - start)}"
+        )
+
+    # ------------------------------------------------------------ save
+
+    def _local_save(self) -> None:
+        if self.current_video_id is None:
+            return
+        start = self.trim_timeline.start
+        end = self.trim_timeline.end
+        frame_perfect = self.frame_perfect_checkbox.isChecked()
+        try:
+            library.apply_trim(self.current_video_id, start, end, frame_perfect=frame_perfect)
+        except Exception as e:
+            QMessageBox.critical(self, "Trim Failed", str(e))
+            return
+        self._refresh_display()
+
+    def _save_and_upload(self) -> None:
+        QMessageBox.information(
+            self, "Not Implemented Yet",
+            "YouTube upload is coming in a later build phase (OAuth setup "
+            "isn't wired up yet). Use Local Save for now.",
+        )
+
+    # ------------------------------------------------------------ undo
+
+    def _undo(self) -> None:
+        if self.current_video_id is not None:
+            library.undo_edit(self.current_video_id)
+            self._refresh_display()
+
+    def _clear_edit_backup(self) -> None:
+        if self.current_video_id is not None:
+            library.clear_edit_backup(self.current_video_id)
+            self._refresh_display()

@@ -1,0 +1,416 @@
+"""
+Thin wrapper around obs-websocket (v5 protocol, via the obsws-python library).
+
+Responsibilities:
+- Connect using the host/port/password from Settings.
+- Make sure the replay buffer is running (start it if not).
+- Trigger a save, and figure out which file it just wrote.
+
+save_replay_buffer() primarily waits on OBS's own ReplayBufferSaved event
+(via obsws-python's EventClient) to learn both WHEN the save is done and
+WHICH file it wrote (the event's savedReplayPath) -- this is what OBS
+itself uses to mean "done," so it's both faster and more precise than
+polling the output directory for a new file to appear and then guessing
+when its size has stopped changing.
+
+The directory-polling approach (_save_replay_buffer_via_polling) is kept
+as a fallback for if the event never arrives -- e.g. an obs-websocket
+version where OUTPUTS-category events aren't sent for some reason, or a
+network hiccup drops the one message we needed. We do NOT rely on
+GetLastReplayBufferReplay's reported path as a fallback identifier --
+confirmed unreliable in practice: it returned a STALE filename from a
+PREVIOUS save, not the one just requested, which then correctly (if
+confusingly) failed our own existence check since that older file had
+already been consumed and moved away by an earlier successful capture.
+"""
+from __future__ import annotations
+
+import fcntl
+import logging
+import threading
+import time
+from pathlib import Path
+
+import obsws_python as obs
+
+from .config import CONFIG_DIR, OBSSettings
+
+# obsws-python logs raw connection tracebacks itself (logger.exception(...))
+# on failure, which looks like an uncaught crash even when we've correctly
+# caught and wrapped the error as OBSError below. Quiet it so only our own
+# clean error messages show.
+logging.getLogger("obsws_python").setLevel(logging.CRITICAL)
+
+logger = logging.getLogger("afterglow.obs_client")
+
+# How long to wait for OBS's ReplayBufferSaved event before falling back to
+# directory polling, and separately (within that fallback), how long to
+# wait for a new file to appear and then for its size to stop changing.
+EVENT_MAX_WAIT_SEC = 10
+DIR_WATCH_MAX_WAIT_SEC = 30
+STABILIZE_MAX_WAIT_SEC = 30
+POLL_INTERVAL_SEC = 0.3
+
+# A save-in-progress lock, held for the duration of save_replay_buffer()
+# (request through confirmed-complete) -- see that method's docstring
+# for why. File-based (not an in-process threading.Lock) so this is
+# safe across separate processes too: the daemon's own worker already
+# serializes hotkey-triggered captures in-process, but a manual
+# `afterglow-cli trigger` run alongside the daemon is a second OS
+# process with no shared Python state to lock against otherwise.
+_REPLAY_BUFFER_LOCK_PATH = CONFIG_DIR / "replay_buffer.lock"
+
+
+class OBSError(RuntimeError):
+    pass
+
+
+class OBSClient:
+    def __init__(self, settings: OBSSettings):
+        self._settings = settings
+        self._client: obs.ReqClient | None = None
+        self._event_client: obs.EventClient | None = None
+
+    def connect(self) -> None:
+        try:
+            self._client = obs.ReqClient(
+                host=self._settings.host,
+                port=self._settings.port,
+                password=self._settings.password,
+                timeout=5,
+            )
+        except Exception as e:  # obsws-python raises varied exceptions on connect failure
+            raise OBSError(
+                f"Could not connect to OBS at {self._settings.host}:{self._settings.port}. "
+                f"Is OBS running with obs-websocket enabled? ({e})"
+            ) from e
+
+        # Best-effort: a second, event-subscribed connection used only to
+        # learn the instant a replay buffer save finishes. If this fails
+        # for any reason, save_replay_buffer() just falls back to
+        # directory polling entirely (see its docstring) -- it's not
+        # required for the app to function, only for it to react quickly.
+        try:
+            self._event_client = obs.EventClient(
+                host=self._settings.host,
+                port=self._settings.port,
+                password=self._settings.password,
+                timeout=5,
+            )
+        except Exception as e:
+            logger.warning(
+                f"Could not open an event subscription to OBS (falling back to "
+                f"directory polling for replay buffer saves): {e}"
+            )
+            self._event_client = None
+
+    def disconnect(self) -> None:
+        if self._client is not None:
+            self._client.disconnect()
+            self._client = None
+        if self._event_client is not None:
+            self._event_client.disconnect()
+            self._event_client = None
+
+    def __enter__(self) -> "OBSClient":
+        self.connect()
+        return self
+
+    def __exit__(self, *exc):
+        self.disconnect()
+
+    def _require_client(self) -> obs.ReqClient:
+        if self._client is None:
+            raise OBSError("Not connected. Call connect() first.")
+        return self._client
+
+    def ensure_replay_buffer_active(self) -> None:
+        c = self._require_client()
+        try:
+            status = c.get_replay_buffer_status()
+            if not status.output_active:
+                logger.info("Replay buffer wasn't active -- starting it.")
+                c.start_replay_buffer()
+                # Give OBS a moment to actually spin up before we ever try to save.
+                time.sleep(0.5)
+            else:
+                logger.debug("Replay buffer already active.")
+        except OBSError:
+            raise
+        except Exception as e:
+            # obsws-python can connect lazily -- a dead/unreachable OBS
+            # sometimes only surfaces as a socket error on the first real
+            # request rather than at connect() time. Normalize it here so
+            # callers only ever have to catch OBSError.
+            raise OBSError(
+                f"Lost communication with OBS while checking the replay "
+                f"buffer status. Is OBS still running? ({e})"
+            ) from e
+
+    def get_replay_buffer_max_seconds(self) -> int | None:
+        """
+        Best-effort read of OBS's configured replay buffer length, so we can
+        warn the user in Settings if a clip option's length exceeds it.
+        Not all obs-websocket versions expose this cleanly, so this may
+        return None -- callers should treat that as 'unknown, skip the check'.
+        """
+        c = self._require_client()
+        try:
+            resp = c.get_profile_parameter(
+                parameter_category="Output", parameter_name="RecRBTime"
+            )
+            return int(resp.parameter_value)
+        except Exception:
+            return None
+
+    def get_output_directory(self) -> Path | None:
+        """
+        OBS's configured recording output directory -- the replay buffer
+        writes here too (they share the same output path in OBS's Advanced
+        output settings). Returns None if the request fails or the
+        reported directory doesn't exist from this process's point of
+        view; callers should treat that as "can't watch, fall back or
+        error clearly" rather than assume a default path.
+        """
+        c = self._require_client()
+        try:
+            resp = c.get_record_directory()
+            directory = getattr(resp, "record_directory", None)
+            if not directory:
+                return None
+            path = Path(directory)
+            return path if path.exists() else None
+        except Exception as e:
+            logger.warning(f"Could not query OBS's output directory: {e}")
+            return None
+
+    def save_replay_buffer(self) -> Path:
+        """
+        Trigger OBS to flush its replay buffer to disk, and return the path
+        of the file it wrote. Waits on OBS's own ReplayBufferSaved event to
+        learn both when it's done and which file it is (see module
+        docstring) -- falling back to directory polling if that event
+        doesn't arrive, or if the event subscription itself never
+        connected. Either way, applies the user-configurable
+        wait_after_replay_buffer_finishes_sec grace period at the end.
+
+        Serialized via a cross-process file lock: OBS can't usefully run
+        two save-and-report cycles at once, and calling SaveReplayBuffer
+        again before a prior one has actually flushed doesn't queue a
+        second save -- it's a silent no-op inside OBS, which is what made
+        clipping again quickly appear to "do nothing." If another call
+        (this process or a different one) is still waiting on its own
+        save, this blocks here until that one is confirmed complete, then
+        requests its own fresh save afterward rather than racing it.
+        """
+        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        with open(_REPLAY_BUFFER_LOCK_PATH, "w") as lock_file:
+            fcntl.flock(lock_file, fcntl.LOCK_EX)
+            try:
+                return self._save_replay_buffer_locked()
+            finally:
+                fcntl.flock(lock_file, fcntl.LOCK_UN)
+
+    def _save_replay_buffer_locked(self) -> Path:
+        self.ensure_replay_buffer_active()
+
+        if self._event_client is not None:
+            path = self._save_replay_buffer_via_event()
+            if path is not None:
+                time.sleep(self._settings.wait_after_replay_buffer_finishes_sec)
+                return path
+            logger.warning(
+                f"ReplayBufferSaved event didn't arrive within {EVENT_MAX_WAIT_SEC}s -- "
+                f"falling back to directory polling."
+            )
+
+        path = self._save_replay_buffer_via_polling()
+        time.sleep(self._settings.wait_after_replay_buffer_finishes_sec)
+        return path
+
+    def _save_replay_buffer_via_event(self) -> Path | None:
+        """
+        Returns the saved file's path as soon as OBS's ReplayBufferSaved
+        event reports it, or None on timeout/failure (caller falls back
+        to polling). The save is only actually requested once this
+        callback is registered and ready to catch it -- registering
+        AFTER calling save_replay_buffer() would risk missing the event
+        if OBS responds unusually fast.
+        """
+        c = self._require_client()
+        got_event = threading.Event()
+        result: dict[str, str] = {}
+
+        def on_replay_buffer_saved(data) -> None:
+            result["path"] = data.saved_replay_path
+            got_event.set()
+
+        # obsws-python identifies callbacks by function name
+        # (on_<snake_case_event_name>) -- see callback.py's trigger().
+        self._event_client.callback.register(on_replay_buffer_saved)
+        try:
+            c.save_replay_buffer()
+            logger.info("Requested replay buffer save from OBS -- waiting for ReplayBufferSaved event...")
+            if not got_event.wait(timeout=EVENT_MAX_WAIT_SEC):
+                return None
+        except Exception as e:
+            logger.warning(f"Error while requesting/awaiting replay buffer save via event: {e}")
+            return None
+        finally:
+            self._event_client.callback.deregister(on_replay_buffer_saved)
+
+        path = Path(result["path"])
+        if not path.exists():
+            logger.warning(
+                f"ReplayBufferSaved event reported {path}, but it doesn't exist "
+                f"from this process's point of view (e.g. a path OBS sees "
+                f"differently than we do) -- falling back to directory polling."
+            )
+            return None
+        logger.info(f"Replay file ready (via event): {path}")
+        return path
+
+    def _save_replay_buffer_via_polling(self) -> Path:
+        """
+        Fallback used when the ReplayBufferSaved event isn't available:
+        snapshot OBS's output directory before requesting the save, then
+        watch for whatever new file(s) actually appear -- directory
+        contents are ground truth in a way a possibly-cached API response
+        isn't -- and wait for the resulting file's size to stop changing.
+        """
+        c = self._require_client()
+
+        output_dir = self.get_output_directory()
+        if output_dir is None:
+            raise OBSError(
+                "Could not determine OBS's output directory (GetRecordDirectory "
+                "failed, or returned a path that doesn't exist from this "
+                "process -- e.g. a Windows-style or otherwise unreachable path). "
+                "Can't watch for new replay files without knowing where to look."
+            )
+
+        # Snapshot BEFORE triggering the save so we can identify exactly
+        # which file(s) this specific save produces, regardless of
+        # anything OBS's own API reports back.
+        try:
+            before_files = set(output_dir.iterdir())
+        except OSError as e:
+            raise OBSError(f"Could not read OBS's output directory {output_dir}: {e}") from e
+
+        try:
+            c.save_replay_buffer()
+            logger.info(f"Requested replay buffer save from OBS. Watching {output_dir} for new files...")
+        except Exception as e:
+            raise OBSError(f"OBS rejected the save-replay-buffer request. ({e})") from e
+
+        new_files: set[Path] = set()
+        waited = 0.0
+        last_logged_second = 0
+        while waited < DIR_WATCH_MAX_WAIT_SEC:
+            try:
+                current_files = set(output_dir.iterdir())
+                new_files = current_files - before_files
+            except OSError:
+                new_files = set()
+            if new_files:
+                logger.info(f"New file(s) detected: {[f.name for f in new_files]}")
+                break
+            if int(waited) > last_logged_second and int(waited) % 5 == 0:
+                last_logged_second = int(waited)
+                logger.info(f"Still waiting for a new file to appear ({waited:.1f}s elapsed)...")
+            time.sleep(POLL_INTERVAL_SEC)
+            waited += POLL_INTERVAL_SEC
+
+        if not new_files:
+            raise OBSError(
+                f"No new file appeared in OBS's output directory ({output_dir}) "
+                f"within {DIR_WATCH_MAX_WAIT_SEC}s of requesting the save."
+            )
+
+        # A remux counterpart (e.g. OBS's "Automatically Remux to mp4")
+        # doesn't necessarily appear in the SAME poll tick as the raw file
+        # -- it's a separate step OBS kicks off after the raw file exists,
+        # typically a moment later. Keep watching for a short grace period
+        # after the first new file(s) show up, so a sibling that appears
+        # shortly after isn't missed and mistaken for "nothing else is
+        # coming."
+        grace_period_sec = 3.0
+        grace_waited = 0.0
+        while grace_waited < grace_period_sec:
+            time.sleep(POLL_INTERVAL_SEC)
+            grace_waited += POLL_INTERVAL_SEC
+            try:
+                current_files = set(output_dir.iterdir())
+                newly_found = current_files - before_files
+            except OSError:
+                newly_found = new_files
+            if newly_found != new_files:
+                logger.info(f"Additional new file(s) detected during grace period: {[f.name for f in (newly_found - new_files)]}")
+                new_files = newly_found
+
+        # Prefer a remuxed .mp4 if present -- if OBS's "Automatically Remux
+        # to mp4" produced one alongside the raw file, that's OBS's own
+        # notion of the finished output, and generally the more broadly
+        # compatible format to build our own clip from.
+        mp4_candidates = sorted(f for f in new_files if f.suffix.lower() == ".mp4")
+        other_candidates = sorted(f for f in new_files if f.suffix.lower() != ".mp4")
+
+        if mp4_candidates:
+            target_path = mp4_candidates[0]
+        elif other_candidates:
+            target_path = other_candidates[0]
+        else:
+            raise OBSError(f"Unexpected new file(s) in OBS output directory: {new_files}")
+
+        # Anything else new (e.g. the raw .mkv, if we're using its .mp4
+        # remux instead) isn't needed -- we've already got what we came
+        # for. Best-effort cleanup; a failure here doesn't invalidate the
+        # capture itself.
+        for extra in new_files - {target_path}:
+            try:
+                extra.unlink()
+                logger.info(f"Removed unused sibling file: {extra}")
+            except OSError as e:
+                logger.warning(f"Could not remove unused sibling file {extra}: {e}")
+
+        # Wait for the target file's size to stop changing before treating
+        # it as finished -- it can still be being written/remuxed even
+        # though it already exists on disk.
+        stable_count = 0
+        stable_checks_needed = 2
+        last_size = -1
+        stabilize_waited = 0.0
+
+        while stabilize_waited < STABILIZE_MAX_WAIT_SEC:
+            try:
+                size = target_path.stat().st_size
+            except OSError:
+                size = -1
+            if size > 0 and size == last_size:
+                stable_count += 1
+                if stable_count >= stable_checks_needed:
+                    logger.info(f"Replay file ready after {stabilize_waited:.1f}s: {target_path} ({size} bytes)")
+                    return target_path
+            else:
+                stable_count = 0
+            last_size = size
+            time.sleep(POLL_INTERVAL_SEC)
+            stabilize_waited += POLL_INTERVAL_SEC
+
+        logger.info(
+            f"Replay file exists but size never fully stabilized within "
+            f"{STABILIZE_MAX_WAIT_SEC}s, using it anyway: {target_path}"
+        )
+        return target_path
+
+
+if __name__ == "__main__":
+    import config
+
+    settings = config.load()
+    with OBSClient(settings.obs) as client:
+        print("Connected to OBS.")
+        max_len = client.get_replay_buffer_max_seconds()
+        print(f"Configured replay buffer length: {max_len}s" if max_len else "Could not read replay buffer length")
+        out_dir = client.get_output_directory()
+        print(f"Output directory: {out_dir}" if out_dir else "Could not determine output directory")
