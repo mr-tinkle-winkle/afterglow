@@ -184,7 +184,8 @@ class VideoCard(QWidget):
     clicked = Signal(int, object)       # video_id, Qt.KeyboardModifiers -- parent handles selection
 
     def __init__(self, video: "library.Video", parent=None, highlight_enabled: bool = True,
-                 font_scale: float = 1.0, get_selected_ids=None, ensure_selected=None):
+                 font_scale: float = 1.0, get_selected_ids=None, ensure_selected=None,
+                 neighbor_provider=None):
         super().__init__(parent)
         self.video_id = video.id
         self._video = video
@@ -229,6 +230,12 @@ class VideoCard(QWidget):
         # other selection in place while acting on the newly-clicked one.
         self._get_selected_ids = get_selected_ids
         self._ensure_selected = ensure_selected
+        # (int) -> (Video | None, Video | None) -- passed straight
+        # through to VideoPreviewDialog for its own prev/next arrows,
+        # same callable shape as MainWindow's Editor neighbor_provider
+        # (see LibraryPage.neighbors_for), just reused here for the
+        # preview dialog instead of the Editor.
+        self._neighbor_provider = neighbor_provider
         self._theme = Theme(self._appearance)
 
         outer_layout = QVBoxLayout(self)
@@ -759,9 +766,12 @@ class VideoCard(QWidget):
     def _open_preview_if_still_pending(self) -> None:
         if self._preview_pending:
             self._preview_pending = False
-            from .video_preview_dialog import VideoPreviewDialog
-            dialog = VideoPreviewDialog(self._video, parent=self.window())
-            dialog.exec()
+            self._open_preview_dialog(self._video)
+
+    def _open_preview_dialog(self, video: "library.Video") -> None:
+        from .video_preview_dialog import VideoPreviewDialog
+        dialog = VideoPreviewDialog(video, neighbor_provider=self._neighbor_provider, parent=self.window())
+        dialog.exec()
 
     def mouseDoubleClickEvent(self, event) -> None:
         self._preview_pending = False  # cancel the pending single-click preview -- see mousePressEvent

@@ -34,6 +34,8 @@ from .custom_button import CustomButton
 from .custom_checkbox import CustomCheckBox
 from .custom_line_edit import CustomLineEdit
 from .custom_group_box import CustomGroupBox
+from .theme import Theme
+from .page_outline import paint_page_outline
 from .smooth_scroll_area import SmoothScrollArea
 
 
@@ -125,6 +127,14 @@ class SettingsPage(QWidget):
         self._load_clip_configs()
 
     # ------------------------------------------------------------ OBS group
+
+    def paintEvent(self, event) -> None:
+        # 3px, 15%-darker-than-itself page outline -- Settings has no
+        # explicit background of its own, so this darkens the same
+        # inherited app_background() Editor's outline uses too.
+        theme = Theme(config_module.load().appearance)
+        paint_page_outline(self, theme.app_background())
+        super().paintEvent(event)
 
     def _build_obs_group(self) -> CustomGroupBox:
         group = CustomGroupBox("OBS Connection")

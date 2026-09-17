@@ -1,28 +1,27 @@
 """
 A larger, playable preview of a Library video -- title, filters, and
 info alongside a real embedded player (play/pause, volume, a seek
-scrubber, fullscreen, watch speed), opened via double-click on a card's
-thumbnail. Distinct from the Editor: this is read-only playback, no
-trimming -- reuses MpvVideoWidget (the same embedding editor_page.py
-uses) directly rather than re-solving mpv embedding here.
+scrubber, fullscreen, watch speed), opened via a plain left-click on a
+card's thumbnail (see VideoCard._open_preview_dialog). Distinct from
+the Editor: this is read-only playback, no trimming -- reuses
+MpvVideoWidget (the same embedding editor_page.py uses) directly
+rather than re-solving mpv embedding here.
 
-Play/pause, volume, and fullscreen are custom-painted (no external
-icon asset needed for any of them -- a triangle/two bars, a speaker
-cone + sound-wave arcs, and four corner brackets are all simple enough
-vector shapes to draw directly); the scrubber is a real QSlider
-(dragging, click-to-seek, and keyboard step all come for free from
-that) recolored via stylesheet to match the theme rather than rebuilt
-from scratch. All three custom-painted controls can be swapped for a
-provided icon image later without changing anything else -- see each
-class's own paintEvent.
+Frameless + WA_TranslucentBackground for real rounded window corners
+(painted in paintEvent), no title bar and no Close button -- closes via
+Escape or a click anywhere outside the dialog (an app-wide event filter
+while it's open, removed again once it closes). Prev/Next arrows cycle
+through whichever Library tab/sort the video was opened from, exactly
+like the Editor's own prev/next (same neighbor_provider shape, just
+plumbed through VideoCard instead of MainWindow).
 """
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, QRectF
+from PySide6.QtCore import Qt, QRectF, QEvent
 from PySide6.QtGui import QPainter, QColor, QPainterPath
 from PySide6.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QSlider, QDoubleSpinBox,
-    QAbstractButton, QSizePolicy,
+    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QSlider, QAbstractButton,
+    QSizePolicy, QApplication, QWidget,
 )
 
 from .. import config as config_module
@@ -30,10 +29,68 @@ from .. import library
 from .theme import Theme, contrast_text
 from .outlined_label import OutlinedLabel
 from .custom_button import CustomButton
+from .custom_spinbox import CustomDoubleSpinBox
 from .mpv_widget import MpvVideoWidget
+from .rounded_rect import rounded_rect_path
 from .video_card import _format_duration, _format_file_size, _format_date, FAVORITE_STAR
 
 _TRANSPORT_BTN_SIZE = 40
+_WIDTH = 1375   # 1100 * 1.25
+_HEIGHT = 900   # 720 * 1.25
+
+
+class _CardBox(QWidget):
+    """A plain rounded, card_background()-colored box -- used for both
+    the title/info header and the transport "protrusion" below the
+    video, matching a Library card's own info-box treatment."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        appearance = config_module.load().appearance
+        self._appearance = appearance
+        self._theme = Theme(appearance)
+
+    def paintEvent(self, event) -> None:
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        rect = QRectF(self.rect())
+        radius = self._appearance.rounded_corner_radius if self._appearance.rounded_corners_enabled else 12
+        radius = min(radius, rect.height() / 2, rect.width() / 2) if radius else 0
+        if radius:
+            painter.fillPath(rounded_rect_path(rect, radius), self._theme.card_background())
+        else:
+            painter.fillRect(rect, self._theme.card_background())
+        painter.end()
+
+
+class _VideoFrame(QWidget):
+    """Wraps the mpv widget with the SAME accent()-colored border a
+    Library thumbnail gets by default (see video_card.py's plain,
+    non-highlighted video-box fill) -- the border is just this
+    widget's own padding (appearance.unedited_selected_border_width on
+    all sides), with the accent color painted behind that padding and
+    the mpv widget itself covering the center."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        appearance = config_module.load().appearance
+        self._appearance = appearance
+        self._theme = Theme(appearance)
+        border = appearance.unedited_selected_border_width
+        self._layout = QVBoxLayout(self)
+        self._layout.setContentsMargins(border, border, border, border)
+
+    def paintEvent(self, event) -> None:
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        rect = QRectF(self.rect())
+        radius = self._appearance.rounded_corner_radius if self._appearance.rounded_corners_enabled else 12
+        radius = min(radius, rect.height() / 2, rect.width() / 2) if radius else 0
+        if radius:
+            painter.fillPath(rounded_rect_path(rect, radius), self._theme.accent())
+        else:
+            painter.fillRect(rect, self._theme.accent())
+        painter.end()
 
 
 class _PlayPauseButton(QAbstractButton):
@@ -115,7 +172,7 @@ class _FullscreenButton(QAbstractButton):
 
         margin = rect.width() * 0.26
         arm = rect.width() * 0.16
-        inward = self.isChecked()  # exiting fullscreen -> brackets point inward
+        inward = self.isChecked()
         corners = [
             (rect.left() + margin, rect.top() + margin, 1, 1),
             (rect.right() - margin, rect.top() + margin, -1, 1),
@@ -185,66 +242,70 @@ class _VolumeButton(QAbstractButton):
 
 
 class VideoPreviewDialog(QDialog):
-    def __init__(self, video: "library.Video", parent=None):
+    def __init__(self, video: "library.Video", neighbor_provider=None, parent=None):
         super().__init__(parent)
         appearance = config_module.load().appearance
         self._theme = Theme(appearance)
-        self._video = video
+        self._neighbor_provider = neighbor_provider
         self._duration = 0.0
         self._current_pos = 0.0
         self._seeking = False
         self._pre_mute_volume = 80
 
-        self.setWindowTitle(video.title or "Preview")
-        self.resize(1100, 720)
-        self.setStyleSheet(f"QDialog {{ background-color: {self._theme.library_background().name()}; }}")
+        self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
+        self.resize(_WIDTH, _HEIGHT)
 
         outer = QVBoxLayout(self)
+        outer.setContentsMargins(16, 16, 16, 16)
 
-        # ---- title + close ----
-        header = QHBoxLayout()
-        display_title = f"{FAVORITE_STAR} {video.title}" if video.favorite else (video.title or "(untitled)")
-        title_label = OutlinedLabel(display_title)
-        title_label.setStyleSheet("font-size: 20px;")
-        title_label.set_colors(appearance.card_text_color, appearance.card_text_outline_color,
-                                outline_width=appearance.card_text_outline_width)
-        header.addWidget(title_label, stretch=1)
-        close_btn = CustomButton("Close")
-        close_btn.clicked.connect(self.close)
-        header.addWidget(close_btn)
-        outer.addLayout(header)
+        # ---- title + info, centered, in one card_background box ----
+        self._header_box = _CardBox()
+        header_layout = QVBoxLayout(self._header_box)
+        header_layout.setContentsMargins(16, 10, 16, 10)
+        header_layout.setSpacing(2)
 
-        # ---- filters + info line ----
-        info_row = QHBoxLayout()
-        if video.tags:
-            tags_label = OutlinedLabel(", ".join(video.tags))
-            tags_label.setStyleSheet("font-size: 12px;")
-            tags_label.set_colors(appearance.card_text_color, appearance.card_text_outline_color,
-                                   outline_width=appearance.card_text_outline_width * 0.5)
-            info_row.addWidget(tags_label)
-        info_row.addStretch(1)
-        meta_parts = [p for p in (
-            _format_duration(video.duration_sec), _format_file_size(video.path), _format_date(video.created_at),
-        ) if p]
-        if meta_parts:
-            meta_label = OutlinedLabel(" \u2022 ".join(meta_parts))
-            meta_label.setStyleSheet("font-size: 12px;")
-            meta_label.set_colors(appearance.card_text_color, appearance.card_text_outline_color,
-                                   outline_width=appearance.card_text_outline_width * 0.5)
-            info_row.addWidget(meta_label)
-        outer.addLayout(info_row)
+        self._title_label = OutlinedLabel("")
+        self._title_label.setStyleSheet("font-size: 26px;")
+        self._title_label.setAlignment(Qt.AlignCenter)
+        header_layout.addWidget(self._title_label)
 
-        # ---- video (significantly larger than a library card) ----
+        self._info_label = OutlinedLabel("")
+        self._info_label.setStyleSheet("font-size: 13px;")
+        self._info_label.setAlignment(Qt.AlignCenter)
+        header_layout.addWidget(self._info_label)
+
+        outer.addWidget(self._header_box)
+
+        # ---- video, flanked by prev/next, with the same border a
+        # Library thumbnail gets ----
+        video_row = QHBoxLayout()
+        self.prev_btn = CustomButton("\u25c0")  # "◀"
+        self.prev_btn.setFixedWidth(40)
+        self.prev_btn.clicked.connect(self._go_to_prev)
+        video_row.addWidget(self.prev_btn)
+
+        self._video_frame = _VideoFrame()
         self.video_widget = MpvVideoWidget()
         self.video_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.video_widget.clicked.connect(self._toggle_play_pause)
         self.video_widget.position_changed.connect(self._on_position_changed)
         self.video_widget.duration_known.connect(self._on_duration_known)
         self.video_widget.playback_ended.connect(self._on_playback_ended)
-        outer.addWidget(self.video_widget, stretch=1)
+        self._video_frame._layout.addWidget(self.video_widget)
+        video_row.addWidget(self._video_frame, stretch=1)
 
-        # ---- transport ----
-        transport = QHBoxLayout()
+        self.next_btn = CustomButton("\u25b6")  # "▶"
+        self.next_btn.setFixedWidth(40)
+        self.next_btn.clicked.connect(self._go_to_next)
+        video_row.addWidget(self.next_btn)
+
+        outer.addLayout(video_row, stretch=1)
+
+        # ---- transport, in its own card_background protrusion ----
+        self._transport_box = _CardBox()
+        transport = QHBoxLayout(self._transport_box)
+        transport.setContentsMargins(14, 10, 14, 10)
 
         self.play_pause_btn = _PlayPauseButton()
         self.play_pause_btn.clicked.connect(self._toggle_play_pause)
@@ -258,11 +319,14 @@ class VideoPreviewDialog(QDialog):
         self.scrubber.sliderPressed.connect(self._on_scrub_start)
         self.scrubber.sliderMoved.connect(self._on_scrub_moved)
         self.scrubber.sliderReleased.connect(self._on_scrub_end)
-        self.scrubber.setStyleSheet(
-            "QSlider::groove:horizontal { background: " + self._theme.card_background().name() + "; height: 6px; border-radius: 3px; }"
-            "QSlider::handle:horizontal { background: " + self._theme.accent().name() + "; width: 14px; margin: -5px 0; border-radius: 7px; }"
+        slider_style = (
+            "QSlider::groove:horizontal { background: " + self._theme.card_background().name()
+            + "; height: 6px; border-radius: 3px; }"
+            "QSlider::handle:horizontal { background: " + self._theme.accent().name()
+            + "; width: 14px; margin: -5px 0; border-radius: 7px; }"
             "QSlider::sub-page:horizontal { background: " + self._theme.accent().name() + "; border-radius: 3px; }"
         )
+        self.scrubber.setStyleSheet(slider_style)
         transport.addWidget(self.scrubber, stretch=1)
 
         self.volume_btn = _VolumeButton()
@@ -274,11 +338,11 @@ class VideoPreviewDialog(QDialog):
         self.volume_slider.setValue(80)
         self.volume_slider.setFixedWidth(90)
         self.volume_slider.valueChanged.connect(self._on_volume_changed)
-        self.volume_slider.setStyleSheet(self.scrubber.styleSheet())
+        self.volume_slider.setStyleSheet(slider_style)
         transport.addWidget(self.volume_slider)
 
         transport.addWidget(QLabel("Speed:"))
-        self.speed_spin = QDoubleSpinBox()
+        self.speed_spin = CustomDoubleSpinBox()
         self.speed_spin.setRange(0.05, 4.0)
         self.speed_spin.setSingleStep(0.1)
         self.speed_spin.setDecimals(2)
@@ -292,11 +356,69 @@ class VideoPreviewDialog(QDialog):
         self.fullscreen_btn.clicked.connect(self._toggle_fullscreen)
         transport.addWidget(self.fullscreen_btn)
 
-        outer.addLayout(transport)
+        outer.addWidget(self._transport_box)
 
+        self._load_video(video)
+
+    # ------------------------------------------------------------ loading a video
+
+    def _load_video(self, video: "library.Video") -> None:
+        self._video = video
+        appearance = config_module.load().appearance
+        self.setWindowTitle(video.title or "Preview")
+
+        display_title = f"{FAVORITE_STAR} {video.title}" if video.favorite else (video.title or "(untitled)")
+        self._title_label.setText(display_title)
+        self._title_label.set_colors(appearance.card_text_color, appearance.card_text_outline_color,
+                                      outline_width=appearance.card_text_outline_width)
+
+        info_parts = []
+        if video.tags:
+            info_parts.append(", ".join(video.tags))
+        info_parts.extend(p for p in (
+            _format_duration(video.duration_sec), _format_file_size(video.path), _format_date(video.created_at),
+        ) if p)
+        self._info_label.setText(" \u2022 ".join(info_parts))
+        self._info_label.set_colors(appearance.card_text_color, appearance.card_text_outline_color,
+                                     outline_width=appearance.card_text_outline_width * 0.5)
+
+        self._duration = 0.0
+        self._current_pos = 0.0
+        self.speed_spin.blockSignals(True)
+        self.speed_spin.setValue(1.0)
+        self.speed_spin.blockSignals(False)
+        self.video_widget.set_speed(1.0)
         self.video_widget.load(video.path)
-        self.video_widget.set_volume(80)
+        self.video_widget.set_volume(self.volume_slider.value())
+        self.video_widget.play()  # MpvVideoWidget.load() always loads paused -- start it explicitly
         self.play_pause_btn.setChecked(True)
+        self._update_time_label()
+        self._update_neighbor_buttons()
+
+    def _update_neighbor_buttons(self) -> None:
+        if self._neighbor_provider is None:
+            self.prev_btn.setEnabled(False)
+            self.next_btn.setEnabled(False)
+            return
+        prev_video, next_video = self._neighbor_provider(self._video.id)
+        self.prev_btn.setEnabled(prev_video is not None)
+        self.next_btn.setEnabled(next_video is not None)
+        self.prev_btn.setToolTip(prev_video.title if prev_video else "")
+        self.next_btn.setToolTip(next_video.title if next_video else "")
+
+    def _go_to_prev(self) -> None:
+        if self._neighbor_provider is None:
+            return
+        prev_video, _next_video = self._neighbor_provider(self._video.id)
+        if prev_video is not None:
+            self._load_video(prev_video)
+
+    def _go_to_next(self) -> None:
+        if self._neighbor_provider is None:
+            return
+        _prev_video, next_video = self._neighbor_provider(self._video.id)
+        if next_video is not None:
+            self._load_video(next_video)
 
     # ------------------------------------------------------------ playback
 
@@ -365,6 +487,20 @@ class VideoPreviewDialog(QDialog):
             self.showFullScreen()
             self.fullscreen_btn.setChecked(True)
 
+    def paintEvent(self, event) -> None:
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        rect = QRectF(self.rect())
+        appearance = config_module.load().appearance
+        radius = 0 if self.isFullScreen() else (
+            appearance.rounded_corner_radius if appearance.rounded_corners_enabled else 16
+        )
+        if radius:
+            painter.fillPath(rounded_rect_path(rect, radius), self._theme.library_background())
+        else:
+            painter.fillRect(rect, self._theme.library_background())
+        painter.end()
+
     def keyPressEvent(self, event) -> None:
         if event.key() == Qt.Key_Escape:
             if self.isFullScreen():
@@ -375,6 +511,29 @@ class VideoPreviewDialog(QDialog):
             self._toggle_play_pause()
         else:
             super().keyPressEvent(event)
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        # Click-anywhere-outside-closes -- an app-wide filter rather
+        # than a Qt.Popup window flag: a Popup's own mouse-grab
+        # behavior is meant for lightweight, momentary content (see
+        # SearchBubble/SortPopover), and is fragile for a window this
+        # complex (mpv embedding, sliders, a spinbox) -- a plain event
+        # filter achieves the same "click off closes" behavior without
+        # relying on that grab.
+        QApplication.instance().installEventFilter(self)
+
+    def hideEvent(self, event) -> None:
+        QApplication.instance().removeEventFilter(self)
+        super().hideEvent(event)
+
+    def eventFilter(self, obj, event) -> bool:
+        if event.type() == QEvent.MouseButtonPress and not self.isFullScreen():
+            global_pos = event.globalPosition().toPoint() if hasattr(event, "globalPosition") else event.globalPos()
+            if not self.geometry().contains(global_pos):
+                self.close()
+                return True
+        return super().eventFilter(obj, event)
 
     def closeEvent(self, event) -> None:
         self.video_widget.shutdown()

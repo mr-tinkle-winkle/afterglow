@@ -1,0 +1,85 @@
+"""
+Replaces native QRadioButton rendering (used for the Sort By tab's
+exclusive sort-order choice) with the same card-background-box +
+checkmark-icon look CustomCheckBox already gives checkboxes, just with
+a circular indicator instead of a rounded-rect one, matching the
+conventional round vs. square distinction between radio buttons and
+checkboxes. Exclusivity itself is unchanged -- still enforced by
+whatever QButtonGroup the caller adds these to, same as the native
+QRadioButtons before.
+"""
+from __future__ import annotations
+
+from PySide6.QtCore import Qt, QRectF, QSize
+from PySide6.QtGui import QPainter, QColor
+from PySide6.QtWidgets import QAbstractButton
+
+from .. import config as config_module
+from .resources import resource_qpixmap
+from .theme import Theme
+
+_BOX_SIZE = 20
+_TEXT_GAP = 8
+
+
+class CustomRadioButton(QAbstractButton):
+    def __init__(self, text: str = "", parent=None):
+        super().__init__(parent)
+        self.setText(text)
+        self.setCheckable(True)
+        self.setCursor(Qt.PointingHandCursor)
+        appearance = config_module.load().appearance
+        self._appearance = appearance
+        self._theme = Theme(appearance)
+        self._checkmark = resource_qpixmap("checkmark_icon.png")
+
+    def sizeHint(self) -> QSize:
+        fm = self.fontMetrics()
+        text_w = fm.horizontalAdvance(self.text()) if self.text() else 0
+        width = _BOX_SIZE + (_TEXT_GAP + text_w if self.text() else 0)
+        height = max(_BOX_SIZE, fm.height()) + 4
+        return QSize(width, height)
+
+    def paintEvent(self, event) -> None:
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setRenderHint(QPainter.SmoothPixmapTransform)
+
+        box_rect = QRectF(0, (self.height() - _BOX_SIZE) / 2, _BOX_SIZE, _BOX_SIZE)
+        bg = self._theme.card_background()
+        if self.underMouse():
+            bg = bg.lighter(115)
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(bg)
+        painter.drawEllipse(box_rect)
+
+        pen = painter.pen()
+        pen.setColor(self._theme.accent())
+        pen.setWidthF(1.5)
+        painter.setPen(pen)
+        painter.setBrush(Qt.NoBrush)
+        painter.drawEllipse(box_rect)
+
+        if self.isChecked() and not self._checkmark.isNull():
+            margin = 3
+            target = box_rect.adjusted(margin, margin, -margin, -margin)
+            scaled = self._checkmark.scaled(
+                round(target.width()), round(target.height()), Qt.KeepAspectRatio, Qt.SmoothTransformation
+            )
+            x = target.x() + (target.width() - scaled.width()) / 2
+            y = target.y() + (target.height() - scaled.height()) / 2
+            painter.drawPixmap(round(x), round(y), scaled)
+
+        if self.text():
+            painter.setPen(QColor(self._appearance.card_text_color))
+            text_rect = self.rect().adjusted(_BOX_SIZE + _TEXT_GAP, 0, 0, 0)
+            painter.drawText(text_rect, Qt.AlignVCenter | Qt.AlignLeft, self.text())
+        painter.end()
+
+    def enterEvent(self, event) -> None:
+        self.update()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event) -> None:
+        self.update()
+        super().leaveEvent(event)

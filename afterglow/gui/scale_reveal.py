@@ -67,49 +67,48 @@ def reveal_from_point(target_widget: QWidget, origin_global_point: QPoint) -> No
 
 
 def crossfade_to_index(stack, new_index: int, duration: int = 200) -> None:
-    """Fades out a snapshot of the CURRENT page over the new one, rather
-    than either an instant swap or a true two-layer blend -- per Max's
-    request for page changes (Local<->Uploaded, and the main sidebar's
-    Library/Editor/Settings) to fade instead of just appearing. The
-    actual page switch (QStackedWidget.setCurrentIndex) happens
-    immediately and normally; only a temporary snapshot of what used
-    to be showing is overlaid on top and animated to transparent,
-    revealing the already-fully-correct new page underneath as it
-    fades -- same "don't fight the real widget/layout, animate a
-    disposable copy on top of it" approach as ScaleRevealOverlay above,
-    for the same reason (the new page's real geometry is fully owned
-    by the QStackedWidget's layout and would fight a direct animation)."""
+    """Fades the NEW page in after switching, rather than grabbing a
+    snapshot of the old one and fading that out. The first version of
+    this DID grab the old page first -- reported directly as "takes a
+    second to begin the page switch" for Library/Settings specifically
+    (Editor was fine). Root cause: QWidget.grab() forces a full
+    synchronous re-render of the ENTIRE outgoing widget subtree before
+    returning the pixmap, and it runs BEFORE setCurrentIndex() in the
+    old version -- for a big Library grid (many VideoCards) or a
+    Settings page full of custom-painted controls, that grab could
+    take long enough to be a perceptible blocking delay before ANY
+    visual change happened at all, even though each individual
+    widget's own paint is itself cheap (cached). Editor's simple
+    layout never had enough content for that cost to be noticeable.
+    Switching first and fading the already-current new page in instead
+    means the visible page change happens immediately -- the fade is
+    layered on top of an already-correct, already-switched page via
+    QGraphicsOpacityEffect, not blocking the switch itself on a
+    snapshot of something else entirely."""
     if stack.currentIndex() == new_index:
         return
-    old_widget = stack.currentWidget()
-    snapshot = old_widget.grab() if old_widget is not None and old_widget.width() > 0 else None
-
     stack.setCurrentIndex(new_index)
-    if snapshot is None:
-        return
     new_widget = stack.currentWidget()
     if new_widget is None:
         return
 
-    overlay = QLabel(new_widget)
-    overlay.setPixmap(snapshot)
-    overlay.setScaledContents(True)
-    overlay.setGeometry(new_widget.rect())
-    overlay.setAttribute(Qt.WA_TransparentForMouseEvents)
-    overlay.show()
-    overlay.raise_()
-
-    effect = QGraphicsOpacityEffect(overlay)
-    overlay.setGraphicsEffect(effect)
-    anim = QPropertyAnimation(effect, b"opacity", overlay)
+    effect = QGraphicsOpacityEffect(new_widget)
+    new_widget.setGraphicsEffect(effect)
+    anim = QPropertyAnimation(effect, b"opacity", new_widget)
     anim.setDuration(duration)
-    anim.setStartValue(1.0)
-    anim.setEndValue(0.0)
-    anim.finished.connect(overlay.deleteLater)
-    # Parented to the overlay (which is itself parented to new_widget)
-    # so nothing here needs a longer-lived owner than the overlay's
-    # own brief lifetime.
-    overlay._crossfade_anim = anim
+    anim.setStartValue(0.0)
+    anim.setEndValue(1.0)
+
+    def _cleanup():
+        # Removes the effect entirely once done -- leaving a
+        # QGraphicsOpacityEffect attached (even at opacity 1.0) forces
+        # Qt to keep compositing this widget through an offscreen
+        # buffer on every future repaint instead of painting directly,
+        # which is needless ongoing cost once the fade itself is over.
+        new_widget.setGraphicsEffect(None)
+
+    anim.finished.connect(_cleanup)
+    new_widget._fade_anim = anim
     anim.start()
 
 

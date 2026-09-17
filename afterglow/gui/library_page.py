@@ -17,7 +17,7 @@ from PySide6.QtGui import QPainter, QPixmap, QColor
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLineEdit,
     QScrollArea, QLabel, QStackedWidget, QMessageBox,
-    QStyle, QInputDialog, QRadioButton,
+    QStyle, QInputDialog,
     QButtonGroup, QAbstractButton, QApplication,
 )
 
@@ -34,7 +34,9 @@ from .sort_popover import SortPopover
 from .search_bubble import SearchBubble
 from .pixmap_effects import tint_pixmap_cached
 from .custom_group_box import CustomGroupBox
+from .custom_radio_button import CustomRadioButton
 from .scale_reveal import crossfade_to_index
+from .page_outline import paint_page_outline
 from .custom_checkbox import CustomCheckBox
 
 # Approximate on-screen width of one card (thumbnail + its own internal
@@ -344,6 +346,19 @@ class _VideoGridTab(QWidget):
 
     # ------------------------------------------------------------ filters menu
 
+    def paintEvent(self, event) -> None:
+        # 3px, 15%-darker-than-itself outline -- per Max's direct
+        # request for every "page" (Local/Uploaded/Library/Editor/
+        # Settings). Skips the TOP edge specifically: this tab's own
+        # content area sits flush against the Library header (the
+        # search/refresh/sort row and the Local/Uploaded page-switch
+        # buttons) with no gap, so a full outline would visibly
+        # double up or bleed into that seam -- "make sure this
+        # doesn't bleed into the middle where they combine."
+        theme = Theme(config_module.load().appearance)
+        paint_page_outline(self, theme.library_background(), skip_top=True)
+        super().paintEvent(event)
+
     def rebuild_sort_popover_pages(self, popover: SortPopover) -> None:
         """Fills `popover`'s three pages with THIS tab's current
         Filters/Sort By/Info state. Called lazily by LibraryPage right
@@ -430,7 +445,7 @@ class _VideoGridTab(QWidget):
             ("Video length (long to short)", library.SORT_LENGTH_LONG_TO_SHORT),
         ]
         for label, sort_by in sort_options:
-            radio = QRadioButton(label)
+            radio = CustomRadioButton(label)
             radio.setChecked(sort_by == self._sort_by)
             radio.toggled.connect(lambda checked, s=sort_by: self._set_sort_by(s) if checked else None)
             group.addButton(radio)
@@ -463,14 +478,29 @@ class _VideoGridTab(QWidget):
 
     @staticmethod
     def _wrap_scrollable(page: QWidget) -> QScrollArea:
-        """Bounds each SortPopover page to a comfortable fixed height
-        (a Filters page with many tags could otherwise grow the whole
-        popover past the screen) while keeping the popover's own
-        painted background visible through it."""
+        """Bounds each SortPopover page to a comfortable fixed height,
+        capped at 320px so a Filters page with many tags can't grow the
+        whole popover past the screen -- but sized to the page's OWN
+        actual content when that's shorter, not always forced to the
+        full 320px. Forcing every page to exactly 320px regardless of
+        content was the real cause of a reported bug that looked like
+        two different problems at once: a short page (few tags) showed
+        a lot of dead space at the bottom (setWidgetResizable(True)
+        stretches a too-short widget to fill the whole fixed viewport,
+        so THAT PAGE'S OWN addStretch(1) was then filling real, visible
+        blank space instead of just "not mattering"); a long page (many
+        tags) could still look "cut off" at exactly 320px with no
+        stretch to blame, since content genuinely exceeded the capped
+        height. Computing the actual needed height directly (up to the
+        cap) fixes the short-page case; the long-page case still
+        scrolls correctly past the cap, which was never broken -- just
+        easy to misread as the same bug from the short-page symptom
+        sitting right next to it."""
         scroll = SmoothScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QScrollArea.NoFrame)
-        scroll.setFixedHeight(320)
+        natural_height = page.sizeHint().height()
+        scroll.setFixedHeight(min(max(natural_height, 60), 320))
         scroll.viewport().setAutoFillBackground(False)
         scroll.setAttribute(Qt.WA_TranslucentBackground, True)
         scroll.setWidget(page)
@@ -612,6 +642,7 @@ class _VideoGridTab(QWidget):
                 video, highlight_enabled=self._highlight_unedited, font_scale=self._font_scale,
                 get_selected_ids=lambda: self._selected_ids,
                 ensure_selected=self._ensure_selected_for_context_menu,
+                neighbor_provider=self.neighbors,
             )
             card.edit_requested.connect(self.edit_requested.emit)
             card.deleted.connect(lambda _vid: self.refresh())
@@ -924,6 +955,12 @@ class LibraryPage(QWidget):
         self._refresh_debounce.timeout.connect(self.refresh)
 
     # ------------------------------------------------------------ page switching
+
+    def paintEvent(self, event) -> None:
+        # 3px, 15%-darker-than-itself outline around the whole page.
+        theme = Theme(config_module.load().appearance)
+        paint_page_outline(self, theme.library_background())
+        super().paintEvent(event)
 
     def _active_tab(self) -> "_VideoGridTab":
         return self._stack.currentWidget()

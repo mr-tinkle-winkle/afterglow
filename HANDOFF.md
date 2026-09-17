@@ -328,6 +328,129 @@ Seven consecutive batches of Library/Settings/appearance
 features/bug fixes, given together each time. Newest first.
 
 ### This session
+A huge combined batch on top of the previewer's first version --
+previewer polish, two real bugs found and fixed, three new custom
+widget classes, and page-level outlines. Grouped by area.
+
+**Video previewer polish (all the items from this round):**
+- Title now centered and larger, with tags/length/size/date collapsed
+  onto ONE line directly beneath it, both inside a new `_CardBox`
+  (rounded, `card_background()`-colored) -- matches a Library card's
+  own info-box treatment rather than being plain dialog chrome.
+- Speed control is now `CustomDoubleSpinBox` (see below) instead of a
+  plain `QDoubleSpinBox`.
+- Close button removed entirely.
+- Resized to 1.25x (1375x900, was 1100x720).
+- Real rounded window corners: `Qt.FramelessWindowHint` +
+  `WA_TranslucentBackground`, painted directly in the dialog's own
+  `paintEvent` (falls back to square when fullscreen, since a
+  fullscreen window covering the whole screen has no corners to round
+  against anyway).
+- The video itself sits inside a new `_VideoFrame`, bordered in
+  `accent()` at `unedited_selected_border_width` thickness -- the same
+  border a Library thumbnail gets by default (see video_card.py's
+  plain, non-highlighted video-box fill).
+- Transport controls (play/pause, scrubber, volume, speed, fullscreen)
+  now sit inside their own `_CardBox` "protrusion," matching the
+  header's treatment.
+- Click-anywhere-outside now closes the dialog -- an app-wide
+  `eventFilter` installed in `showEvent`/removed in `hideEvent`
+  (checking whether a `QEvent.MouseButtonPress`'s global position
+  falls outside `self.geometry()`), not a `Qt.Popup` window flag: a
+  Popup's own mouse-grab behavior is meant for lightweight, momentary
+  content like SearchBubble/SortPopover, and would have been fragile
+  for a window this complex (mpv embedding, sliders, a spinbox).
+- Prev/Next arrows added, cycling through whichever Library tab/sort
+  the video was opened from -- reuses the EXACT same
+  `neighbor_provider` shape MainWindow already passes to the Editor
+  (`_VideoGridTab.neighbors`), just plumbed through a new
+  `VideoCard.__init__(..., neighbor_provider=...)` parameter instead,
+  since the previewer opens directly from a card rather than through
+  MainWindow's own nav. `_VideoGridTab.refresh()` now passes
+  `neighbor_provider=self.neighbors` when constructing each card.
+  Navigating calls the dialog's own `_load_video()` (resets title,
+  info, mpv source, speed, and re-queries neighbors) rather than
+  opening a second dialog instance.
+- **Real bug found and fixed: autoplay wasn't actually autoplaying.**
+  `MpvVideoWidget.load()` always loads paused by design ("Editor
+  decides whether/when to auto-play") -- the previous version only set
+  the Play/Pause BUTTON's visual checked state to true without ever
+  calling `.play()` on the underlying widget, so the video sat there
+  paused despite the button showing "playing." Fixed by calling
+  `self.video_widget.play()` explicitly right after `load()`.
+- **Real perf bug found and fixed: switching to Library or Settings
+  took a perceptible delay to even BEGIN, reported directly ("Editor
+  is fine").** Traced to last session's `crossfade_to_index()`: it
+  called `old_widget.grab()` -- a full synchronous re-render of the
+  ENTIRE outgoing widget subtree -- BEFORE switching pages. For a big
+  Library grid (many VideoCards) or a Settings page full of custom-
+  painted controls, that grab could take long enough to be a
+  perceptible blocking delay before any visual change happened at all,
+  even though each widget's own paint is individually cheap (cached).
+  Editor's simple layout never had enough content for the cost to be
+  noticeable. Rewrote `crossfade_to_index()` to switch FIRST (instant,
+  as it should be) and fade the already-current new page in via
+  `QGraphicsOpacityEffect` instead of grabbing-then-fading-out a
+  snapshot of the old one -- no pre-switch render cost at all.
+  Verified directly: the function call itself now completes in ~1ms
+  for a 500-widget page, and the page has already switched by the time
+  it returns.
+
+**New custom widgets:**
+- `custom_spinbox.py` -- `CustomSpinBox`/`CustomDoubleSpinBox`. Native
+  up/down arrows hidden (`setButtonSymbols(NoButtons)`); two small
+  custom-painted triangle buttons positioned over the box do the same
+  job via `stepBy()`, which is what both spinbox variants already
+  implement to apply one step correctly regardless of range/wrapping,
+  so the buttons don't need separate int/float logic. The box itself
+  reuses the same rounded/accent-outlined/card-background-filled look
+  as `CustomLineEdit`. Used so far by the previewer's speed control;
+  ready to drop into Settings' own numeric fields next.
+- `custom_radio_button.py` -- `CustomRadioButton`. Same
+  card-background-box + checkmark-icon look as `CustomCheckBox`, just
+  circular instead of rounded-rect, matching the conventional
+  round-vs-square distinction between radio buttons and checkboxes.
+  Replaces the Sort By tab's `QRadioButton`s -- exclusivity still
+  enforced by the same `QButtonGroup` as before.
+- `page_outline.py` -- `paint_page_outline()`. A plain 3px,
+  15%-darker-than-itself outline for a "page" widget, with
+  `skip_top`/`skip_bottom`/`skip_left`/`skip_right` for whichever edge
+  touches something else with no gap. Applied to `_VideoGridTab`
+  (Local/Uploaded -- `library_background()`, skipping the top edge
+  since it's flush against the Library header right above it, per
+  "make sure this doesn't bleed into the middle where they combine"),
+  `LibraryPage` itself (full outline, same color), `EditorPage` and
+  `SettingsPage` (both `app_background()`, full outline -- neither
+  page sets an explicit background of its own, so that's the
+  "itself" being darkened for each). Verified pixel-level: Local's
+  left/bottom edges show the exact darkened color, its top edge does
+  NOT, and LibraryPage's own top edge DOES (the "outer" page, not
+  skipping anything).
+
+**Sort popover fixes:**
+- **Filters tab padding bug -- root cause found.** Every popover page
+  was forced to a fixed 320px height regardless of actual content
+  (`_wrap_scrollable`'s old `scroll.setFixedHeight(320)`). Combined
+  with `setWidgetResizable(True)`, a SHORT page (few tags) got
+  stretched to fill that full 320px anyway, and its own trailing
+  `addStretch(1)` was then filling real, visible dead space at the
+  bottom -- reported as "unnecessary padding... isn't even filled."
+  A LONG page (many tags) genuinely exceeding 320px was a separate,
+  correctly-scrolling case that just happened to look like the same
+  complaint from the outside. Fixed by computing each page's actual
+  `sizeHint().height()` and using `min(that, 320)` instead of always
+  320 -- short pages now size to their own content (no wasted
+  padding), long pages still cap at 320 and scroll as before (that
+  part was never actually broken).
+- Sort By tab's radio buttons are now `CustomRadioButton` (see above).
+
+**Not done this round:** applying `CustomSpinBox`/`CustomComboBox` to
+Settings' own numeric fields and dropdowns -- the spinbox class is
+built and proven (used in the previewer) but not yet swapped into
+Settings itself; a custom combo box (its own popup list, text-bubble
+attachment style like search) still isn't started at all.
+
+### Previous session
 Continuing straight from the last handoff -- same batch, picking up
 where it left off after packaging what was already done.
 
