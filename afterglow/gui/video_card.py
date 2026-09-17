@@ -10,7 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 from datetime import datetime
 
-from PySide6.QtCore import Qt, Signal, QSize, QRectF, QTimer
+from PySide6.QtCore import Qt, Signal, QSize, QRectF, QTimer, QVariantAnimation
 from PySide6.QtGui import QPixmap, QPainter, QColor, QIcon, QFontMetrics, QPen
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QMenu, QMessageBox, QLineEdit,
@@ -219,6 +219,13 @@ class VideoCard(QWidget):
         )
         self._selected = False
         self._bg_cache: QPixmap | None = None
+        # Fade state for set_selected()'s transition -- see its own
+        # comment. _fade_from holds the pre-change cached pixmap while
+        # a transition is in progress (None once settled); progress is
+        # the 0->1 blend amount toward whatever _bg_cache currently is.
+        self._fade_from: QPixmap | None = None
+        self._selection_fade_progress = 1.0
+        self._selection_fade_anim: QVariantAnimation | None = None
         # Both optional and both supplied together by _VideoGridTab (see
         # its refresh()) -- let the right-click context menu act on the
         # WHOLE current multi-selection instead of just this one card.
@@ -578,13 +585,50 @@ class VideoCard(QWidget):
 
     def set_selected(self, selected: bool) -> None:
         """Called by the grid's selection handling (_VideoGridTab) --
-        a selected card's border always wins over the unedited-highlight
-        one (see paintEvent), regardless of the video's edited state or
-        the "Highlight Unedited" toggle, since selection is a separate,
-        higher-priority concept from either."""
+        a selected card's outer ring is layered on top of whatever the
+        thumbnail's own border already shows (see _render_background),
+        not a replacement for it. Fades the outer-ring change in over
+        the previous render rather than snapping straight to it --
+        reported directly as looking better ("fade... instead of
+        snapping"). Captures whatever's CURRENTLY cached as the fade's
+        starting frame before flipping state, so this works the same
+        whether toggling into OR out of selection."""
         if selected != self._selected:
+            self._fade_from = self._bg_cache
             self._selected = selected
+            self._bg_cache = None  # forces a fresh render at the new state on next paint
+            # Set synchronously, not left to the animation's own first
+            # tick -- QVariantAnimation doesn't guarantee delivering
+            # valueChanged(0.0) synchronously within start() itself (it
+            # can defer to the next timer tick), so without this, a
+            # paintEvent that happens to run before that first tick
+            # would still see the OLD progress value (1.0, fully
+            # settled) left over from whatever the last completed fade
+            # was, and skip the blend entirely for that one frame.
+            self._selection_fade_progress = 0.0
+            self._start_selection_fade()
             self.update()
+
+    def _start_selection_fade(self) -> None:
+        if self._selection_fade_anim is not None:
+            self._selection_fade_anim.stop()
+        anim = QVariantAnimation(self)
+        anim.setDuration(200)
+        anim.setStartValue(0.0)
+        anim.setEndValue(1.0)
+        anim.valueChanged.connect(self._on_selection_fade_value)
+        anim.finished.connect(self._on_selection_fade_finished)
+        self._selection_fade_anim = anim
+        anim.start()
+
+    def _on_selection_fade_value(self, value) -> None:
+        self._selection_fade_progress = float(value)
+        self.update()
+
+    def _on_selection_fade_finished(self) -> None:
+        self._fade_from = None
+        self._selection_fade_progress = 1.0
+        self.update()
 
     def _should_show_highlight(self) -> bool:
         # video.has_edit already IS a per-video "has this been trimmed
@@ -613,7 +657,18 @@ class VideoCard(QWidget):
             self._bg_cache = self._render_background(cache_key)
             self._bg_cache_key = cache_key
         painter = QPainter(self)
-        painter.drawPixmap(0, 0, self._bg_cache)
+        if self._fade_from is not None and self._selection_fade_progress < 1.0:
+            # Cross-fades the OLD (pre-selection-change) rendering into
+            # the new one over set_selected()'s own animation, rather
+            # than snapping straight to the new state -- both are
+            # already-cached pixmaps, so this is just two cheap blits
+            # per frame (one at partial opacity), not a re-render.
+            painter.drawPixmap(0, 0, self._fade_from)
+            painter.setOpacity(self._selection_fade_progress)
+            painter.drawPixmap(0, 0, self._bg_cache)
+            painter.setOpacity(1.0)
+        else:
+            painter.drawPixmap(0, 0, self._bg_cache)
         painter.end()
         super().paintEvent(event)
 
@@ -689,7 +744,20 @@ class VideoCard(QWidget):
             # of the rect's own width/height is smaller, which is the
             # only clamp actually needed to keep the shape valid.
             video_radius = radius
-            if not selected and show_highlight:
+            if show_highlight:
+                # Was `if not selected and show_highlight:` -- selection
+                # used to unconditionally override the highlight border
+                # with the plain accent() fill, even for an UNEDITED
+                # video, which is exactly the reported bug ("selecting
+                # a video replaces the thumbnail outline with the
+                # default one, even if it's unedited"). Selection is
+                # meant to be a separate, ADDITIONAL indicator (the
+                # outer ring, built above -- unchanged) layered on TOP
+                # of whatever the thumbnail's own border already is,
+                # not something that overrides what that border means.
+                # Whether THIS specific border shows the highlight
+                # gradient now depends purely on the video's own edited
+                # state, exactly like it does when nothing is selected.
                 if video_radius:
                     painter.setClipPath(rounded_rect_path(video_rect, video_radius))
                 painter.drawPixmap(video_rect, self._highlight_pixmap, QRectF(self._highlight_pixmap.rect()))
@@ -771,7 +839,19 @@ class VideoCard(QWidget):
     def _open_preview_dialog(self, video: "library.Video") -> None:
         from .video_preview_dialog import VideoPreviewDialog
         dialog = VideoPreviewDialog(video, neighbor_provider=self._neighbor_provider, parent=self.window())
-        dialog.exec()
+        # show(), NOT exec() -- a MODAL dialog can make the OS/window
+        # manager swallow clicks on the window behind it (a shake/beep
+        # instead of actually delivering a real mouse-press event to
+        # the app), which is exactly what would have made "click off
+        # closes it" silently not work despite the event-filter logic
+        # being correct: it never even SAW those clicks as real events
+        # to check. A non-modal window lets the app-wide event filter
+        # (see VideoPreviewDialog.eventFilter) genuinely receive them.
+        # Keeping a live reference here (not just Qt's own parent-child
+        # ownership) so the dialog isn't garbage-collected out from
+        # under itself the moment this method returns.
+        self._active_preview_dialog = dialog
+        dialog.show()
 
     def mouseDoubleClickEvent(self, event) -> None:
         self._preview_pending = False  # cancel the pending single-click preview -- see mousePressEvent

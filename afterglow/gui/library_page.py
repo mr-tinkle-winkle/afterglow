@@ -360,6 +360,19 @@ class _VideoGridTab(QWidget):
     # ------------------------------------------------------------ filters menu
 
     def paintEvent(self, event) -> None:
+        # super().paintEvent() FIRST, border SECOND -- reported as not
+        # visible at all on a real machine despite passing every pixel
+        # check in this sandbox. Likely cause: a real KDE/Plasma-
+        # integrated Qt style can have WA_StyledBackground effectively
+        # active (this sandbox's offscreen platform doesn't), in which
+        # case QWidget's own base paintEvent() actually paints an
+        # OPAQUE background via the current style -- if that ran AFTER
+        # this border (the previous order), it would silently paint
+        # right over it. Calling the base class first and drawing the
+        # border on top guarantees the border is always the last thing
+        # painted here, regardless of what the base class does on any
+        # given platform/style.
+        super().paintEvent(event)
         # 3px, 15%-darker-than-itself outline -- per Max's direct
         # request for every "page" (Local/Uploaded/Library/Editor/
         # Settings). Skips the TOP edge specifically: this tab's own
@@ -370,7 +383,6 @@ class _VideoGridTab(QWidget):
         # doesn't bleed into the middle where they combine."
         theme = Theme(config_module.load().appearance)
         paint_page_outline(self, theme.library_background(), skip_top=True)
-        super().paintEvent(event)
 
     def rebuild_sort_popover_pages(self, popover: SortPopover) -> None:
         """Fills `popover`'s three pages with THIS tab's current
@@ -971,10 +983,11 @@ class LibraryPage(QWidget):
     # ------------------------------------------------------------ page switching
 
     def paintEvent(self, event) -> None:
-        # 3px, 15%-darker-than-itself outline around the whole page.
+        # super() first, border second -- see _VideoGridTab's own
+        # paintEvent comment for why this order matters.
+        super().paintEvent(event)
         theme = Theme(config_module.load().appearance)
         paint_page_outline(self, theme.library_background())
-        super().paintEvent(event)
 
     def _active_tab(self) -> "_VideoGridTab":
         return self._stack.currentWidget()

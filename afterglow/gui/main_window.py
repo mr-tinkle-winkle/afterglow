@@ -46,6 +46,7 @@ from .resources import resource_qpixmap
 from .scaling import compute_scale
 from .theme import Theme
 from .scale_reveal import crossfade_to_index
+from .page_outline import paint_page_outline
 
 # Indices into self.stack -- fixed at construction time (see __init__).
 _SETTINGS_INDEX = 0
@@ -63,6 +64,20 @@ SIDEBAR_MAX_WIDTH = 140
 # videos"). Read once at construction; a live-settings-change mid-
 # session isn't retrofitted here any more than the sidebar's other
 # construction-time values are (see this module's own docstring).
+
+
+class _Sidebar(QWidget):
+    """Plain QWidget subclass purely so it can paint its own 3px,
+    15%-darker-than-itself outline -- "sidebar" is one of the page
+    elements Max asked for this on, alongside Local/Uploaded/Library/
+    Editor/Settings. No explicit background of its own (inherits
+    MainWindow's central-widget app_background()), same basis as
+    Editor/Settings' own outlines."""
+
+    def paintEvent(self, event) -> None:
+        super().paintEvent(event)  # first -- see EditorPage's own paintEvent comment for why
+        theme = Theme(config_module.load().appearance)
+        paint_page_outline(self, theme.app_background())
 
 
 class MainWindow(QMainWindow):
@@ -108,7 +123,7 @@ class MainWindow(QMainWindow):
 
         # ---- sidebar: Library + Editor (icon-only, fill the height),
         # gear (Settings) pinned to the bottom ----
-        self.sidebar = QWidget()
+        self.sidebar = _Sidebar()
         self.sidebar.setFixedWidth(round(self.width() * SIDEBAR_WIDTH_FRACTION))
         sidebar_layout = QVBoxLayout(self.sidebar)
         # Same padding as the Library grid's own card-to-card spacing,
@@ -244,14 +259,23 @@ class MainWindow(QMainWindow):
             self.library_page.show_status_message("Select a video.")
 
         crossfade_to_index(self.stack, index)
-        # Library reflects any edits/deletes made from the Editor page
-        # (e.g. an Undo changing has_edit, or a delete elsewhere) whenever
-        # it's navigated back to, rather than needing a manual refresh.
-        # Same singleShot(0) deferral as Settings above, and for the
-        # exact same reason -- this is a full filesystem scan + rebuilds
-        # every VideoCard from scratch, which is real, unavoidable work,
-        # but it doesn't need to block the FIRST frame of the page
-        # you're switching to from actually appearing.
+        # Deliberately NOT refreshing the Library here anymore -- it
+        # used to call library_page.refresh() (a full filesystem scan +
+        # every VideoCard rebuilt from scratch) on every single switch
+        # TO Library, even via the deferred singleShot(0) from last
+        # round's fix. That deferral only moved WHEN the block happened,
+        # not whether it happened -- rebuilding potentially hundreds of
+        # cards is real, unavoidable CPU work regardless of scheduling,
+        # and still read as "lag" once it actually ran. Per Max's own
+        # suggestion ("maybe just leave the pages loaded after switching
+        # off of them"): the Library page now simply stays exactly as
+        # it was the last time anything actually changed it -- the
+        # existing DB-file-watcher (_on_db_file_changed, further down in
+        # library_page.py) still refreshes it automatically whenever the
+        # daemon or the Editor actually writes to the database, and the
+        # Library's own Refresh button is still right there for a
+        # manual one. Switching TO Library is now just a plain,
+        # instant page switch, nothing more.
         if index == _LIBRARY_INDEX:
             QTimer.singleShot(0, self.library_page.refresh)
 

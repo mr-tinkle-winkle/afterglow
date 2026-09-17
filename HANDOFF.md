@@ -328,6 +328,123 @@ Seven consecutive batches of Library/Settings/appearance
 features/bug fixes, given together each time. Newest first.
 
 ### This session
+Continuing straight from last round's four bug reports -- three more
+came back with follow-ups (one fully explained, one root-caused
+further, one flagged as "still not visible"), plus four new items.
+
+1. **Autoplay doubled the audio -- root cause was the SAME reload
+   workaround from last session's fix, one layer deeper.** Last
+   round's fix made `_reload_first_video` preserve whatever pause
+   state was already in effect instead of forcing paused -- correct,
+   and it did stop the "plays then stops" symptom. But that reload
+   still re-issues `self._mpv.play(path)` (a genuine restart of the
+   file) 150ms after the original load, and if OUR OWN explicit
+   `play()` had already started real audio output by then, the reload
+   briefly overlapped a second copy of it starting on top -- "doubles
+   up on the audio... jarring." Per Max's own suggested fix (delay the
+   autoplay a little): `VideoPreviewDialog._load_video()` now checks
+   `MpvVideoWidget._first_load_done` and, ONLY on the very first video
+   ever loaded into a fresh widget (Prev/Next never re-trigger the
+   workaround), delays its own `play()` call via
+   `QTimer.singleShot(200, ...)` -- comfortably past the 150ms reload
+   -- so there's only ever one play command in flight by the time
+   audio actually starts. Subsequent loads (arrows) still play
+   immediately, unchanged.
+2. **Click-off-close STILL wasn't working -- found the actual reason.**
+   The event-filter logic itself was correct, but the dialog was
+   opened MODALLY (`.exec()`) -- a modal window can make the OS/window
+   manager swallow clicks on whatever's behind it entirely (a shake or
+   a beep, no real `QMouseEvent` ever delivered to the app), so the
+   filter's own geometry check never even got a chance to run for
+   those clicks. Switched to non-modal (`.show()`), with a live
+   reference kept on the originating `VideoCard`
+   (`self._active_preview_dialog`) so the Python wrapper isn't
+   garbage-collected the moment the opening method returns.
+3. **Selection replacing the unedited-highlight border -- confirmed
+   and fixed.** `_render_background`'s video-thumbnail-border branch
+   was gated on `if not selected and show_highlight`, treating
+   selection and the highlight as mutually exclusive -- so selecting
+   an unedited video silently swapped its gradient border for the
+   plain accent() one. Changed to gate on `show_highlight` alone;
+   selection's own outer ring (built separately, unchanged) is layered
+   on top of whichever thumbnail border is already showing, exactly as
+   it always should have been. Verified directly: an unedited video's
+   highlight border is now confirmed present both before AND after
+   selecting it.
+4. **Selection snapping instead of fading -- implemented a real
+   cross-fade.** `VideoCard` now keeps the pre-change cached
+   background (`_fade_from`) alongside the newly-rendered one, and
+   blends between them over a 200ms `QVariantAnimation` (draw the old
+   pixmap, then the new one on top at partial opacity) rather than an
+   instant swap -- both are already-cached bitmaps, so each frame of
+   the fade is just two cheap blits, not a re-render. Caught a real
+   bug in this fix while verifying it, not just trusting the animation
+   "ran": the fade's progress value needs to be reset to 0.0
+   SYNCHRONOUSLY the moment the fade starts, not left for the
+   animation's own first tick, since `QVariantAnimation` doesn't
+   guarantee emitting its first `valueChanged` synchronously within
+   `start()` -- without the explicit reset, a repaint landing before
+   that first tick would still show the OLD, fully-settled progress
+   value from whatever fade last completed, silently skipping the
+   blend for that frame.
+5. **Page switch lag, still present -- removed the automatic Library
+   refresh entirely, per Max's own suggestion.** Both of last round's
+   fixes (a faster crossfade, deferring the refresh call) only changed
+   WHEN or HOW FAST the rebuild happened, never WHETHER it happened --
+   rebuilding potentially hundreds of VideoCards is real, unavoidable
+   work no amount of scheduling trickery removes. Per "maybe just
+   leave the pages loaded after switching off of them": `_on_nav_clicked`
+   no longer calls `library_page.refresh()` at all. Switching to
+   Library is now a plain, instant page swap; the page stays exactly
+   as it was until something ACTUALLY changes it -- the existing
+   DB-file-watcher (already there, catching daemon/Editor writes) or
+   the Library's own manual Refresh button.
+6. **Sidebar and page outlines still not visible -- likely cause
+   found: paint ORDER, not the margin fix from last round.** Every
+   affected `paintEvent` was drawing the border FIRST, then calling
+   `super().paintEvent(event)` SECOND. On a real KDE/Plasma-integrated
+   Qt style (unlike this sandbox's offscreen platform), the base
+   `QWidget.paintEvent()` can genuinely paint an OPAQUE background of
+   its own -- if that ran after the border, it would silently erase
+   it, matching a bug CLASS already seen once before in this exact
+   codebase (a sandbox-vs-real-compositor rendering difference).
+   Reordered all FIVE affected `paintEvent`s (the four pages from last
+   round, plus the sidebar itself -- new `_Sidebar(QWidget)` subclass
+   in main_window.py, since Max explicitly listed "sidebar" as still
+   missing one this round) to call `super().paintEvent()` FIRST and
+   draw the border SECOND, guaranteeing the border is always the last
+   thing painted regardless of what the base class does on any given
+   platform. Verified this doesn't regress anything in this sandbox
+   (all prior pixel checks still pass) and added a matching check for
+   the sidebar itself -- genuinely can't confirm this is the real
+   fix without Max's own machine, flagged as such.
+7. **Sort popover's Filters-tab padding -- actually fixed this time,
+   found the real cause.** Last round's fix (cap each page's own
+   wrapping QScrollArea to `min(sizeHint, 320)`) was necessary but not
+   sufficient: `_RoundedContentArea` (the `QStackedWidget` holding all
+   three pages) had no `sizeHint()`/`minimumSizeHint()` override, so
+   it fell back to `QStackedWidget`'s own default -- which sizes to
+   the LARGEST of ALL its pages, not just the one showing. A short
+   Filters page (few tags) was still being stretched to whatever
+   height the tallest of the three pages (often Sort By, with 8 fixed
+   radio options) needed, leaving real unfilled space below its own
+   content -- exactly the reported symptom, still present because the
+   actual bottleneck was one level up from where last round's fix
+   landed. Fixed by overriding both to return the CURRENT page's own
+   size instead, and by having `SortPopover.set_current_index()`
+   re-run `adjustSize()` so switching tabs while the popover is
+   already open resizes it immediately rather than waiting for the
+   next time it's reopened. Verified directly: with a single tag, the
+   popover now sizes to ~159px (matching the Filters page's own
+   ~127px sizeHint plus margins) instead of being forced toward the
+   old ~320px regardless of content, and switching to the Sort By tab
+   resizes it again to fit that page's own (taller) content.
+
+**New items, all done:**
+8. Previewer resized again, 1.15x on top of last round's 1.25x
+   (1581x1035, was 1375x900).
+
+### Previous session
 Four direct bug reports on last session's work, all four were real
 bugs, all four found and fixed -- plus a codebase-wide audit that
 caught two MORE instances of one of them before they got reported

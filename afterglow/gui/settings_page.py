@@ -130,12 +130,15 @@ class SettingsPage(QWidget):
     # ------------------------------------------------------------ OBS group
 
     def paintEvent(self, event) -> None:
+        # super() first, border second -- same reasoning as Editor's
+        # own paintEvent (a real style could paint an opaque background
+        # via the base class that would erase a border drawn first).
+        super().paintEvent(event)
         # 3px, 15%-darker-than-itself page outline -- Settings has no
         # explicit background of its own, so this darkens the same
         # inherited app_background() Editor's outline uses too.
         theme = Theme(config_module.load().appearance)
         paint_page_outline(self, theme.app_background())
-        super().paintEvent(event)
 
     def _build_obs_group(self) -> CustomGroupBox:
         group = CustomGroupBox("OBS Connection")

@@ -17,7 +17,7 @@ plumbed through VideoCard instead of MainWindow).
 """
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, QRectF, QEvent
+from PySide6.QtCore import Qt, QRectF, QEvent, QTimer
 from PySide6.QtGui import QPainter, QColor, QPainterPath, QPen
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QSlider, QAbstractButton,
@@ -35,8 +35,8 @@ from .rounded_rect import rounded_rect_path
 from .video_card import _format_duration, _format_file_size, _format_date, FAVORITE_STAR
 
 _TRANSPORT_BTN_SIZE = 40
-_WIDTH = 1375   # 1100 * 1.25
-_HEIGHT = 900   # 720 * 1.25
+_WIDTH = 1581   # 1375 * 1.15 (last round's own 1100*1.25 size, now further scaled)
+_HEIGHT = 1035  # 900 * 1.15
 
 
 class _CardBox(QWidget):
@@ -393,9 +393,25 @@ class VideoPreviewDialog(QDialog):
         self.speed_spin.setValue(1.0)
         self.speed_spin.blockSignals(False)
         self.video_widget.set_speed(1.0)
+        # The FIRST video ever loaded into a fresh MpvVideoWidget triggers
+        # its own internal "reload 150ms later" workaround for a known
+        # black-screen bug (see mpv_widget.py's _reload_first_video) --
+        # that reload re-issues the play command for the same file,
+        # which if playback had ALREADY started (our own explicit
+        # play() below) would briefly overlap the original audio with
+        # the reload's own restart of it, reported directly as "doubles
+        # up on the audio... jarring." Delaying our own play() call
+        # past that 150ms window (only on the very first load -- later
+        # loads, e.g. via Prev/Next, never trigger that workaround
+        # again) means there's only ever ONE play command in flight by
+        # the time audio actually starts, not two overlapping ones.
+        is_first_load_ever = not self.video_widget._first_load_done
         self.video_widget.load(video.path)
         self.video_widget.set_volume(self.volume_slider.value())
-        self.video_widget.play()  # MpvVideoWidget.load() always loads paused -- start it explicitly
+        if is_first_load_ever:
+            QTimer.singleShot(200, self.video_widget.play)
+        else:
+            self.video_widget.play()
         self.play_pause_btn.setChecked(True)
         self._update_time_label()
         self._update_neighbor_buttons()

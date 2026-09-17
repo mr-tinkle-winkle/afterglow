@@ -323,13 +323,17 @@ class EditorPage(QWidget):
     # ------------------------------------------------------------ loading
 
     def paintEvent(self, event) -> None:
+        # super() first, border second -- a real KDE/Plasma-integrated
+        # Qt style can paint an opaque background via the base class's
+        # own paintEvent (this sandbox's offscreen platform doesn't),
+        # which would silently erase the border if drawn beforehand.
+        super().paintEvent(event)
         # 3px, 15%-darker-than-itself page outline -- Editor has no
         # explicit background of its own (it inherits MainWindow's
         # central-widget app_background()), so that's the "itself"
         # this darkens.
         theme = Theme(config_module.load().appearance)
         paint_page_outline(self, theme.app_background())
-        super().paintEvent(event)
 
     def load_video(self, video_id: int) -> None:
         self.current_video_id = video_id
