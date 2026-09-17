@@ -32,7 +32,7 @@ Uploaded buttons have.
 """
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
     QButtonGroup, QStackedWidget, QSizePolicy,
@@ -220,7 +220,19 @@ class MainWindow(QMainWindow):
             # pages) and never rebuilt on nav -- refresh whatever it
             # shows that can change while the app's been running
             # (filters created/renamed from the Library since launch).
-            self.settings_page.refresh_dynamic_lists()
+            # Deferred via singleShot(0), NOT called directly here --
+            # this used to run BEFORE crossfade_to_index below, meaning
+            # the page switch itself couldn't even START rendering
+            # until this finished. Still reported as a perceptible
+            # delay ("still page switch lag") even after last round's
+            # fix to crossfade_to_index itself, which only addressed
+            # ONE source of blocking (the old pre-switch snapshot grab)
+            # -- this synchronous refresh call was a SECOND, independent
+            # one sitting right next to it. singleShot(0, ...) schedules
+            # it to run on the next event-loop iteration instead of
+            # blocking this one, so Qt gets a chance to actually PAINT
+            # the already-switched page first.
+            QTimer.singleShot(0, self.settings_page.refresh_dynamic_lists)
 
         if index == _EDITOR_INDEX and self.editor_page.current_video_id is None:
             # Nothing has ever been loaded into the Editor -- go to the
@@ -235,8 +247,13 @@ class MainWindow(QMainWindow):
         # Library reflects any edits/deletes made from the Editor page
         # (e.g. an Undo changing has_edit, or a delete elsewhere) whenever
         # it's navigated back to, rather than needing a manual refresh.
+        # Same singleShot(0) deferral as Settings above, and for the
+        # exact same reason -- this is a full filesystem scan + rebuilds
+        # every VideoCard from scratch, which is real, unavoidable work,
+        # but it doesn't need to block the FIRST frame of the page
+        # you're switching to from actually appearing.
         if index == _LIBRARY_INDEX:
-            self.library_page.refresh()
+            QTimer.singleShot(0, self.library_page.refresh)
 
     def _open_in_editor(self, video_id: int) -> None:
         self.editor_page.load_video(video_id)

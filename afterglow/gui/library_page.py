@@ -36,7 +36,7 @@ from .pixmap_effects import tint_pixmap_cached
 from .custom_group_box import CustomGroupBox
 from .custom_radio_button import CustomRadioButton
 from .scale_reveal import crossfade_to_index
-from .page_outline import paint_page_outline
+from .page_outline import paint_page_outline, BORDER_WIDTH
 from .custom_checkbox import CustomCheckBox
 
 # Approximate on-screen width of one card (thumbnail + its own internal
@@ -258,6 +258,19 @@ class _VideoGridTab(QWidget):
         self._refresh_cooldown_timer.timeout.connect(self._clear_refresh_cooldown)
 
         outer = QVBoxLayout(self)
+
+        # Explicit margin reserving room for the 3px page outline
+        # painted below -- NOT relying on whatever the ambient QStyle's
+        # own default QLayout margin happens to be (often nonzero, but
+        # not guaranteed, and can differ between this sandbox's default
+        # offscreen-platform style and Max's real one). If a style ever
+        # left zero margin here, child content would sit flush against
+        # this widget's own edge and completely paint over the border
+        # drawn beneath it in paintEvent -- exactly matching "the page
+        # outlines don't seem to appear," reported directly. Top is 0
+        # since this tab's own outline skips that edge anyway (flush
+        # against the Library header above it).
+        outer.setContentsMargins(BORDER_WIDTH, 0, BORDER_WIDTH, BORDER_WIDTH)
 
         # ---- grid ----
         # Search/Refresh/Sort now live once, shared, in LibraryPage's own
@@ -772,6 +785,7 @@ class LibraryPage(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(BORDER_WIDTH, BORDER_WIDTH, BORDER_WIDTH, BORDER_WIDTH)
 
         # Ingest/prune before the tabs build their initial grids, so the
         # very first render already reflects reality (manually-dropped-in

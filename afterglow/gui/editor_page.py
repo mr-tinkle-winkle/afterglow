@@ -35,7 +35,7 @@ from PySide6.QtWidgets import (
 from .. import library
 from .. import config as config_module
 from .theme import Theme
-from .page_outline import paint_page_outline
+from .page_outline import paint_page_outline, BORDER_WIDTH
 from .mpv_widget import MpvVideoWidget
 from .trim_timeline import TrimTimeline
 from .volume_bar import VolumeBar
@@ -150,6 +150,7 @@ class EditorPage(QWidget):
         self._next_video_id: int | None = None
 
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(BORDER_WIDTH, BORDER_WIDTH, BORDER_WIDTH, BORDER_WIDTH)
 
         # ---- title (editable) + filters, at the very top ----
         title_row = QHBoxLayout()

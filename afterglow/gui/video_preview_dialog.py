@@ -18,7 +18,7 @@ plumbed through VideoCard instead of MainWindow).
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, QRectF, QEvent
-from PySide6.QtGui import QPainter, QColor, QPainterPath
+from PySide6.QtGui import QPainter, QColor, QPainterPath, QPen
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QSlider, QAbstractButton,
     QSizePolicy, QApplication, QWidget,
@@ -164,8 +164,12 @@ class _FullscreenButton(QAbstractButton):
         painter.setBrush(bg)
         painter.drawEllipse(rect)
 
-        pen = painter.pen()
-        pen.setColor(contrast_text(bg))
+        # A FRESH QPen -- painter.pen() right after setPen(Qt.NoPen)
+        # would silently still be a no-draw pen regardless of any
+        # color/width set on it afterward; see CustomRadioButton's own
+        # comment on this exact Qt gotcha (the corner brackets weren't
+        # rendering at all because of it).
+        pen = QPen(contrast_text(bg))
         pen.setWidthF(2.2)
         pen.setCapStyle(Qt.RoundCap)
         painter.setPen(pen)
@@ -226,8 +230,9 @@ class _VolumeButton(QAbstractButton):
         cone.closeSubpath()
         painter.drawPath(cone)
 
-        pen = painter.pen()
-        pen.setColor(color)
+        # Same fresh-QPen fix as _FullscreenButton above -- the arcs/
+        # mute-X lines weren't rendering at all before this.
+        pen = QPen(color)
         pen.setWidthF(1.8)
         pen.setCapStyle(Qt.RoundCap)
         painter.setPen(pen)

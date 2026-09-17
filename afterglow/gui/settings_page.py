@@ -35,7 +35,7 @@ from .custom_checkbox import CustomCheckBox
 from .custom_line_edit import CustomLineEdit
 from .custom_group_box import CustomGroupBox
 from .theme import Theme
-from .page_outline import paint_page_outline
+from .page_outline import paint_page_outline, BORDER_WIDTH
 from .smooth_scroll_area import SmoothScrollArea
 
 
@@ -47,6 +47,7 @@ class SettingsPage(QWidget):
         self._deleted_ids: set[int] = set()
 
         outer = QVBoxLayout(self)
+        outer.setContentsMargins(BORDER_WIDTH, BORDER_WIDTH, BORDER_WIDTH, BORDER_WIDTH)
 
         # ---- header row: one fully separate, fully-rounded custom
         # button per settings page, each with real padding between them

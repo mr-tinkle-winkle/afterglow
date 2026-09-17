@@ -328,6 +328,91 @@ Seven consecutive batches of Library/Settings/appearance
 features/bug fixes, given together each time. Newest first.
 
 ### This session
+Four direct bug reports on last session's work, all four were real
+bugs, all four found and fixed -- plus a codebase-wide audit that
+caught two MORE instances of one of them before they got reported
+separately.
+
+1. **Autoplay "plays for a moment then stops" -- real race condition,
+   found and fixed.** `MpvVideoWidget` has a workaround for a known
+   black-screen bug on the very first video played after the app
+   opens: it reloads that first video a second time, 150ms later, via
+   `_reload_first_video()`. That method unconditionally forced
+   `pause = True` regardless of what the caller actually wanted --
+   so the previewer's explicit `.play()` call (issued right after
+   `load()`) would genuinely start playback, only for this delayed
+   callback to silently undo it 150ms later. This only ever hit the
+   FIRST video shown in a freshly-opened previewer (a fresh
+   `MpvVideoWidget` each time means `_first_load_done` is always
+   False on open) -- exactly matching "it DOES autoplay when you go
+   to a new clip with the arrows" (no fresh reload-workaround firing
+   on those) "but not the first time." Fixed by having
+   `_reload_first_video` capture and re-apply whatever pause state was
+   ACTUALLY in effect right before it fires, instead of hardcoding
+   `True` -- this method exists purely to work around a rendering bug,
+   it was never supposed to have its own opinion about play state.
+   Verified both directions: the previewer's load-then-play sequence
+   now survives the delayed reload, AND Editor's own default
+   paused-on-load behavior (which never calls `.play()` after `load()`)
+   is confirmed unchanged.
+2. **Page switch lag -- a SECOND blocking call found sitting right next
+   to the one fixed last session.** Last round's fix addressed
+   `crossfade_to_index()` itself (no longer grabbing a snapshot before
+   switching). Still reported as laggy, because `_on_nav_clicked` also
+   calls `library_page.refresh()` (a full filesystem scan + every
+   VideoCard rebuilt from scratch) or `settings_page.
+   refresh_dynamic_lists()` SYNCHRONOUSLY, right alongside the page
+   switch -- so even with the switch itself now fast, nothing could
+   actually get painted on screen until that heavier call finished
+   too. Fixed by deferring both with `QTimer.singleShot(0, ...)`, so
+   Qt gets a chance to paint the already-switched page before the
+   heavier refresh work runs. Verified with a simulated slow
+   `refresh()` (artificially sleeping 300ms): clicking Library now
+   returns in ~7ms instead of blocking for the full 300ms, and the
+   deferred refresh is confirmed to still run afterward.
+3. **Sort By tab missing its outline -- a real, and apparently
+   recurring, Qt gotcha.** `Qt.NoPen` is a PEN STYLE, not merely "no
+   color set yet" -- calling `.setColor()`/`.setWidthF()` on a pen
+   that's still styled `Qt.NoPen` does nothing; the stroke still won't
+   render regardless of what gets set on it afterward. `CustomRadioButton`
+   drew its fill via `setPen(Qt.NoPen)` then tried to reuse that exact
+   pen object (via `painter.pen()`) for the outline stroke -- which
+   silently never drew anything. Audited the ENTIRE codebase for this
+   same pattern (a small script scanning every `paintEvent` for
+   `setPen(Qt.NoPen)` followed by a later `painter.pen()` call in the
+   same method) and found it in two more places written this same
+   recent stretch: `_FullscreenButton` (the corner brackets) and
+   `_VolumeButton` (the speaker arcs/mute-X) in the video previewer --
+   neither had ever actually been rendering their own icon detail,
+   just an accent-colored circle. All three fixed by constructing a
+   brand-new `QPen(...)` for the stroke pass instead of mutating the
+   dead one. Verified pixel-level that the radio button's ring now
+   actually appears (a broad "does the accent color show up anywhere
+   on this widget" scan, not a single fragile coordinate guess).
+4. **Page outlines not appearing -- likely root cause found (can't
+   fully confirm without Max's real display, but fixed regardless).**
+   The border-drawing code itself was correct, but it relied on
+   whatever the ACTIVE QSTYLE's own default QLayout margin happens to
+   be to leave room for the border -- which this sandbox's default
+   offscreen-platform style happens to leave nonzero, but a real
+   KDE/Qt style easily might not. If that margin were ever zero, child
+   content (the scroll area, the mpv widget, Settings' own group
+   boxes) would sit flush against each page's outer edge and
+   completely paint over the border drawn beneath it in `paintEvent`
+   -- matching a bug CLASS already documented once before in this
+   exact codebase (a stylesheet-cascade difference between this
+   sandbox's offscreen platform and a real compositor). Fixed by
+   making the margin EXPLICIT (3px, matching `page_outline.BORDER_
+   WIDTH`) on all four pages' own outer layouts, rather than hoping
+   the ambient default happens to leave enough room. Caught a real
+   bug of my OWN while wiring this in and testing it properly rather
+   than assuming it worked: `settings_page.py` was missing the actual
+   `BORDER_WIDTH` import (only `paint_page_outline` had been
+   imported), which would have crashed SettingsPage outright on
+   construction -- caught immediately by actually constructing one
+   and checking, not left for Max to hit.
+
+### Previous session
 A huge combined batch on top of the previewer's first version --
 previewer polish, two real bugs found and fixed, three new custom
 widget classes, and page-level outlines. Grouped by area.

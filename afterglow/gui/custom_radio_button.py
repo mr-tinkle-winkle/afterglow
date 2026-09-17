@@ -11,7 +11,7 @@ QRadioButtons before.
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, QRectF, QSize
-from PySide6.QtGui import QPainter, QColor
+from PySide6.QtGui import QPainter, QColor, QPen
 from PySide6.QtWidgets import QAbstractButton
 
 from .. import config as config_module
@@ -53,8 +53,16 @@ class CustomRadioButton(QAbstractButton):
         painter.setBrush(bg)
         painter.drawEllipse(box_rect)
 
-        pen = painter.pen()
-        pen.setColor(self._theme.accent())
+        # A FRESH QPen here, not painter.pen() -- Qt.NoPen just set
+        # above is a PEN STYLE, not merely "no color set yet", and it
+        # survives a later setColor()/setWidthF() call on that same
+        # pen object; only the style itself changes that. Calling
+        # painter.pen() right after setPen(Qt.NoPen) silently returns
+        # a pen that still won't draw ANY stroke no matter what color
+        # or width gets set on it afterward -- which is exactly why
+        # this outline wasn't rendering at all. A brand-new QPen
+        # defaults to Qt.SolidLine, avoiding the trap entirely.
+        pen = QPen(self._theme.accent())
         pen.setWidthF(1.5)
         painter.setPen(pen)
         painter.setBrush(Qt.NoBrush)
