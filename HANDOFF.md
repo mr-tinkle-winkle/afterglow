@@ -328,6 +328,98 @@ Seven consecutive batches of Library/Settings/appearance
 features/bug fixes, given together each time. Newest first.
 
 ### This session
+The big one this round: the actual cause of the ~5 second startup
+time and the returned "click Library multiple times" bug, confirmed
+directly and fixed -- plus the quick-action-button shape, the
+previewer's fade in/out, and its size reverted back to fixed pixels.
+
+**Startup performance -- confirmed root cause, fixed at both layers.**
+Max's own diagnosis was exactly right: `resource_qpixmap()`/
+`resource_qicon()` (afterglow/gui/resources/__init__.py) had NO
+caching at all -- every single call re-read the file from disk AND
+re-decoded the full-resolution PNG from scratch, even for the exact
+same file requested by many different widgets (a filter icon or
+`CustomCheckBox`'s checkmark, for example, loaded fresh for every
+single VideoCard/checkbox instance). On top of that, several of the
+actual PNG files Max had provided across recent sessions were
+enormously oversized for how they're ever displayed on screen --
+`checkmark_icon.png` was 1920x1920 (577KB), the four new action icons
+were all 2048x2048 (up to 421KB each), `volume_speaker_icon.png` was
+2048x2048 at 1.26MB, several sidebar/tab icons were 2048x2048 too --
+all rendered at roughly 20-140px on screen. Both problems compounded:
+no caching meant these huge images got decoded over and over, and
+each individual decode was itself far more expensive than it needed
+to be. Fixed both layers:
+1. Added a module-level cache (`_pixmap_cache`/`_icon_cache`, keyed by
+   filename) to both functions -- safe since nothing downstream
+   mutates a pixmap it gets back from these (every effect --
+   `hue_shift_pixmap_cached`, `tint_pixmap_cached`,
+   `set_icon_pixmap`, etc. -- already treats these as read-only source
+   images and returns a NEW pixmap for anything that needs to look
+   different).
+2. Resized the actual on-disk files, per Max's own suggested target
+   sizes: small UI icons (checkmark, x, search/refresh/sort,
+   edit/copy/filters/delete, volume speaker) down to 128x128; sidebar/
+   tab full-art icons (library/editor/settings/local/uploaded videos)
+   and the editor's `bar_marker.png` texture down to 256x256. Left the
+   already-appropriately-sized 512x512 gradient textures (stretched
+   across full card-sized backgrounds) and `app_icon_source.png`
+   (never loaded by the running app at all -- only used at build time
+   to generate the desktop icon set) untouched. Total resources folder
+   dropped from several megabytes to about 2.2MB.
+   Verified concretely, not just "should be faster now": confirmed
+   `resource_qpixmap()` now returns the literal same object on repeat
+   calls (not a fresh decode); confirmed every runtime-loaded PNG is
+   now under 512px in its largest dimension; and measured actual
+   construction time directly -- `SettingsPage()` (Max's own suspicion
+   for why Settings specifically was slow, given how many
+   `CustomCheckBox`es it has) now constructs in ~51ms. `LibraryPage()`
+   with 20 videos still takes real time (~850ms) -- that remaining
+   cost is VideoCard construction itself (thumbnails, gradient
+   rendering, etc.), a separate, already-flagged-once concern
+   ("lazy-load the grid") rather than anything to do with icon
+   loading, and NOT something this fix was trying to solve -- flagged
+   here rather than silently left unmentioned.
+2. **Quick-action buttons -- now real circles, not tall rectangles.**
+   They were sized via `setMinimumHeight(48)` alone, with no width
+   constraint -- a `QHBoxLayout` stretches each button to fill
+   available row width, so they rendered as wide rectangles with a
+   small icon centered in the middle of mostly-empty space ("barely
+   visible"). Switched to `set_circular(56)` -- the same mechanism the
+   Search/Refresh/Sort header buttons already use -- which fixes both
+   the shape AND the size in one call (slightly larger than the old
+   48px, per Max's own "slightly increase the size"). Also reduced
+   `CustomButton`'s own icon margin fraction (0.2 -> 0.14, applies to
+   every icon-bearing CustomButton, not just these four) so icons fill
+   more of whatever shape they're drawn in generally. Verified pixel-
+   level that these are genuinely circular (corner color differs from
+   fill), not just a big rounded-corner rectangle.
+3. **Preview overlay now fades in and out**, instead of appearing/
+   disappearing instantly. Fade-in is fast (90ms, "very quickly as to
+   be responsive"); fade-out is slower (220ms, "normal speed") --
+   both via one `QGraphicsOpacityEffect` on the overlay itself
+   (covers the scrim and the content box together, so they fade as
+   one unit, not separately). `close_overlay()` now takes an
+   `immediate` flag: a normal user-initiated close (scrim click,
+   Escape) fades out first, THEN actually hides/cleans up; MainWindow
+   replacing an already-open overlay with a fresh one (a second
+   preview request arriving before the first closed) uses
+   `immediate=True` to skip the fade entirely, since fading the old
+   one out while a new one fades in on top would just look like two
+   overlapping scrims rather than a clean swap. Verified directly:
+   opacity starts near 0 and animates to 1 on show; closing (non-
+   immediate) stays visible and holds full opacity briefly before
+   actually animating down, and the overlay only truly closes (its
+   `closed` signal fires, triggering MainWindow's own cleanup) once
+   that fade-out completes.
+4. **Preview content size reverted to a fixed pixel size**, per Max's
+   direct request -- back to 1581x1035 (the same value from before the
+   proportional-sizing overlay rewrite), rather than a percentage of
+   whatever window it's embedded in. Still clamped to fit the overlay's
+   own bounds (`min(CONTENT_WIDTH, 97% of overlay width)`, same for
+   height) so it can't overflow a genuinely smaller window.
+
+### Previous session
 Two pieces landed and packaged so far -- a critical regression fix
 (the previewer redesign from last session broke in exactly the ways a
 separate top-level window would be expected to), and the action-button

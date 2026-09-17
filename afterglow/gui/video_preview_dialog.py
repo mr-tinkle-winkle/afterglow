@@ -25,11 +25,11 @@ whatever window it's embedded in, rather than a fixed pixel size.
 """
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, QRectF, Signal, QTimer
+from PySide6.QtCore import Qt, QRectF, Signal, QTimer, QPropertyAnimation
 from PySide6.QtGui import QPainter, QColor, QPainterPath, QPen
 from PySide6.QtWidgets import (
     QVBoxLayout, QHBoxLayout, QLabel, QSlider, QAbstractButton,
-    QSizePolicy, QWidget,
+    QSizePolicy, QWidget, QGraphicsOpacityEffect,
 )
 
 from .. import config as config_module
@@ -43,14 +43,13 @@ from .rounded_rect import rounded_rect_path
 from .video_card import _format_duration, _format_file_size, _format_date, FAVORITE_STAR
 
 _TRANSPORT_BTN_SIZE = 40
-# The overlay sizes the content box to this fraction of whatever window
-# it's embedded in, rather than a fixed pixel size -- "size it
-# proportionally rather than having it pop out" was the direct
-# instruction once the fixed-size top-level-window version was found to
-# be broken in several ways at once. Replaces the old fixed _WIDTH/
-# _HEIGHT (1581x1035, itself 1.15x an earlier 1.25x-of-1100x720 chain)
-# entirely.
-CONTENT_SIZE_FRACTION = 0.85
+# Fixed content size -- reverted per Max's direct request, after the
+# proportional CONTENT_SIZE_FRACTION approach was tried. Same value as
+# the last fixed-size version before that (1581x1035, itself 1.15x an
+# earlier 1.25x-of-1100x720 chain) -- clamped to fit the overlay's own
+# bounds in _layout_content so it still can't overflow a smaller window.
+CONTENT_WIDTH = 1581
+CONTENT_HEIGHT = 1035
 
 
 class _CardBox(QWidget):
@@ -557,17 +556,27 @@ class VideoPreviewContent(QWidget):
 
 
 class VideoPreviewOverlay(QWidget):
-    """Wraps VideoPreviewContent with a semi-transparent scrim and
-    sizes the content box to CONTENT_SIZE_FRACTION of whatever this
-    overlay's own size is (which MainWindow keeps matched to its
-    central widget's full size -- see MainWindow's own wiring) --
-    "size it proportionally rather than having it pop out." Meant to
-    be a direct CHILD of MainWindow's central widget, not a top-level
-    window at all, so clicking the scrim is a completely normal
-    mousePressEvent within the SAME window rather than needing any
-    cross-window event filter."""
+    """Wraps VideoPreviewContent with a semi-transparent scrim, sizing
+    the content box to a fixed pixel size (CONTENT_WIDTH x
+    CONTENT_HEIGHT -- back to a fixed size per Max's direct request,
+    after CONTENT_SIZE_FRACTION's proportional sizing was tried;
+    clamped to fit the overlay's own bounds so it can't overflow a
+    smaller window) rather than a fraction of whatever window it's
+    embedded in. Meant to be a direct CHILD of MainWindow's central
+    widget, not a top-level window at all, so clicking the scrim is a
+    completely normal mousePressEvent within the SAME window rather
+    than needing any cross-window event filter.
+
+    Fades in quickly (FADE_IN_MS) when shown and fades out at a
+    normal, more noticeable speed (FADE_OUT_MS) before actually
+    closing -- "fade in very quickly as to be responsive... fade out,
+    this one can be at normal speed." Both via one QGraphicsOpacityEffect
+    on the overlay itself (covers the scrim AND the content box
+    together, so they fade as one unit)."""
 
     closed = Signal()
+    FADE_IN_MS = 90
+    FADE_OUT_MS = 220
 
     def __init__(self, video: "library.Video", neighbor_provider=None, parent=None):
         super().__init__(parent)
@@ -576,10 +585,18 @@ class VideoPreviewOverlay(QWidget):
         self.content.fullscreen_toggled.connect(lambda _expanded: self._layout_content())
         self.setFocusPolicy(Qt.StrongFocus)
 
+        self._opacity_effect = QGraphicsOpacityEffect(self)
+        self._opacity_effect.setOpacity(0.0)
+        self.setGraphicsEffect(self._opacity_effect)
+        self._fade_anim: QPropertyAnimation | None = None
+
     def _layout_content(self) -> None:
-        fraction = 0.97 if self.content._is_expanded else CONTENT_SIZE_FRACTION
-        w = round(self.width() * fraction)
-        h = round(self.height() * fraction)
+        if self.content._is_expanded:
+            w = round(self.width() * 0.97)
+            h = round(self.height() * 0.97)
+        else:
+            w = min(CONTENT_WIDTH, round(self.width() * 0.97))
+            h = min(CONTENT_HEIGHT, round(self.height() * 0.97))
         x = (self.width() - w) // 2
         y = (self.height() - h) // 2
         self.content.setGeometry(x, y, w, h)
@@ -592,6 +609,7 @@ class VideoPreviewOverlay(QWidget):
         super().showEvent(event)
         self._layout_content()
         self.setFocus()
+        self._animate_opacity(0.0, 1.0, self.FADE_IN_MS)
 
     def paintEvent(self, event) -> None:
         painter = QPainter(self)
@@ -618,7 +636,19 @@ class VideoPreviewOverlay(QWidget):
         else:
             super().keyPressEvent(event)
 
-    def close_overlay(self) -> None:
+    def close_overlay(self, immediate: bool = False) -> None:
+        """immediate=True skips the fade-out entirely -- used when
+        MainWindow is replacing this overlay with a fresh one (a
+        second preview request arriving before this one closed), where
+        fading the old one out while a new one fades in on top would
+        just look like two overlapping scrims rather than a clean
+        swap."""
+        if immediate:
+            self._finish_close()
+            return
+        self._animate_opacity(self._opacity_effect.opacity(), 0.0, self.FADE_OUT_MS, on_finished=self._finish_close)
+
+    def _finish_close(self) -> None:
         self.content.shutdown()
         # hide() immediately, not just deleteLater() -- deleteLater()'s
         # deletion is deferred to the next event-loop pass, so without
@@ -631,3 +661,15 @@ class VideoPreviewOverlay(QWidget):
         self.hide()
         self.closed.emit()
         self.deleteLater()
+
+    def _animate_opacity(self, start: float, end: float, duration: int, on_finished=None) -> None:
+        if self._fade_anim is not None:
+            self._fade_anim.stop()
+        anim = QPropertyAnimation(self._opacity_effect, b"opacity", self)
+        anim.setDuration(duration)
+        anim.setStartValue(start)
+        anim.setEndValue(end)
+        if on_finished is not None:
+            anim.finished.connect(on_finished)
+        self._fade_anim = anim
+        anim.start()

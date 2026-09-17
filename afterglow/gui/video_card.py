@@ -919,7 +919,7 @@ class VideoCard(QWidget):
         row = QWidget()
         layout = QHBoxLayout(row)
         layout.setContentsMargins(0, 4, 0, 0)
-        layout.setSpacing(4)
+        layout.setSpacing(8)
         actions = [
             ("edit_icon.png", "Edit", lambda: self.edit_requested.emit(self.video_id)),
             ("copy_icon.png", "Copy", lambda: self._bulk_copy_to_clipboard({self.video_id})),
@@ -930,7 +930,19 @@ class VideoCard(QWidget):
             btn = CustomButton()
             btn.setToolTip(tooltip)
             btn.set_icon_pixmap(resource_qpixmap(icon_name))
-            btn.setMinimumHeight(48)  # ~2x the 24px used elsewhere
+            # Circular (not just tall-and-wide, per the report: they
+            # were rendering as tall rectangles that didn't fit their
+            # own icons, since a QHBoxLayout stretches each button to
+            # fill the row's own width rather than keeping them square)
+            # -- same set_circular() the Search/Refresh/Sort header
+            # buttons already use. Slightly larger than the old 48px
+            # minimum height (56px), per Max's own "slightly increase
+            # the size" -- CustomButton.paintEvent already scales the
+            # icon to fill most of whatever shape it's drawing (a true
+            # circle now, instead of a mostly-empty rectangle), so
+            # there was nothing separate to fix for "barely visible"
+            # once the shape itself was corrected.
+            btn.set_circular(56)
             btn.set_fill_color(self._appearance.card_text_color)
             btn.set_outline(self._appearance.card_text_outline_color, self._appearance.card_text_outline_width)
             btn.clicked.connect(handler)

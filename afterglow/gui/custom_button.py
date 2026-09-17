@@ -135,7 +135,7 @@ class CustomButton(QToolButton):
                 painter.drawRect(rect)
 
         if self._icon_pixmap is not None and not self._icon_pixmap.isNull():
-            margin = max(4, round(min(self.width(), self.height()) * 0.2))
+            margin = max(3, round(min(self.width(), self.height()) * 0.14))
             target = self.rect().adjusted(margin, margin, -margin, -margin)
             scaled = self._icon_pixmap.scaled(
                 target.width(), target.height(), Qt.KeepAspectRatio, Qt.SmoothTransformation

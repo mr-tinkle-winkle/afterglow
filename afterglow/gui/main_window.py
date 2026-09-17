@@ -200,7 +200,7 @@ class MainWindow(QMainWindow):
         # was a real bug in the old separate-top-level-window version,
         # which had nothing here to prevent exactly that.
         if self._preview_overlay is not None:
-            self._preview_overlay.close_overlay()
+            self._preview_overlay.close_overlay(immediate=True)
         overlay = VideoPreviewOverlay(video, neighbor_provider=neighbor_provider, parent=self.centralWidget())
         overlay.setGeometry(self.centralWidget().rect())
         overlay.closed.connect(self._on_preview_overlay_closed)
