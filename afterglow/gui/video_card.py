@@ -182,6 +182,7 @@ class VideoCard(QWidget):
     filter_left_clicked = Signal(str)   # tag_name, from clicking an icon on the card itself
     filter_right_clicked = Signal(str)  # tag_name, ditto (block)
     clicked = Signal(int, object)       # video_id, Qt.KeyboardModifiers -- parent handles selection
+    preview_requested = Signal(object, object)  # video, neighbor_provider -- bubbles up to MainWindow
 
     def __init__(self, video: "library.Video", parent=None, highlight_enabled: bool = True,
                  font_scale: float = 1.0, get_selected_ids=None, ensure_selected=None,
@@ -837,21 +838,12 @@ class VideoCard(QWidget):
             self._open_preview_dialog(self._video)
 
     def _open_preview_dialog(self, video: "library.Video") -> None:
-        from .video_preview_dialog import VideoPreviewDialog
-        dialog = VideoPreviewDialog(video, neighbor_provider=self._neighbor_provider, parent=self.window())
-        # show(), NOT exec() -- a MODAL dialog can make the OS/window
-        # manager swallow clicks on the window behind it (a shake/beep
-        # instead of actually delivering a real mouse-press event to
-        # the app), which is exactly what would have made "click off
-        # closes it" silently not work despite the event-filter logic
-        # being correct: it never even SAW those clicks as real events
-        # to check. A non-modal window lets the app-wide event filter
-        # (see VideoPreviewDialog.eventFilter) genuinely receive them.
-        # Keeping a live reference here (not just Qt's own parent-child
-        # ownership) so the dialog isn't garbage-collected out from
-        # under itself the moment this method returns.
-        self._active_preview_dialog = dialog
-        dialog.show()
+        # Bubbles up rather than constructing anything here directly --
+        # the actual overlay needs to be a child of MainWindow's central
+        # widget (see video_preview_dialog.py's own module docstring for
+        # why a separate top-level window was the wrong approach), which
+        # this card has no direct reference to.
+        self.preview_requested.emit(video, self._neighbor_provider)
 
     def mouseDoubleClickEvent(self, event) -> None:
         self._preview_pending = False  # cancel the pending single-click preview -- see mousePressEvent
@@ -908,34 +900,37 @@ class VideoCard(QWidget):
 
     def _build_action_buttons_row(self) -> QWidget:
         """Edit/Copy/Filters/Delete, in that order, as real buttons on
-        the card -- text for now (Max: icons for these later). Each
-        acts on just THIS card's video, reusing the exact same handler
-        methods the right-click menu's single-video actions use, so
-        there's one source of truth for what each action actually
-        does.
+        the card -- icons Max provided (pencil/copy/funnel/trash),
+        replacing the old text labels. Each acts on just THIS card's
+        video, reusing the exact same handler methods the right-click
+        menu's single-video actions use, so there's one source of
+        truth for what each action actually does.
 
         Styled distinctly from every other CustomButton in the app --
         filled with the card TEXT color (not the usual accent), with
         its own stroked outline using the card text's own outline
         color, "similar to the text" -- and roughly twice the size of
-        a default CustomButton (48px tall + a larger font, vs. the
-        24px/default-font used elsewhere)."""
+        a default CustomButton (48px tall, vs. the 24px used
+        elsewhere). Icons are shown at their own original colors (not
+        retinted to match text, unlike the Search/Refresh/Sort toolbar
+        icons) -- these are full-color, individually-branded action
+        icons, not monochrome ones meant to blend into the text
+        system."""
         row = QWidget()
         layout = QHBoxLayout(row)
         layout.setContentsMargins(0, 4, 0, 0)
         layout.setSpacing(4)
         actions = [
-            ("Edit", lambda: self.edit_requested.emit(self.video_id)),
-            ("Copy", lambda: self._bulk_copy_to_clipboard({self.video_id})),
-            ("Filters", self._open_filters_menu_for_self),
-            ("Delete", lambda: self._bulk_delete({self.video_id})),
+            ("edit_icon.png", "Edit", lambda: self.edit_requested.emit(self.video_id)),
+            ("copy_icon.png", "Copy", lambda: self._bulk_copy_to_clipboard({self.video_id})),
+            ("filters_icon.png", "Filters", self._open_filters_menu_for_self),
+            ("delete_icon.png", "Delete", lambda: self._bulk_delete({self.video_id})),
         ]
-        for label, handler in actions:
-            btn = CustomButton(label)
+        for icon_name, tooltip, handler in actions:
+            btn = CustomButton()
+            btn.setToolTip(tooltip)
+            btn.set_icon_pixmap(resource_qpixmap(icon_name))
             btn.setMinimumHeight(48)  # ~2x the 24px used elsewhere
-            font = btn.font()
-            font.setPointSizeF(font.pointSizeF() * 1.3 if font.pointSizeF() > 0 else 11.0)
-            btn.setFont(font)
             btn.set_fill_color(self._appearance.card_text_color)
             btn.set_outline(self._appearance.card_text_outline_color, self._appearance.card_text_outline_width)
             btn.clicked.connect(handler)

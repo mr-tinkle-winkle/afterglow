@@ -212,6 +212,7 @@ class _SelectionClearingContainer(QWidget):
 
 class _VideoGridTab(QWidget):
     edit_requested = Signal(int)
+    preview_requested = Signal(object, object)  # video, neighbor_provider
 
     def __init__(self, uploaded_only: bool, local_only: bool, parent=None):
         super().__init__(parent)
@@ -670,6 +671,7 @@ class _VideoGridTab(QWidget):
                 neighbor_provider=self.neighbors,
             )
             card.edit_requested.connect(self.edit_requested.emit)
+            card.preview_requested.connect(self.preview_requested.emit)
             card.deleted.connect(lambda _vid: self.refresh())
             card.tags_changed.connect(self.refresh)
             card.renamed.connect(self.refresh)
@@ -793,6 +795,7 @@ class _VideoGridTab(QWidget):
 
 class LibraryPage(QWidget):
     edit_requested = Signal(int)  # bubbled up from either tab, for MainWindow to route to Editor
+    preview_requested = Signal(object, object)  # video, neighbor_provider -- ditto, for the preview overlay
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -826,6 +829,8 @@ class LibraryPage(QWidget):
         self.uploaded_tab.edit_requested.connect(
             lambda vid: self._on_tab_edit_requested(self.uploaded_tab, vid)
         )
+        self.local_tab.preview_requested.connect(self.preview_requested.emit)
+        self.uploaded_tab.preview_requested.connect(self.preview_requested.emit)
 
         self._stack = QStackedWidget()
         self._stack.addWidget(self.local_tab)

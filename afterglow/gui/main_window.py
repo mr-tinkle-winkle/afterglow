@@ -41,6 +41,7 @@ from PySide6.QtWidgets import (
 from .. import config as config_module
 from .settings_page import SettingsPage
 from .library_page import LibraryPage, LibraryTabButton
+from .video_preview_dialog import VideoPreviewOverlay
 from .editor_page import EditorPage
 from .resources import resource_qpixmap
 from .scaling import compute_scale
@@ -180,6 +181,11 @@ class MainWindow(QMainWindow):
         # Double-click / context-menu "Edit" in the Library routes here to
         # the Editor page (and loads that video into it).
         self.library_page.edit_requested.connect(self._open_in_editor)
+        # Left-click on a card's thumbnail -- opens the preview overlay
+        # (see video_preview_dialog.py's own module docstring for why
+        # this is an embedded overlay, not a separate top-level window).
+        self.library_page.preview_requested.connect(self._show_preview_overlay)
+        self._preview_overlay = None
         # Prev/Next arrows in the Editor -- see EditorPage.set_neighbor_provider
         # and LibraryPage.neighbors_for's own docstrings for how this stays
         # live rather than being a one-time snapshot of the video list.
@@ -188,8 +194,27 @@ class MainWindow(QMainWindow):
         self.library_nav_btn.setChecked(True)
         self.stack.setCurrentIndex(_LIBRARY_INDEX)
 
+    def _show_preview_overlay(self, video, neighbor_provider) -> None:
+        # Replaces whichever overlay might already be open rather than
+        # stacking a second one on top -- "even allows you to open two"
+        # was a real bug in the old separate-top-level-window version,
+        # which had nothing here to prevent exactly that.
+        if self._preview_overlay is not None:
+            self._preview_overlay.close_overlay()
+        overlay = VideoPreviewOverlay(video, neighbor_provider=neighbor_provider, parent=self.centralWidget())
+        overlay.setGeometry(self.centralWidget().rect())
+        overlay.closed.connect(self._on_preview_overlay_closed)
+        overlay.show()
+        overlay.raise_()
+        self._preview_overlay = overlay
+
+    def _on_preview_overlay_closed(self) -> None:
+        self._preview_overlay = None
+
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
+        if self._preview_overlay is not None:
+            self._preview_overlay.setGeometry(self.centralWidget().rect())
         width = round(self.width() * SIDEBAR_WIDTH_FRACTION)
         width = max(SIDEBAR_MIN_WIDTH, min(SIDEBAR_MAX_WIDTH, width))
         self.sidebar.setFixedWidth(width)

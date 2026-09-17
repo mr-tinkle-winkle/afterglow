@@ -2,26 +2,34 @@
 A larger, playable preview of a Library video -- title, filters, and
 info alongside a real embedded player (play/pause, volume, a seek
 scrubber, fullscreen, watch speed), opened via a plain left-click on a
-card's thumbnail (see VideoCard._open_preview_dialog). Distinct from
-the Editor: this is read-only playback, no trimming -- reuses
-MpvVideoWidget (the same embedding editor_page.py uses) directly
-rather than re-solving mpv embedding here.
+card's thumbnail. Distinct from the Editor: this is read-only
+playback, no trimming -- reuses MpvVideoWidget (the same embedding
+editor_page.py uses) directly rather than re-solving mpv embedding
+here.
 
-Frameless + WA_TranslucentBackground for real rounded window corners
-(painted in paintEvent), no title bar and no Close button -- closes via
-Escape or a click anywhere outside the dialog (an app-wide event filter
-while it's open, removed again once it closes). Prev/Next arrows cycle
-through whichever Library tab/sort the video was opened from, exactly
-like the Editor's own prev/next (same neighbor_provider shape, just
-plumbed through VideoCard instead of MainWindow).
+Embedded INSIDE MainWindow's own central widget as an overlay
+(VideoPreviewOverlay), NOT a separate top-level QDialog -- that was
+tried first and reported as broken in exactly the ways a genuinely
+separate OS window would be expected to break for this: fully
+detached from the main window, click-outside not registering (a modal
+dialog can make the OS/window manager swallow those clicks entirely
+before the app ever sees them), and nothing stopping two from being
+opened at once. An embedded overlay avoids all three by construction:
+it's just another child widget in the SAME window, so "click outside"
+is a completely normal mousePressEvent on the overlay's own scrim, and
+MainWindow tracks the one active overlay itself so a second request
+replaces the first rather than stacking. VideoPreviewContent holds all
+the actual player UI (unchanged from before); VideoPreviewOverlay wraps
+it with a semi-transparent scrim and sizes it proportionally to
+whatever window it's embedded in, rather than a fixed pixel size.
 """
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, QRectF, QEvent, QTimer
+from PySide6.QtCore import Qt, QRectF, Signal, QTimer
 from PySide6.QtGui import QPainter, QColor, QPainterPath, QPen
 from PySide6.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QSlider, QAbstractButton,
-    QSizePolicy, QApplication, QWidget,
+    QVBoxLayout, QHBoxLayout, QLabel, QSlider, QAbstractButton,
+    QSizePolicy, QWidget,
 )
 
 from .. import config as config_module
@@ -35,8 +43,14 @@ from .rounded_rect import rounded_rect_path
 from .video_card import _format_duration, _format_file_size, _format_date, FAVORITE_STAR
 
 _TRANSPORT_BTN_SIZE = 40
-_WIDTH = 1581   # 1375 * 1.15 (last round's own 1100*1.25 size, now further scaled)
-_HEIGHT = 1035  # 900 * 1.15
+# The overlay sizes the content box to this fraction of whatever window
+# it's embedded in, rather than a fixed pixel size -- "size it
+# proportionally rather than having it pop out" was the direct
+# instruction once the fixed-size top-level-window version was found to
+# be broken in several ways at once. Replaces the old fixed _WIDTH/
+# _HEIGHT (1581x1035, itself 1.15x an earlier 1.25x-of-1100x720 chain)
+# entirely.
+CONTENT_SIZE_FRACTION = 0.85
 
 
 class _CardBox(QWidget):
@@ -246,7 +260,11 @@ class _VolumeButton(QAbstractButton):
         painter.end()
 
 
-class VideoPreviewDialog(QDialog):
+class VideoPreviewContent(QWidget):
+    """The actual player UI -- title/info, video, transport. A plain
+    child widget now (see module docstring), sized/positioned entirely
+    by whatever parent embeds it (VideoPreviewOverlay, below)."""
+
     def __init__(self, video: "library.Video", neighbor_provider=None, parent=None):
         super().__init__(parent)
         appearance = config_module.load().appearance
@@ -256,10 +274,7 @@ class VideoPreviewDialog(QDialog):
         self._current_pos = 0.0
         self._seeking = False
         self._pre_mute_volume = 80
-
-        self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
-        self.setAttribute(Qt.WA_TranslucentBackground, True)
-        self.resize(_WIDTH, _HEIGHT)
+        self.setAttribute(Qt.WA_TranslucentBackground, True)  # lets this widget's own rounded corners show the scrim behind it
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(16, 16, 16, 16)
@@ -500,22 +515,25 @@ class VideoPreviewDialog(QDialog):
 
     # ------------------------------------------------------------ fullscreen / lifecycle
 
+    # Emitted instead of calling showFullScreen()/showNormal() directly
+    # -- those are OS-level window operations that don't mean anything
+    # for a plain embedded child widget anymore. VideoPreviewOverlay
+    # listens for this and resizes the content box to fill essentially
+    # the whole overlay (vs. the normal CONTENT_SIZE_FRACTION) instead.
+    fullscreen_toggled = Signal(bool)
+    _is_expanded = False
+
     def _toggle_fullscreen(self) -> None:
-        if self.isFullScreen():
-            self.showNormal()
-            self.fullscreen_btn.setChecked(False)
-        else:
-            self.showFullScreen()
-            self.fullscreen_btn.setChecked(True)
+        self._is_expanded = not self._is_expanded
+        self.fullscreen_btn.setChecked(self._is_expanded)
+        self.fullscreen_toggled.emit(self._is_expanded)
 
     def paintEvent(self, event) -> None:
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
         rect = QRectF(self.rect())
         appearance = config_module.load().appearance
-        radius = 0 if self.isFullScreen() else (
-            appearance.rounded_corner_radius if appearance.rounded_corners_enabled else 16
-        )
+        radius = appearance.rounded_corner_radius if appearance.rounded_corners_enabled else 16
         if radius:
             painter.fillPath(rounded_rect_path(rect, radius), self._theme.library_background())
         else:
@@ -523,39 +541,93 @@ class VideoPreviewDialog(QDialog):
         painter.end()
 
     def keyPressEvent(self, event) -> None:
-        if event.key() == Qt.Key_Escape:
-            if self.isFullScreen():
-                self._toggle_fullscreen()
-            else:
-                self.close()
-        elif event.key() == Qt.Key_Space:
+        # Escape is NOT handled here -- it bubbles up to
+        # VideoPreviewOverlay, which is what actually owns closing (and
+        # exiting the "expanded" state first if that's active).
+        if event.key() == Qt.Key_Space:
             self._toggle_play_pause()
         else:
             super().keyPressEvent(event)
 
+    def shutdown(self) -> None:
+        """Called by VideoPreviewOverlay right before it closes --
+        stops mpv playback/cleans up its resources, same as the old
+        QDialog's closeEvent used to."""
+        self.video_widget.shutdown()
+
+
+class VideoPreviewOverlay(QWidget):
+    """Wraps VideoPreviewContent with a semi-transparent scrim and
+    sizes the content box to CONTENT_SIZE_FRACTION of whatever this
+    overlay's own size is (which MainWindow keeps matched to its
+    central widget's full size -- see MainWindow's own wiring) --
+    "size it proportionally rather than having it pop out." Meant to
+    be a direct CHILD of MainWindow's central widget, not a top-level
+    window at all, so clicking the scrim is a completely normal
+    mousePressEvent within the SAME window rather than needing any
+    cross-window event filter."""
+
+    closed = Signal()
+
+    def __init__(self, video: "library.Video", neighbor_provider=None, parent=None):
+        super().__init__(parent)
+        self.setAttribute(Qt.WA_TranslucentBackground, False)
+        self.content = VideoPreviewContent(video, neighbor_provider=neighbor_provider, parent=self)
+        self.content.fullscreen_toggled.connect(lambda _expanded: self._layout_content())
+        self.setFocusPolicy(Qt.StrongFocus)
+
+    def _layout_content(self) -> None:
+        fraction = 0.97 if self.content._is_expanded else CONTENT_SIZE_FRACTION
+        w = round(self.width() * fraction)
+        h = round(self.height() * fraction)
+        x = (self.width() - w) // 2
+        y = (self.height() - h) // 2
+        self.content.setGeometry(x, y, w, h)
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._layout_content()
+
     def showEvent(self, event) -> None:
         super().showEvent(event)
-        # Click-anywhere-outside-closes -- an app-wide filter rather
-        # than a Qt.Popup window flag: a Popup's own mouse-grab
-        # behavior is meant for lightweight, momentary content (see
-        # SearchBubble/SortPopover), and is fragile for a window this
-        # complex (mpv embedding, sliders, a spinbox) -- a plain event
-        # filter achieves the same "click off closes" behavior without
-        # relying on that grab.
-        QApplication.instance().installEventFilter(self)
+        self._layout_content()
+        self.setFocus()
 
-    def hideEvent(self, event) -> None:
-        QApplication.instance().removeEventFilter(self)
-        super().hideEvent(event)
+    def paintEvent(self, event) -> None:
+        painter = QPainter(self)
+        painter.fillRect(self.rect(), QColor(0, 0, 0, 140))  # semi-transparent scrim over the page behind it
+        painter.end()
 
-    def eventFilter(self, obj, event) -> bool:
-        if event.type() == QEvent.MouseButtonPress and not self.isFullScreen():
-            global_pos = event.globalPosition().toPoint() if hasattr(event, "globalPosition") else event.globalPos()
-            if not self.geometry().contains(global_pos):
-                self.close()
-                return True
-        return super().eventFilter(obj, event)
+    def mousePressEvent(self, event) -> None:
+        # A click anywhere on the SCRIM (i.e. not on the content box
+        # itself) closes the overlay -- a completely ordinary
+        # mousePressEvent now that this lives inside the same window,
+        # not the app-wide event-filter workaround the old top-level-
+        # window version needed.
+        if not self.content.geometry().contains(event.pos()):
+            self.close_overlay()
+        else:
+            super().mousePressEvent(event)
 
-    def closeEvent(self, event) -> None:
-        self.video_widget.shutdown()
-        super().closeEvent(event)
+    def keyPressEvent(self, event) -> None:
+        if event.key() == Qt.Key_Escape:
+            if self.content._is_expanded:
+                self.content._toggle_fullscreen()
+            else:
+                self.close_overlay()
+        else:
+            super().keyPressEvent(event)
+
+    def close_overlay(self) -> None:
+        self.content.shutdown()
+        # hide() immediately, not just deleteLater() -- deleteLater()'s
+        # deletion is deferred to the next event-loop pass, so without
+        # an explicit hide() first, a rapidly-replaced overlay (e.g.
+        # clicking a second card's thumbnail right after the first)
+        # would stay visibly on screen for that brief window -- the
+        # exact same class of bug already documented once before in
+        # this codebase (deleteLater() left stale visible orphaned
+        # card widgets on screen from spam-clicking Refresh).
+        self.hide()
+        self.closed.emit()
+        self.deleteLater()

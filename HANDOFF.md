@@ -328,6 +328,58 @@ Seven consecutive batches of Library/Settings/appearance
 features/bug fixes, given together each time. Newest first.
 
 ### This session
+Two pieces landed and packaged so far -- a critical regression fix
+(the previewer redesign from last session broke in exactly the ways a
+separate top-level window would be expected to), and the action-button
+icons Max provided. Four more items (page-load lag, the still-invisible
+outlines, the Filters tab's own remaining issues, and custom Settings
+widgets) are queued but not started yet this round -- see "Next up".
+
+**Video previewer -- rebuilt as an embedded overlay, not a top-level
+window.** Reported after the previous fix: fully detached from the
+main window, clicking the background did nothing, and it was even
+possible to open two at once. All three are exactly the failure modes
+of a genuinely separate OS window (a modal dialog can make the window
+manager swallow clicks on whatever's behind it before the app ever
+sees them; nothing prevented a second `.show()` from creating a second
+one). Per Max's own suggestion ("put the window in the main window and
+size it proportionally"): `VideoPreviewDialog` (a `QDialog`) is now
+`VideoPreviewContent` (a plain `QWidget`) wrapped by a new
+`VideoPreviewOverlay`, which is a direct CHILD of MainWindow's central
+widget -- not a top-level window at all. The overlay paints a semi-
+transparent scrim over the current page and sizes the content box to
+85% of whatever its own size is (kept matched to the central widget's
+full size via `MainWindow.resizeEvent`), so "click outside" is now a
+completely ordinary `mousePressEvent` within the SAME window, and
+MainWindow tracks the one active overlay itself (`_show_preview_overlay`
+replaces rather than stacks). The open request now bubbles up through
+a `preview_requested` signal (VideoCard -> `_VideoGridTab` ->
+`LibraryPage` -> MainWindow), the same pattern `edit_requested` already
+used, rather than VideoCard constructing anything directly (it has no
+reference to MainWindow to embed into). Caught two real bugs while
+verifying this, not just trusting it worked: a dropped `QTimer` import
+from the refactor that would have crashed the very first time a
+preview was opened (autoplay's delay logic depends on it), and a
+version of a bug already documented once before in this codebase --
+`deleteLater()`'s deletion is deferred to the next event-loop pass, so
+replacing an already-open overlay needs an explicit `hide()` too, or
+the old one stays visibly on screen for that brief window. Verified
+directly: the overlay is a real child of the central widget (not a
+top-level window), sized to match it, with the content box
+proportionally smaller and centered; clicking the scrim closes it;
+opening a second preview replaces the first with the old one hidden
+immediately, not left visible until Qt gets around to deleting it.
+
+**Video-card action-button icons.** The 4 icons Max provided (pencil/
+copy/funnel/trash) replace the Edit/Copy/Filters/Delete text labels on
+the action-buttons row -- shown at their own original colors (not
+retinted, unlike the Search/Refresh/Sort toolbar icons, since these
+are individually-branded action icons rather than icons meant to
+blend into the text color system). Verified all 4 buttons carry a
+real, non-null icon pixmap and that the underlying handlers (checked
+directly via Edit) are unchanged.
+
+### Previous session
 Continuing straight from last round's four bug reports -- three more
 came back with follow-ups (one fully explained, one root-caused
 further, one flagged as "still not visible"), plus four new items.
