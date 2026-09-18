@@ -357,6 +357,21 @@ class _VideoGridTab(QWidget):
         self.empty_label.setAlignment(Qt.AlignCenter)
         outer.addWidget(self.empty_label)
 
+        # Debounces refreshes triggered by a card's own signals
+        # (tags_changed, renamed) -- these used to call self.refresh()
+        # DIRECTLY, meaning every single filter toggle (or an inline
+        # title-edit's own commit) rebuilt every card in the grid from
+        # scratch, immediately, reported directly as real, noticeable
+        # lag on every toggle "wherever you do it." A single toggle
+        # still refreshes (this doesn't skip work, only coalesces
+        # BURSTS of them -- e.g. toggling several filters in a row
+        # while a menu stays open) into one rebuild shortly after the
+        # last one, rather than one rebuild per individual toggle.
+        self._card_signal_debounce = QTimer(self)
+        self._card_signal_debounce.setSingleShot(True)
+        self._card_signal_debounce.setInterval(150)
+        self._card_signal_debounce.timeout.connect(self.refresh)
+
         self.refresh()
 
     # ------------------------------------------------------------ filters menu
@@ -439,7 +454,7 @@ class _VideoGridTab(QWidget):
         # labeled group instead, in the same vertical flow).
         for category_name, tag_names in grouped.items():
             group = CustomGroupBox(category_name)
-            group_layout = QVBoxLayout(group)
+            group_layout = group.make_layout(QVBoxLayout)
             for tag in tag_names:
                 _make_checkbox(tag, group_layout)
             layout.addWidget(group)
@@ -687,8 +702,8 @@ class _VideoGridTab(QWidget):
             card.edit_requested.connect(self.edit_requested.emit)
             card.preview_requested.connect(self.preview_requested.emit)
             card.deleted.connect(lambda _vid: self.refresh())
-            card.tags_changed.connect(self.refresh)
-            card.renamed.connect(self.refresh)
+            card.tags_changed.connect(self._card_signal_debounce.start)
+            card.renamed.connect(self._card_signal_debounce.start)
             card.upload_requested.connect(self._handle_upload_request)
             card.filter_left_clicked.connect(self._on_icon_left_clicked)
             card.filter_right_clicked.connect(self._on_icon_right_clicked)

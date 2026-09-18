@@ -103,6 +103,11 @@ class AppearanceSettings:
     by internally (brightness/100.0).
     """
     resize_text_to_fit: bool = False
+    # When True, every place a video's date is shown (the Library card
+    # info box, the video previewer's header) uses the full timestamp
+    # (date + hours/minutes/seconds, whatever's in created_at) instead
+    # of just the date -- per Max's direct request.
+    extended_dates: bool = False
     inactive_border_width: int = 5
     inactive_border_brightness: int = 65
     active_border_width: int = 9

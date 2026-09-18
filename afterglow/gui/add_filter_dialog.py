@@ -8,41 +8,16 @@ Settings > Filters afterward to categorize it.
 """
 from __future__ import annotations
 
+from PySide6.QtCore import Qt, QRectF
+from PySide6.QtGui import QPainter
 from PySide6.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QLabel, QComboBox
 
 from .. import config as config_module
 from .theme import Theme
+from .rounded_rect import rounded_rect_path
 from .custom_button import CustomButton
 from .custom_line_edit import CustomLineEdit
-
-
-def _combo_stylesheet(appearance) -> str:
-    """QSS reskin for QComboBox -- same theme colors as the QMenu
-    reskin elsewhere (card background, accent border/highlight,
-    rounded corners), so the closed box and its popup list both match
-    the app's own look instead of native/KDE chrome. A genuine custom
-    dropdown (its own popup widget, not a styled QComboBox) is a
-    bigger, separate undertaking -- this covers the "fully custom"
-    ask for THIS dialog's own look without that larger rebuild."""
-    return f"""
-        QComboBox {{
-            background-color: {appearance.afterglow_color_card_background};
-            color: {appearance.card_text_color};
-            border: 1px solid {appearance.afterglow_color_accent};
-            border-radius: 6px;
-            padding: 4px 8px;
-        }}
-        QComboBox::drop-down {{
-            border: none;
-        }}
-        QComboBox QAbstractItemView {{
-            background-color: {appearance.afterglow_color_card_background};
-            color: {appearance.card_text_color};
-            border: 1px solid {appearance.afterglow_color_accent};
-            selection-background-color: {appearance.afterglow_color_accent};
-            outline: none;
-        }}
-    """
+from .custom_combo_style import combo_box_stylesheet
 
 
 class AddFilterDialog(QDialog):
@@ -50,10 +25,18 @@ class AddFilterDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Add Filter")
         appearance = config_module.load().appearance
-        theme = Theme(appearance)
-        self.setStyleSheet(f"QDialog {{ background-color: {theme.library_background().name()}; }}")
+        self._appearance = appearance
+        self._theme = Theme(appearance)
+        # Frameless + translucent + a custom-painted rounded fill,
+        # same technique as the video previewer's own rounded corners
+        # -- a plain setStyleSheet() background-color on a normal
+        # QDialog still renders with square corners (the window's own
+        # native frame), which is what was reported.
+        self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
 
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 20, 20, 20)
 
         name_label = QLabel("Filter name:")
         name_label.setStyleSheet(f"color: {appearance.card_text_color};")
@@ -66,7 +49,7 @@ class AddFilterDialog(QDialog):
         category_label.setStyleSheet(f"color: {appearance.card_text_color};")
         layout.addWidget(category_label)
         self.category_combo = QComboBox()
-        self.category_combo.setStyleSheet(_combo_stylesheet(appearance))
+        self.category_combo.setStyleSheet(combo_box_stylesheet(appearance))
         self.category_combo.addItem("(none)", None)
         for cat_id, cat_name in categories:
             self.category_combo.addItem(cat_name, cat_id)
@@ -88,3 +71,14 @@ class AddFilterDialog(QDialog):
         """(name, category_id_or_None) -- only meaningful if exec()
         returned QDialog.Accepted."""
         return self.name_edit.text().strip(), self.category_combo.currentData()
+
+    def paintEvent(self, event) -> None:
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        rect = QRectF(self.rect())
+        radius = self._appearance.rounded_corner_radius if self._appearance.rounded_corners_enabled else 16
+        if radius:
+            painter.fillPath(rounded_rect_path(rect, radius), self._theme.library_background())
+        else:
+            painter.fillRect(rect, self._theme.library_background())
+        painter.end()

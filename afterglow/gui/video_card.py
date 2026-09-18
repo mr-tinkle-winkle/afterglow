@@ -25,6 +25,7 @@ from .theme import Theme
 from .outlined_label import OutlinedLabel
 from .custom_button import CustomButton
 from .custom_checkbox import CustomCheckBox
+from .custom_line_edit import CustomLineEdit
 
 THUMB_SIZE = QSize(400, 224)  # 16:9, doubled from the original 200x112
 FAVORITE_STAR = "\u2605"  # "★"
@@ -86,6 +87,13 @@ def _format_date(created_at: str) -> str | None:
         dt = datetime.fromisoformat(created_at)
     except ValueError:
         return None
+    # Reads the setting fresh each call (same pattern as every other
+    # appearance-driven paint/format helper in this codebase) rather
+    # than threading a parameter through every call site -- this is
+    # called from both VideoCard's own info box and the video
+    # previewer's header, and both should reflect the setting equally.
+    if config_module.load().appearance.extended_dates:
+        return dt.strftime("%b %d, %Y %I:%M:%S %p")
     return dt.strftime("%b %d, %Y")
 
 
@@ -209,18 +217,39 @@ def _menu_stylesheet(appearance) -> str:
 class _NonClosingMenu(QMenu):
     """A QMenu that doesn't close itself when the click landed on a
     QWidgetAction's own embedded widget (a CustomCheckBox, here) --
-    used for the Filters submenu and its category sub-menus, so
-    toggling several filters in one visit doesn't require reopening
-    the menu after each one. The checkbox itself already receives and
-    handles the click perfectly normally (Qt delivers mouse events
-    directly to whichever real widget is under the cursor, completely
-    independent of QMenu's own mouse handling) -- this only skips
-    QMenu's OWN reaction of closing itself afterward for that case,
-    leaving every other kind of click (a plain QAction, clicking
-    outside any item) to close the menu exactly as before."""
+    used for the right-click context menu itself, the Filters
+    submenu, and its category sub-menus, so toggling several
+    checkboxes (filters, or the "Edited" checkbox) in one visit
+    doesn't require reopening the menu after each one. The checkbox
+    itself already receives and handles the click perfectly normally
+    (Qt delivers mouse events directly to whichever real widget is
+    under the cursor, completely independent of QMenu's own mouse
+    handling) -- this only skips QMenu's OWN reaction of closing
+    itself afterward for that case, leaving every other kind of click
+    (a plain QAction, clicking outside any item) to close the menu
+    exactly as before.
+
+    Checks BOTH self.activeAction() (Qt's own hover-tracked "current"
+    action) AND self.actionAt(event.pos()) (a plain position lookup,
+    independent of hover-tracking state entirely) -- reported directly
+    that checking activeAction() alone still wasn't reliably catching
+    this, so actionAt() is a second, hover-independent way to reach
+    the same conclusion. Overrides mousePressEvent too, not just
+    mouseReleaseEvent, in case whatever was still causing the close
+    was reacting to the press half of the click rather than (or in
+    addition to) the release."""
+
+    def _is_widget_action_click(self, pos) -> bool:
+        action = self.activeAction() or self.actionAt(pos)
+        return isinstance(action, QWidgetAction)
+
+    def mousePressEvent(self, event) -> None:
+        if self._is_widget_action_click(event.pos()):
+            return
+        super().mousePressEvent(event)
 
     def mouseReleaseEvent(self, event) -> None:
-        if isinstance(self.activeAction(), QWidgetAction):
+        if self._is_widget_action_click(event.pos()):
             return
         super().mouseReleaseEvent(event)
 
@@ -243,6 +272,7 @@ class VideoCard(QWidget):
         self.video_id = video.id
         self._video = video
         self._preview_pending = False
+        self._title_edit = None
         self._highlight_enabled = highlight_enabled
         settings = config_module.load()
         self._appearance = settings.appearance
@@ -915,7 +945,7 @@ class VideoCard(QWidget):
         multi = len(target_ids) > 1
         count_suffix = f" ({len(target_ids)})" if multi else ""
 
-        menu = QMenu(self)
+        menu = _NonClosingMenu(self)
         menu.setStyleSheet(_menu_stylesheet(self._appearance))
         # Edit/Rename only make sense for exactly one video at a time --
         # hidden rather than shown-but-disabled for a multi-selection.
@@ -933,15 +963,32 @@ class VideoCard(QWidget):
         filters_menu = self._build_filters_menu(menu, target_ids, target_videos)
         menu.addMenu(filters_menu)
 
-        # "Mark as Edited" -- manually flips has_edit for videos ingested
-        # already-edited from elsewhere, or to suppress the unedited-
-        # highlight border on one the user doesn't consider "raw" even
-        # though the app never itself edited it. Only offered when at
-        # least one selected video isn't already marked edited --
-        # nothing useful for it to do otherwise.
-        mark_edited_action = None
-        if any(not v.has_edit for v in target_videos):
-            mark_edited_action = menu.addAction(f"Mark as Edited{count_suffix}")
+        # A single "Edited" checkbox instead of two separate "Mark as
+        # Edited"/"Mark as Unedited" actions -- covers both directions
+        # in one control, per Max's own preference. Checked only when
+        # EVERY selected video already has has_edit set; toggling it
+        # sets ALL of them to the checkbox's new state (so checking it
+        # on a mixed selection marks everything edited in one go,
+        # rather than needing to reason about which ones already were).
+        # Embedded via QWidgetAction like the Filters checkboxes, and
+        # this menu is a _NonClosingMenu for exactly the same reason --
+        # toggling it shouldn't close the whole menu either.
+        all_edited = all(v.has_edit for v in target_videos)
+        edited_checkbox = CustomCheckBox(f"Edited{count_suffix}", menu)
+        edited_checkbox.setChecked(all_edited)
+
+        def _on_edited_toggled(checked: bool) -> None:
+            for vid in target_ids:
+                if checked:
+                    library.mark_as_edited(vid)
+                else:
+                    library.mark_as_unedited(vid)
+            self.tags_changed.emit()  # reuses this signal purely to trigger a refresh -- nothing tag-related actually changed
+
+        edited_checkbox.toggled.connect(_on_edited_toggled)
+        edited_action = QWidgetAction(menu)
+        edited_action.setDefaultWidget(edited_checkbox)
+        menu.addAction(edited_action)
 
         copy_action = menu.addAction(f"Copy{count_suffix}")
         delete_action = menu.addAction(f"Delete{count_suffix}")
@@ -956,10 +1003,6 @@ class VideoCard(QWidget):
         elif chosen == upload_action:
             for vid in target_ids:
                 self.upload_requested.emit(vid)
-        elif mark_edited_action is not None and chosen == mark_edited_action:
-            for vid in target_ids:
-                library.mark_as_edited(vid)
-            self.tags_changed.emit()  # reuses this signal purely to trigger a refresh -- no tags actually changed
         elif chosen == copy_action:
             self._bulk_copy_to_clipboard(target_ids)
         elif chosen == delete_action:
@@ -1179,15 +1222,62 @@ class VideoCard(QWidget):
         QApplication.clipboard().setMimeData(mime)
 
     def _rename(self) -> None:
-        new_title, ok = QInputDialog.getText(
-            self, "Rename Video", "Title:", QLineEdit.Normal, self._video.title
-        )
-        if not ok:
+        """Triggered by the context menu's Rename action -- edits the
+        title INLINE on the card itself instead of opening a separate
+        dialog window, per Max's direct request (same technique as the
+        video previewer's own click-to-edit title). Autosaves the
+        current text once a second while editing, in addition to
+        committing on Enter or clicking away (both go through
+        CustomLineEdit's editingFinished)."""
+        if self._title_edit is not None:
+            return  # already editing
+        info_layout = self.title_label.parentWidget().layout()
+        index = info_layout.indexOf(self.title_label)
+        self.title_label.hide()
+
+        self._title_edit = CustomLineEdit(self._video.title)
+        self._title_edit.setFixedWidth(self.title_label.width())
+        self._title_edit.editingFinished.connect(self._commit_title_edit)
+        info_layout.insertWidget(index, self._title_edit)
+        self._title_edit.setFocus()
+        self._title_edit.selectAll()
+
+        self._last_saved_title = self._video.title
+        self._title_autosave_timer = QTimer(self)
+        self._title_autosave_timer.setInterval(1000)
+        self._title_autosave_timer.timeout.connect(self._autosave_title)
+        self._title_autosave_timer.start()
+
+    def _autosave_title(self) -> None:
+        """Runs once a second while editing -- persists the CURRENT
+        text to the DB without emitting `renamed` (which would trigger
+        a full grid refresh via _VideoGridTab.refresh() and destroy
+        this very edit widget mid-keystroke). Only the final commit
+        (_commit_title_edit, below) emits that, once editing is
+        actually done."""
+        if self._title_edit is None:
             return
-        new_title = new_title.strip()
-        if not new_title or new_title == self._video.title:
+        current = self._title_edit.text().strip()
+        if current and current != self._last_saved_title:
+            self._video = library.rename_video(self.video_id, title=current)
+            self._last_saved_title = current
+
+    def _commit_title_edit(self) -> None:
+        if self._title_edit is None:
             return
-        self._video = library.rename_video(self.video_id, title=new_title)
+        self._title_autosave_timer.stop()
+        new_title = self._title_edit.text().strip()
+        if new_title and new_title != self._video.title:
+            self._video = library.rename_video(self.video_id, title=new_title)
+
+        info_layout = self._title_edit.parentWidget().layout()
+        index = info_layout.indexOf(self._title_edit)
+        info_layout.removeWidget(self._title_edit)
+        self._title_edit.deleteLater()
+        self._title_edit = None
+
         self._full_title_text = self._title_text(self._video)
-        self.set_font_scale(self._current_font_scale)  # re-fit/re-elide with the new text
+        self.set_font_scale(self._current_font_scale)  # re-fit/re-elide with the (possibly new) text
+        info_layout.insertWidget(index, self.title_label)
+        self.title_label.show()
         self.renamed.emit()

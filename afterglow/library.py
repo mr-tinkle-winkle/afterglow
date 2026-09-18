@@ -806,6 +806,23 @@ def mark_as_edited(video_id: int) -> Video:
     return result
 
 
+def mark_as_unedited(video_id: int) -> Video:
+    """The reverse of mark_as_edited() -- manually clears has_edit,
+    for a video the app or the user marked as edited that shouldn't
+    be anymore (undoing a manual mark, or a video that turns out not
+    to actually be edited after all). Does NOT touch backup_path --
+    if a real trim backup exists, it's left completely alone; this
+    only affects the has_edit flag itself and, in turn, whether the
+    Library shows the unedited-highlight border on this video."""
+    with db.get_conn() as conn:
+        conn.execute("UPDATE videos SET has_edit = 0 WHERE id = ?", (video_id,))
+    result = get_video(video_id)
+    write_library_manifest()
+    return result
+    write_library_manifest()
+    return result
+
+
 def undo_edit(video_id: int) -> Video:
     video = get_video(video_id)
     if not video.has_edit or not video.backup_path:

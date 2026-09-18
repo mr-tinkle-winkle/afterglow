@@ -31,6 +31,7 @@ from .. import config as config_module
 from .. import autofilter
 from .custom_line_edit import CustomLineEdit
 from .custom_group_box import CustomGroupBox
+from .custom_combo_style import combo_box_stylesheet
 from .smooth_scroll_area import SmoothScrollArea
 from .custom_button import CustomButton
 from .custom_checkbox import CustomCheckBox
@@ -62,6 +63,7 @@ class _TagIconRow(QFrame):
         row.addWidget(self.name_label, stretch=1)
 
         self.category_combo = QComboBox()
+        self.category_combo.setStyleSheet(combo_box_stylesheet(config_module.load().appearance))
         self._populate_category_combo(categories, category_id)
         self.category_combo.currentIndexChanged.connect(self._on_category_changed)
         row.addWidget(self.category_combo)
@@ -239,6 +241,7 @@ class _AutoFilterRow(QFrame):
         # a normal typable box, since the app you want to match might
         # not be running yet when this row is being set up.
         self.app_combo = QComboBox()
+        self.app_combo.setStyleSheet(combo_box_stylesheet(config_module.load().appearance))
         self.app_combo.setEditable(True)
         self.app_combo.setPlaceholderText("App/process name match")
         self._refresh_running_apps(keep_text=app_match)
@@ -251,6 +254,7 @@ class _AutoFilterRow(QFrame):
         row.addWidget(refresh_apps_btn)
 
         self.mode_combo = QComboBox()
+        self.mode_combo.setStyleSheet(combo_box_stylesheet(config_module.load().appearance))
         self.mode_combo.addItem("While app is open", "open")
         self.mode_combo.addItem("Only while app is focused", "focused")
         index = self.mode_combo.findData(mode)
@@ -295,7 +299,7 @@ class FiltersSettingsPage(QWidget):
         layout = QVBoxLayout(page)
 
         display_group = CustomGroupBox("Display")
-        form = QFormLayout(display_group)
+        form = display_group.make_layout(QFormLayout)
 
         self.show_names_check = CustomCheckBox()
         self.show_names_check.setChecked(self._settings.filter_display.show_filter_names)
@@ -306,6 +310,7 @@ class FiltersSettingsPage(QWidget):
         form.addRow("Show Filter Icons:", self.show_icons_check)
 
         self.icon_location_combo = QComboBox()
+        self.icon_location_combo.setStyleSheet(combo_box_stylesheet(config_module.load().appearance))
         for label, value in _ICON_LOCATIONS:
             self.icon_location_combo.addItem(label, value)
         index = self.icon_location_combo.findData(self._settings.filter_display.filter_icon_location)
@@ -315,7 +320,7 @@ class FiltersSettingsPage(QWidget):
         layout.addWidget(display_group)
 
         icons_group = CustomGroupBox("Tag Icons")
-        icons_layout = QVBoxLayout(icons_group)
+        icons_layout = icons_group.make_layout(QVBoxLayout)
 
         add_new_btn = CustomButton("+ Add New")
         add_new_btn.clicked.connect(self._add_new_tag)

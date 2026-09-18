@@ -328,6 +328,110 @@ Seven consecutive batches of Library/Settings/appearance
 features/bug fixes, given together each time. Newest first.
 
 ### This session
+Continuing straight from the same batch (7 items plus one more added
+mid-way) -- picking up where the last handoff left off (items 1-4 and
+half of 5 were already done; this covers the rest).
+
+1. **Fixed the lag half of item 5.** Root cause: `card.tags_changed`/
+   `card.renamed` were connected DIRECTLY to `_VideoGridTab.refresh()`
+   -- a full rebuild of every card in the grid, immediately, on every
+   single filter toggle or title-edit commit. `_VideoGridTab` gained
+   its own `_card_signal_debounce` (150ms, mirroring the existing
+   pattern `LibraryPage` already uses for its DB-file-watcher), and
+   both signals route through that now instead of calling `refresh()`
+   directly -- a burst of several rapid toggles coalesces into ONE
+   rebuild shortly after the last one, rather than one rebuild per
+   toggle. Verified directly: emitting the signal returns near-
+   instantly with no rebuild yet, and a burst of 4 emits in quick
+   succession produces exactly 1 refresh.
+2. **Root-caused item 6 (unnecessary padding / cut-off filters) for
+   real this time.** `CustomGroupBox`'s core technique -- set the
+   widget's own `contentsMargins` before a layout gets attached,
+   assuming the layout would inherit them -- was flatly wrong,
+   confirmed by direct experiment (a layout attached afterward falls
+   back to the style's own default margins instead, completely
+   ignoring whatever the widget's margins already were). This has been
+   silently wrong in EVERY CustomGroupBox in the app since it was
+   built. Also confirmed that overriding `setLayout()` to fix this
+   doesn't work either -- PySide6 does not route the internal
+   `QVBoxLayout(widget)`/`QFormLayout(widget)` attachment call through
+   a Python subclass's `setLayout()` override at all (confirmed with a
+   print statement that simply never fired). Fixed with a new
+   `make_layout()` factory method that constructs the layout AND
+   immediately applies the correct margins in one step, updated at
+   all 11 call sites across settings_page.py, filters_settings_page.py,
+   and library_page.py's Sort-popover category grouping (a `showEvent`
+   override remains too, as a defensive fallback for anything that
+   might still attach a layout the old way). Verified against the
+   literal reported scenario: a category with 3 checkboxes underneath
+   it, previously cut off -- now sized tall enough to show all of them.
+3. **Made `_NonClosingMenu` more robust and applied it to the ENTIRE
+   context menu**, not just the Filters submenu, per "context menus
+   still close when toggling filters" -- checks BOTH
+   `self.activeAction()` (hover-tracked) and `self.actionAt(pos)`
+   (position-based, independent of hover state) as two separate ways
+   to reach the same "this was a widget-action click" conclusion, and
+   overrides `mousePressEvent` in addition to `mouseReleaseEvent` in
+   case the close was reacting to the press half. Verified via the
+   class's own logic directly.
+4. **New "Extended Dates" setting** (Settings > Appearance) -- when
+   on, every place a video's date is shown (the Library card, the
+   previewer's header) uses the full timestamp (date + hours/minutes/
+   seconds, whatever's in `created_at`) instead of just the date.
+   `_format_date()` reads this setting fresh on every call (same
+   pattern as other appearance-driven formatting in this codebase)
+   rather than threading a parameter through every call site, so both
+   places automatically stay in sync with it. Verified both the
+   formatting function directly and the Settings checkbox actually
+   persisting to disk.
+5. **Item 1: rounded the Add Filter dialog** -- frameless + translucent
+   + a custom-painted rounded fill, the same technique the video
+   previewer already uses for its own corners (a plain
+   `setStyleSheet()` background-color on a normal `QDialog` still
+   renders with square corners, since that's the native WINDOW frame,
+   not something a stylesheet touches).
+6. **Item 2: video titles are now inline-editable directly on the
+   card**, not via a popup dialog -- clicking the title (via the
+   context menu's Rename, which now triggers this instead of opening
+   `QInputDialog`) swaps it for a `CustomLineEdit` pre-filled with the
+   current title. Autosaves once a second while editing, in addition
+   to committing on Enter or clicking away. Caught a real design flaw
+   BEFORE it shipped, not after: naively emitting the card's own
+   `renamed` signal on every autosave tick would have triggered a full
+   grid rebuild every second while the user was still typing --
+   destroying the very edit widget they were typing into, mid-edit.
+   Fixed so autosave only persists to the DB silently; the refresh-
+   triggering signal fires exactly once, on the actual commit.
+   Verified the whole cycle directly, including that autosave does
+   NOT fire `renamed` and that it fires exactly once on commit.
+7. **Item 4: replaced "Mark as Edited" with a single "Edited"
+   checkbox** in the context menu (embedded via `QWidgetAction`, same
+   as the Filters checkboxes), covering both directions Max asked for
+   in one control rather than two separate menu items -- checked only
+   when EVERY selected video already has `has_edit` set; toggling
+   applies the checkbox's new state to the whole selection. New
+   `library.mark_as_unedited()` (the reverse of the existing
+   `mark_as_edited()`), leaves `backup_path` completely untouched
+   either way. Verified toggling flips `has_edit` correctly in both
+   directions.
+8. **Item 3: a real pass at "make everything in Settings custom."**
+   New shared `custom_combo_style.py` (`combo_box_stylesheet()`,
+   extracted from what the Add Filter dialog already had, since it's
+   now used identically in several more places) -- a QSS reskin
+   applied to EVERY `QComboBox` across settings_page.py,
+   filters_settings_page.py, and the Add Filter dialog (6 total).
+   Every remaining native `QSpinBox`/`QDoubleSpinBox` (22 across
+   settings_page.py, 1 in clip_config_row.py) swapped to
+   `CustomSpinBox`/`CustomDoubleSpinBox`. A genuinely custom dropdown
+   (its own popup-list widget, matching the search bar's own text-
+   bubble attachment) remains a separate, bigger undertaking not
+   attempted here -- this covers the "custom LOOK" for every combo box
+   in Settings via styling, not a full custom widget rebuild. Verified
+   directly: all 22+ spinboxes in Settings are the Custom classes, a
+   value round-trips correctly through save/reload, and every combo
+   box in both Settings pages carries the custom stylesheet.
+
+### Previous session
 Six of the seven items from Max's latest batch -- item 2 ("adjust all
 of the settings things to be custom instead of KDE") is still
 outstanding, the biggest remaining piece by far, not started this

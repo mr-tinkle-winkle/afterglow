@@ -7,18 +7,31 @@ of the Afterglow custom-widget system.
 Deliberately a drop-in for the exact construction pattern already used
 everywhere: `group = CustomGroupBox("Title")` then
 `layout = QVBoxLayout(group)` (or QFormLayout, etc.) works completely
-unchanged at every call site -- setContentsMargins() here (reserving
-room at the top for the painted title) is picked up automatically by
-whatever layout gets attached next, since Qt seeds a layout's initial
-margins from the widget's own contentsMargins when first assigned,
-unless the caller later calls setContentsMargins on the layout itself
-(none of the existing call sites do).
+unchanged at every call site -- this box applies its own reserved
+margins (room at the top for the painted title) to whatever layout
+gets attached, both via a setLayout() override AND, as a second,
+independent guarantee, again in showEvent() right before it's ever
+actually shown (see showEvent's own comment for why the setLayout()
+path alone isn't fully reliable). `widget.setContentsMargins()` called
+BEFORE a layout exists does NOT carry over to a layout attached
+later -- confirmed directly (a widget's contentsMargins set pre-layout
+has no effect; a newly-attached layout falls back to the current
+style's own default margins instead). That wrong assumption in an
+earlier version of this class is exactly what caused a real reported
+bug: every CustomGroupBox was actually laying out its content with
+the STYLE's default margins the whole time, not the title-reserving
+ones this class was written to use -- meaning the reserved space above
+the title never actually existed, misaligning what this box's OWN
+paintEvent assumed versus what its content actually needed, and
+throwing off any code (like the Sort popover's own page-sizing) that
+relied on this box's reported sizeHint being consistent with its real
+rendered content.
 """
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, QRectF
 from PySide6.QtGui import QPainter, QColor
-from PySide6.QtWidgets import QWidget
+from PySide6.QtWidgets import QWidget, QVBoxLayout
 
 from .. import config as config_module
 from .rounded_rect import rounded_rect_path
@@ -34,7 +47,55 @@ class CustomGroupBox(QWidget):
         appearance = config_module.load().appearance
         self._appearance = appearance
         self._theme = Theme(appearance)
-        self.setContentsMargins(12, _TITLE_HEIGHT + 6, 12, 12)
+
+    def make_layout(self, layout_cls=QVBoxLayout):
+        """Constructs a layout of the given class, attaches it to this
+        box, and immediately applies the correct title-reserving
+        margins -- use THIS instead of calling `layout_cls(self)`
+        directly. PySide6 does not reliably invoke a Python-side
+        setLayout() override from that constructor's own internal
+        attachment call (confirmed directly -- a subclass's setLayout()
+        override, with a print statement added specifically to check,
+        never actually printed when a layout was attached this way),
+        which is what an earlier version of this class relied on to
+        apply these margins automatically. showEvent() below is a
+        second, independent attempt at the same fix for anything that
+        still constructs a layout the old way, but it only helps once
+        this box is actually SHOWN -- code that queries this box's
+        sizeHint() before ever showing it (the Sort popover's own page-
+        sizing, which computes a page's needed height immediately after
+        building it, well before any show() call) would still see the
+        wrong, un-reserved size at exactly the moment that matters most.
+        This factory method is the actually-reliable fix; showEvent()
+        stays as a defensive fallback, not the primary mechanism."""
+        layout = layout_cls(self)
+        self._apply_layout_margins()
+        return layout
+
+    def setLayout(self, layout) -> None:
+        super().setLayout(layout)
+        self._apply_layout_margins()
+
+    def showEvent(self, event) -> None:
+        # BELT AND SUSPENDERS: setLayout() above is the "should" fix,
+        # but calling QVBoxLayout(self)/QFormLayout(self) etc. --
+        # every call site's own construction pattern -- turned out NOT
+        # to reliably invoke a Python-subclass override of setLayout()
+        # at all (confirmed directly: the margins it tried to apply
+        # simply weren't there afterward), almost certainly because
+        # that constructor attaches the layout via an internal C++-side
+        # call that PySide's virtual-method dispatch doesn't route
+        # through the Python override for. Re-applying here as well,
+        # right before this box is ever actually shown, is a second,
+        # independent guarantee that doesn't depend on that dispatch
+        # working -- cheap and fully idempotent either way.
+        super().showEvent(event)
+        self._apply_layout_margins()
+
+    def _apply_layout_margins(self) -> None:
+        lay = self.layout()
+        if lay is not None:
+            lay.setContentsMargins(12, _TITLE_HEIGHT + 6, 12, 12)
 
     def setTitle(self, title: str) -> None:
         self._title = title
