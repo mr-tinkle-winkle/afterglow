@@ -328,6 +328,135 @@ Seven consecutive batches of Library/Settings/appearance
 features/bug fixes, given together each time. Newest first.
 
 ### This session
+Six of the seven items from Max's latest batch -- item 2 ("adjust all
+of the settings things to be custom instead of KDE") is still
+outstanding, the biggest remaining piece by far, not started this
+round.
+
+1. **"Add New" button in Settings > Filters** -- the Filters SETTINGS
+   tab could only manage existing tags (icon, category, outline,
+   rename), with no way to create a brand new one without leaving to
+   the Library's own "+ Add Filter". Added.
+2. **Context menu no longer closes when toggling a filter checkbox.**
+   Root cause: `CustomCheckBox` is embedded via `QWidgetAction`, and
+   the checkbox itself already receives and handles clicks completely
+   normally (Qt delivers mouse events directly to whichever real
+   widget is under the cursor) -- but `QMenu`'s OWN mouseReleaseEvent
+   ALSO reacts to that same click by closing itself, independent of
+   whatever the embedded widget did with it. New `_NonClosingMenu`
+   subclass skips only that specific reaction (checking
+   `self.activeAction()` is a `QWidgetAction`), leaving every other
+   kind of click (a plain QAction, clicking outside any item)
+   completely unaffected. Used for the Filters submenu and its
+   category sub-menus. Verified directly against the class's own
+   `mouseReleaseEvent` logic (no `close()` reaction for a widget
+   action; normal handling otherwise).
+3. **"Mark as Edited" added to the context menu** -- new
+   `library.mark_as_edited()`, manually flips `has_edit` without a
+   real trim/backup, for a video that's already edited from elsewhere
+   or one Max doesn't consider "raw" even though the app itself never
+   touched it. Deliberately leaves `backup_path` alone (stays None) --
+   `undo_edit()`/`clear_edit_backup()` already correctly refuse to act
+   without a real backup regardless of `has_edit`, so this can't put a
+   video into a state where Undo would try to restore from nothing.
+   Shown as a bulk action (works across a multi-selection), only
+   offered when at least one selected video isn't already marked
+   edited. Verified directly, including that Undo still correctly
+   refuses afterward.
+4. **The wrong-dates bug -- found the missing piece and fixed it
+   properly this time.** Last session's fix (using a file's mtime
+   instead of "now" during re-ingestion) only prevents the bug from
+   corrupting NEW data going forward -- it does nothing for videos
+   that were ALREADY corrupted by the mass-false-positive prune bug
+   before that fix existed. New `library.repair_incorrect_creation_dates()`,
+   called once at every LibraryPage startup (cheap/safe to call
+   repeatedly -- already-correct videos are a no-op): for every video,
+   compares its stored `created_at` against its file's own mtime, and
+   corrects it when the file is impossibly OLDER than its claimed
+   creation date by more than an hour (a physical impossibility for a
+   genuine original capture, but exactly what a bad re-ingestion looks
+   like). Caught a real edge case in this fix while testing it, not
+   after: a completely fresh, correctly-dated video can have its file
+   finish writing a few MILLISECONDS before its DB row gets created
+   (the file write always completes just before `add_video()` runs),
+   which an exact `mtime < stored` check with zero tolerance flagged
+   as "wrong" too -- added a generous one-hour tolerance, since the
+   capture pipeline's real gap is always well under a second, while an
+   hour still easily catches the actual multi-day/week corruption
+   pattern. Verified both directions: a deliberately backdated file
+   gets its date corrected, and a genuinely fresh video's correct date
+   is left completely alone on a second repair pass.
+5. **A shared, custom "Add Filter" dialog with a category dropdown.**
+   Replaced the plain `QInputDialog.getText()` used in THREE places
+   (the Library's own "+ Add Filter", the context menu's Filters
+   submenu, and this session's new Settings button) with one
+   `AddFilterDialog` (new file, add_filter_dialog.py) -- custom-styled
+   (theme-colored background, `CustomLineEdit`/`CustomButton`
+   throughout) and lets a category be assigned right at creation
+   instead of needing a second trip to Settings > Filters afterward.
+   The dropdown itself is a QSS-reskinned `QComboBox` (same technique
+   as last session's QMenu reskin -- theme colors, rounded corners),
+   not yet a fully custom popup-list widget of its own; that remains
+   part of item 2's still-outstanding scope. Verified end-to-end: the
+   dialog's own result values round-trip correctly, and simulating an
+   accepted dialog through `LibraryPage._add_new_filter()` actually
+   creates the tag AND assigns it to the chosen category.
+6. **Previewer video titles are now editable in place.** Clicking the
+   title swaps it for a `CustomLineEdit` pre-filled with the current
+   title; committing (Enter, or clicking away -- both go through
+   `editingFinished`, which fires for either) calls
+   `library.rename_video()` and swaps back to the label showing
+   whatever the result actually is. Caught a real construction-order
+   bug while testing this, not a design mistake caught after the fact:
+   the event filter watching for a click on the title label can fire
+   DURING `__init__` (a layout/show event on the label itself, before
+   `self.video_widget` exists a few lines later in the same
+   constructor) -- the filter's OTHER branch checked `obj is
+   self.video_widget` unconditionally, which crashed outright the very
+   first time the dialog was ever constructed. Fixed with
+   `getattr(self, "video_widget", None)` instead of the bare
+   attribute access. Verified the full cycle: clicking swaps to an
+   editable field pre-filled correctly, committing writes to the DB
+   and swaps back to the label showing the new title, and re-editing
+   with no actual change made doesn't error or do anything unexpected.
+
+### Previous session
+Finished the item de-prioritized last round (once the data-loss
+investigation was done): tag icons now show directly in the dropdowns
+themselves, not just on the video card.
+
+**`CustomCheckBox` gained an optional `leading_icon` parameter** --
+shown between the checkbox indicator and its text label, distinct from
+`_checkmark` (which shows INSIDE the indicator box to mark checked
+state) and `FilterCheckBox`'s own block-state x icon. `FilterCheckBox`
+passes it straight through to the base class. Wired into every place a
+tag appears as a checkbox with an icon available to show:
+- `_build_filters_menu` (video_card.py) -- covers BOTH the right-click
+  context menu's Filters submenu and the quick-action Filters button's
+  menu, since they share this one method.
+- `_build_filters_page` (library_page.py) -- the Sort popover's
+  Filters page, i.e. the actual search/filtering UI.
+
+Both look up each tag's icon via the same `library.tag_icons()` used
+elsewhere (video_card.py's own `_build_icon_row` for the on-card
+display), falling back to no icon when a tag doesn't have one set or
+its file's gone missing, same leniency as everywhere else in this
+codebase that loads a user-chosen icon path.
+
+Caught a real bug in my OWN test while verifying this, not a product
+bug: `library.create_tag()` returns `None` (it's fire-and-forget, used
+by callers that don't need the id back) -- an early draft of the test
+assumed it returned the new tag's id and passed `None` straight into
+`set_tag_icon()`, which silently updated zero rows (`WHERE id = NULL`
+never matches anything in SQL). Fixed the test to look the id up via
+`all_tags_with_ids()` instead, which is what surfaced the real,
+correct behavior it needed to check in the first place.
+
+Verified directly: a tag with an icon set shows up with
+`_has_leading_icon() == True` on its `CustomCheckBox` in BOTH the
+Filters menu and the Sort popover's Filters page.
+
+### Previous session
 **A real data-loss incident, root-caused and fixed, plus the durability
 feature it directly motivated.** Reported: every video's tags/filters
 gone (trims survived), and every video showing "created today" even

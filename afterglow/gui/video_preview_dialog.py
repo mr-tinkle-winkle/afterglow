@@ -37,6 +37,7 @@ from .. import library
 from .theme import Theme, contrast_text
 from .outlined_label import OutlinedLabel
 from .custom_button import CustomButton
+from .custom_line_edit import CustomLineEdit
 from .custom_spinbox import CustomDoubleSpinBox
 from .mpv_widget import MpvVideoWidget
 from .rounded_rect import rounded_rect_path
@@ -273,6 +274,7 @@ class VideoPreviewContent(QWidget):
         self._current_pos = 0.0
         self._seeking = False
         self._pre_mute_volume = 80
+        self._title_edit = None
         self.setAttribute(Qt.WA_TranslucentBackground, True)  # lets this widget's own rounded corners show the scrim behind it
 
         outer = QVBoxLayout(self)
@@ -287,6 +289,9 @@ class VideoPreviewContent(QWidget):
         self._title_label = OutlinedLabel("")
         self._title_label.setStyleSheet("font-size: 26px;")
         self._title_label.setAlignment(Qt.AlignCenter)
+        self._title_label.setCursor(Qt.PointingHandCursor)
+        self._title_label.setToolTip("Click to rename")
+        self._title_label.installEventFilter(self)
         header_layout.addWidget(self._title_label)
 
         self._info_label = OutlinedLabel("")
@@ -567,9 +572,61 @@ class VideoPreviewContent(QWidget):
         self.video_widget.shutdown()
 
     def eventFilter(self, obj, event) -> bool:
-        if obj is self.video_widget and event.type() == QEvent.Resize:
+        # getattr with a default, not self.video_widget directly -- this
+        # filter can fire (a layout/show event on the title label) DURING
+        # __init__, before video_widget has been constructed yet a few
+        # lines later, which crashed outright before this guard.
+        if obj is getattr(self, "video_widget", None) and event.type() == QEvent.Resize:
             self._update_video_mask()
+        elif obj is self._title_label and event.type() == QEvent.MouseButtonPress:
+            self._start_editing_title()
+            return True
         return super().eventFilter(obj, event)
+
+    def _start_editing_title(self) -> None:
+        """Swaps the title label out for an editable CustomLineEdit in
+        the same spot, pre-filled with the current title -- per Max's
+        direct request to be able to rename a video right from the
+        previewer instead of needing the Editor or a context-menu
+        Rename for it."""
+        if self._title_edit is not None:
+            return  # already editing
+        header_layout = self._title_label.parentWidget().layout()
+        index = header_layout.indexOf(self._title_label)
+        self._title_label.hide()
+
+        self._title_edit = CustomLineEdit(self._video.title or "")
+        self._title_edit.setStyleSheet("font-size: 26px;")
+        self._title_edit.setAlignment(Qt.AlignCenter)
+        self._title_edit.editingFinished.connect(self._commit_title_edit)
+        header_layout.insertWidget(index, self._title_edit)
+        self._title_edit.setFocus()
+        self._title_edit.selectAll()
+
+    def _commit_title_edit(self) -> None:
+        """editingFinished fires on BOTH Enter and losing focus (a
+        click elsewhere), so this one connection covers committing the
+        rename either way -- clicking away is just as valid a way to
+        confirm the new title as pressing Enter."""
+        if not hasattr(self, "_title_edit") or self._title_edit is None:
+            return
+        new_title = self._title_edit.text().strip()
+        if new_title and new_title != self._video.title:
+            self._video = library.rename_video(self._video.id, title=new_title)
+
+        header_layout = self._title_edit.parentWidget().layout()
+        index = header_layout.indexOf(self._title_edit)
+        header_layout.removeWidget(self._title_edit)
+        self._title_edit.deleteLater()
+        self._title_edit = None
+
+        display_title = f"{FAVORITE_STAR} {self._video.title}" if self._video.favorite else (self._video.title or "(untitled)")
+        self._title_label.setText(display_title)
+        header_layout.insertWidget(index, self._title_label)
+        self._title_label.show()
+        # Neighbor lookups (Prev/Next tooltips) and the header info
+        # box aren't affected by a title change alone, so nothing else
+        # here needs refreshing.
 
     def _update_video_mask(self) -> None:
         w, h = self.video_widget.width(), self.video_widget.height()

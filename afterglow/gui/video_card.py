@@ -14,7 +14,7 @@ from PySide6.QtCore import Qt, Signal, QSize, QRectF, QTimer, QVariantAnimation
 from PySide6.QtGui import QPixmap, QPainter, QColor, QIcon, QFontMetrics, QPen
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QMenu, QMessageBox, QLineEdit,
-    QHBoxLayout, QInputDialog, QWidgetAction,
+    QHBoxLayout, QInputDialog, QWidgetAction, QDialog,
 )
 
 from .. import library, thumbnails, config as config_module
@@ -204,6 +204,25 @@ def _menu_stylesheet(appearance) -> str:
             margin: 4px 8px;
         }}
     """
+
+
+class _NonClosingMenu(QMenu):
+    """A QMenu that doesn't close itself when the click landed on a
+    QWidgetAction's own embedded widget (a CustomCheckBox, here) --
+    used for the Filters submenu and its category sub-menus, so
+    toggling several filters in one visit doesn't require reopening
+    the menu after each one. The checkbox itself already receives and
+    handles the click perfectly normally (Qt delivers mouse events
+    directly to whichever real widget is under the cursor, completely
+    independent of QMenu's own mouse handling) -- this only skips
+    QMenu's OWN reaction of closing itself afterward for that case,
+    leaving every other kind of click (a plain QAction, clicking
+    outside any item) to close the menu exactly as before."""
+
+    def mouseReleaseEvent(self, event) -> None:
+        if isinstance(self.activeAction(), QWidgetAction):
+            return
+        super().mouseReleaseEvent(event)
 
 
 class VideoCard(QWidget):
@@ -914,6 +933,16 @@ class VideoCard(QWidget):
         filters_menu = self._build_filters_menu(menu, target_ids, target_videos)
         menu.addMenu(filters_menu)
 
+        # "Mark as Edited" -- manually flips has_edit for videos ingested
+        # already-edited from elsewhere, or to suppress the unedited-
+        # highlight border on one the user doesn't consider "raw" even
+        # though the app never itself edited it. Only offered when at
+        # least one selected video isn't already marked edited --
+        # nothing useful for it to do otherwise.
+        mark_edited_action = None
+        if any(not v.has_edit for v in target_videos):
+            mark_edited_action = menu.addAction(f"Mark as Edited{count_suffix}")
+
         copy_action = menu.addAction(f"Copy{count_suffix}")
         delete_action = menu.addAction(f"Delete{count_suffix}")
 
@@ -927,6 +956,10 @@ class VideoCard(QWidget):
         elif chosen == upload_action:
             for vid in target_ids:
                 self.upload_requested.emit(vid)
+        elif mark_edited_action is not None and chosen == mark_edited_action:
+            for vid in target_ids:
+                library.mark_as_edited(vid)
+            self.tags_changed.emit()  # reuses this signal purely to trigger a refresh -- no tags actually changed
         elif chosen == copy_action:
             self._bulk_copy_to_clipboard(target_ids)
         elif chosen == delete_action:
@@ -1002,11 +1035,18 @@ class VideoCard(QWidget):
         creates a brand new tag (globally -- mirrors the Library
         dropdown's own "+ Add Filter", which also just creates the tag
         without applying it to anything)."""
-        menu = QMenu("Filters", parent_menu)
+        menu = _NonClosingMenu("Filters", parent_menu)
         menu.setStyleSheet(_menu_stylesheet(self._appearance))
+        tag_icon_paths = library.tag_icons()  # {tag_name: icon_path}, only for tags that have one set
 
         def make_checkbox(tag: str, target_menu: QMenu) -> None:
-            checkbox = CustomCheckBox(tag, target_menu)
+            leading_icon = None
+            icon_path = tag_icon_paths.get(tag)
+            if icon_path and Path(icon_path).exists():
+                pixmap = QPixmap(icon_path)
+                if not pixmap.isNull():
+                    leading_icon = pixmap
+            checkbox = CustomCheckBox(tag, target_menu, leading_icon=leading_icon)
             checkbox.setChecked(all(tag in v.tags for v in target_videos))
 
             def on_toggled(checked: bool, tag=tag) -> None:
@@ -1030,7 +1070,7 @@ class VideoCard(QWidget):
             no_tags_action.setEnabled(False)
 
         for category_name, tag_names in grouped.items():
-            category_menu = QMenu(category_name, menu)
+            category_menu = _NonClosingMenu(category_name, menu)
             category_menu.setStyleSheet(_menu_stylesheet(self._appearance))
             for tag in tag_names:
                 make_checkbox(tag, category_menu)
@@ -1049,16 +1089,22 @@ class VideoCard(QWidget):
         return menu
 
     def _create_new_filter(self) -> None:
-        name, ok = QInputDialog.getText(self, "Add Filter", "Filter name:")
-        name = name.strip()
-        if ok and name:
-            library.create_tag(name)
-            # Doesn't apply it to anything or update the currently-open
-            # submenu in place (matches the Library Filters dropdown's
-            # own "+ Add Filter", which is the same one-shot behavior) --
-            # it'll show up next time a filters menu is opened, once
-            # tags_changed has propagated through to a refresh().
-            self.tags_changed.emit()
+        from .add_filter_dialog import AddFilterDialog
+        dialog = AddFilterDialog(library.all_categories(), parent=self)
+        if dialog.exec() == QDialog.Accepted:
+            name, category_id = dialog.result_values()
+            if name:
+                library.create_tag(name)
+                if category_id is not None:
+                    tag_id = next((tid for tid, tname in library.all_tags_with_ids() if tname == name), None)
+                    if tag_id is not None:
+                        library.set_tag_category(tag_id, category_id)
+                # Doesn't apply it to anything or update the currently-open
+                # submenu in place (matches the Library Filters dropdown's
+                # own "+ Add Filter", which is the same one-shot behavior) --
+                # it'll show up next time a filters menu is opened, once
+                # tags_changed has propagated through to a refresh().
+                self.tags_changed.emit()
 
     def _bulk_set_favorite(self, target_ids: set[int], favorite: bool) -> None:
         for vid in target_ids:

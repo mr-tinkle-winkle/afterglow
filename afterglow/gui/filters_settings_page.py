@@ -20,7 +20,7 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QFileDialog, QComboBox, QScrollArea, QFrame, QLineEdit,
     QMessageBox, QTabWidget, QFormLayout, QInputDialog, QToolButton,
-    QMenu, QWidgetAction,
+    QMenu, QWidgetAction, QDialog,
 )
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QPixmap
@@ -316,6 +316,11 @@ class FiltersSettingsPage(QWidget):
 
         icons_group = CustomGroupBox("Tag Icons")
         icons_layout = QVBoxLayout(icons_group)
+
+        add_new_btn = CustomButton("+ Add New")
+        add_new_btn.clicked.connect(self._add_new_tag)
+        icons_layout.addWidget(add_new_btn)
+
         scroll = SmoothScrollArea()
         scroll.setWidgetResizable(True)
         rows_container = QWidget()
@@ -327,6 +332,19 @@ class FiltersSettingsPage(QWidget):
 
         self._reload_tag_rows()
         return page
+
+    def _add_new_tag(self) -> None:
+        from .add_filter_dialog import AddFilterDialog
+        dialog = AddFilterDialog(library.all_categories(), parent=self)
+        if dialog.exec() == QDialog.Accepted:
+            name, category_id = dialog.result_values()
+            if name:
+                library.create_tag(name)
+                if category_id is not None:
+                    tag_id = next((tid for tid, tname in library.all_tags_with_ids() if tname == name), None)
+                    if tag_id is not None:
+                        library.set_tag_category(tag_id, category_id)
+                self._reload_tag_rows()
 
     def _reload_tag_rows(self) -> None:
         for row in self._tag_rows:

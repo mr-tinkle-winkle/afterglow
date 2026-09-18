@@ -23,7 +23,7 @@ _TEXT_GAP = 8
 
 
 class CustomCheckBox(QAbstractButton):
-    def __init__(self, text: str = "", parent=None):
+    def __init__(self, text: str = "", parent=None, leading_icon=None):
         super().__init__(parent)
         self.setText(text)
         self.setCheckable(True)
@@ -32,13 +32,26 @@ class CustomCheckBox(QAbstractButton):
         self._appearance = appearance
         self._theme = Theme(appearance)
         self._checkmark = resource_qpixmap("checkmark_icon.png")
+        # The TAG's own custom icon (if one is set), shown between the
+        # checkbox indicator and its label -- distinct from _checkmark
+        # (which shows INSIDE the indicator box to mark checked/
+        # unchecked state) or FilterCheckBox's block-state x icon.
+        # Added per Max's direct request to show these "in the
+        # dropdowns" (context menu, quick-action Filters menu, Sort
+        # popover) alongside the checkbox itself, not just on the
+        # video card.
+        self._leading_icon = leading_icon
 
     def sizeHint(self) -> QSize:
         fm = self.fontMetrics()
         text_w = fm.horizontalAdvance(self.text()) if self.text() else 0
-        width = _BOX_SIZE + (_TEXT_GAP + text_w if self.text() else 0)
+        icon_w = _BOX_SIZE + _TEXT_GAP if self._has_leading_icon() else 0
+        width = _BOX_SIZE + icon_w + (_TEXT_GAP + text_w if self.text() else 0)
         height = max(_BOX_SIZE, fm.height()) + 4
         return QSize(width, height)
+
+    def _has_leading_icon(self) -> bool:
+        return self._leading_icon is not None and not self._leading_icon.isNull()
 
     def _icon_for_state(self):
         """Which icon (if any) fills the box right now -- overridden by
@@ -85,9 +98,20 @@ class CustomCheckBox(QAbstractButton):
             y = target.y() + (target.height() - scaled.height()) / 2
             painter.drawPixmap(round(x), round(y), scaled)
 
+        text_x_offset = _BOX_SIZE + _TEXT_GAP
+        if self._has_leading_icon():
+            leading_rect = QRectF(_BOX_SIZE + _TEXT_GAP, (self.height() - _BOX_SIZE) / 2, _BOX_SIZE, _BOX_SIZE)
+            scaled_leading = self._leading_icon.scaled(
+                round(leading_rect.width()), round(leading_rect.height()), Qt.KeepAspectRatio, Qt.SmoothTransformation
+            )
+            lx = leading_rect.x() + (leading_rect.width() - scaled_leading.width()) / 2
+            ly = leading_rect.y() + (leading_rect.height() - scaled_leading.height()) / 2
+            painter.drawPixmap(round(lx), round(ly), scaled_leading)
+            text_x_offset += _BOX_SIZE + _TEXT_GAP
+
         if self.text():
             painter.setPen(QColor(self._appearance.card_text_color))
-            text_rect = self.rect().adjusted(_BOX_SIZE + _TEXT_GAP, 0, 0, 0)
+            text_rect = self.rect().adjusted(text_x_offset, 0, 0, 0)
             painter.drawText(text_rect, Qt.AlignVCenter | Qt.AlignLeft, self.text())
         painter.end()
 

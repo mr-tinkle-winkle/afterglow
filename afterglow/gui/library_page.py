@@ -12,12 +12,13 @@ grid/search/filter wiring twice.
 """
 from __future__ import annotations
 
+from pathlib import Path
 from PySide6.QtCore import Qt, Signal, QSize, QFileSystemWatcher, QTimer, QRectF
 from PySide6.QtGui import QPainter, QPixmap, QColor
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLineEdit,
     QScrollArea, QLabel, QStackedWidget, QMessageBox,
-    QStyle, QInputDialog,
+    QStyle, QInputDialog, QDialog,
     QButtonGroup, QAbstractButton, QApplication,
 )
 
@@ -149,8 +150,8 @@ class FilterCheckBox(CustomCheckBox):
 
     state_changed = Signal(str, str)  # tag_name, new state
 
-    def __init__(self, tag_name: str, parent=None):
-        super().__init__(tag_name, parent)
+    def __init__(self, tag_name: str, parent=None, leading_icon=None):
+        super().__init__(tag_name, parent, leading_icon=leading_icon)
         self._tag_name = tag_name
         self._state = FILTER_STATE_NONE
         self._x_icon = resource_qpixmap("x_icon.png")
@@ -410,9 +411,16 @@ class _VideoGridTab(QWidget):
 
         all_tags = library.all_known_tags()
         grouped, uncategorized = library.tags_grouped_by_category()
+        tag_icon_paths = library.tag_icons()  # {tag_name: icon_path}, only for tags that have one set
 
         def _make_checkbox(tag: str, target_layout: QVBoxLayout) -> None:
-            checkbox = FilterCheckBox(tag)
+            leading_icon = None
+            icon_path = tag_icon_paths.get(tag)
+            if icon_path and Path(icon_path).exists():
+                pixmap = QPixmap(icon_path)
+                if not pixmap.isNull():
+                    leading_icon = pixmap
+            checkbox = FilterCheckBox(tag, leading_icon=leading_icon)
             if tag in self._excluded_tags:
                 checkbox.set_state(FILTER_STATE_EXCLUDE)
             elif tag in self._active_tags:
@@ -557,11 +565,17 @@ class _VideoGridTab(QWidget):
         self._on_filter_state_changed(tag, new_state)
 
     def _add_new_filter(self) -> None:
-        name, ok = QInputDialog.getText(self, "Add Filter", "Filter name:")
-        name = name.strip()
-        if ok and name:
-            library.create_tag(name)
-            self.refresh()
+        from .add_filter_dialog import AddFilterDialog
+        dialog = AddFilterDialog(library.all_categories(), parent=self)
+        if dialog.exec() == QDialog.Accepted:
+            name, category_id = dialog.result_values()
+            if name:
+                library.create_tag(name)
+                if category_id is not None:
+                    tag_id = next((tid for tid, tname in library.all_tags_with_ids() if tname == name), None)
+                    if tag_id is not None:
+                        library.set_tag_category(tag_id, category_id)
+                self.refresh()
 
     def _toggle_highlight_unedited(self, checked: bool) -> None:
         self._highlight_unedited = checked
@@ -814,6 +828,15 @@ class LibraryPage(QWidget):
             library.scan_and_ingest_new_videos()
             library.prune_missing_videos()
             library.remove_stray_orig_entries()
+        # Repairs any video whose date got corrupted by the mass-
+        # false-positive prune bug (see prune_missing_videos' and
+        # repair_incorrect_creation_dates' own docstrings) -- once here
+        # at startup regardless of the daemon-offload setting above
+        # (this repairs EXISTING bad data already sitting in the DB,
+        # it isn't part of the ongoing scan/prune/ingest cycle that
+        # setting controls), and cheap/safe to call unconditionally --
+        # already-correct videos are a no-op.
+        library.repair_incorrect_creation_dates()
 
         self.local_tab = _VideoGridTab(uploaded_only=False, local_only=True)
         self.uploaded_tab = _VideoGridTab(uploaded_only=True, local_only=False)

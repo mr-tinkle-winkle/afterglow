@@ -557,6 +557,73 @@ def remove_stray_orig_entries() -> list[int]:
     return removed_ids
 
 
+def repair_incorrect_creation_dates() -> list[int]:
+    """One-time-per-video repair for a real data-corruption bug: before
+    prune_missing_videos() had its own safety net (see that function's
+    docstring for the full story), a mass false-positive "missing"
+    detection could delete a video's row and have it immediately
+    re-created fresh by scan_and_ingest_new_videos() -- which, before
+    THIS session's OWN fix, always stamped created_at as "now" rather
+    than reading the file's actual mtime. Videos affected that way are
+    still sitting in the DB today with a created_at of whenever the
+    bad re-ingestion happened, not their real date -- fixing the root
+    cause going forward doesn't retroactively repair data it already
+    corrupted.
+
+    Detects candidates by a simple, safe physical-impossibility check:
+    a video's content (its file's mtime) can never be NEWER than when
+    the DB claims the video was "created" for a genuine original
+    capture -- if the file's mtime is EARLIER than its stored
+    created_at, that created_at can only be an artifact of a later
+    re-ingestion, not the real date, so it's corrected to the mtime.
+    Anything where mtime >= created_at is left completely alone (the
+    normal, correct case for every video that was never affected by
+    this).
+
+    Safe to call repeatedly/on every startup -- already-correct videos
+    are no-ops, and a file that's gone missing is silently skipped
+    (prune_missing_videos, not this, is responsible for that).
+    Returns the ids of videos whose date was actually corrected.
+    """
+    repaired = []
+    with db.get_conn() as conn:
+        rows = conn.execute("SELECT id, path, created_at FROM videos").fetchall()
+        for row in rows:
+            path = Path(row["path"])
+            if not path.exists():
+                continue
+            try:
+                mtime = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
+            except OSError:
+                continue
+            try:
+                stored = datetime.fromisoformat(row["created_at"])
+            except (TypeError, ValueError):
+                continue
+            if stored.tzinfo is None:
+                stored = stored.replace(tzinfo=timezone.utc)
+            # A generous tolerance, not a strict mtime < stored check --
+            # a file's mtime is set the moment its LAST byte is written,
+            # which happens a little BEFORE add_video() gets called and
+            # stamps created_at, even for a perfectly legitimate fresh
+            # capture -- that gap is normally well under a second, but
+            # without any tolerance at all, that tiny, completely
+            # ordinary ordering difference was enough to falsely flag
+            # every single fresh, correctly-dated video as "wrong" too.
+            # An hour is far more slack than the capture pipeline could
+            # ever need, while still easily catching the actual bug
+            # pattern (created_at off by literal days or weeks).
+            if (stored - mtime).total_seconds() > 3600:
+                conn.execute(
+                    "UPDATE videos SET created_at = ? WHERE id = ?",
+                    (mtime.isoformat(), row["id"]),
+                )
+                repaired.append(row["id"])
+    if repaired:
+        write_library_manifest()
+    return repaired
+
+
 def scan_and_ingest_new_videos() -> list[Video]:
     """
     Pick up video files that exist in the clips folder but aren't tracked
@@ -720,6 +787,23 @@ def apply_trim(video_id: int, start_sec: float, end_sec: float, frame_perfect: b
             (str(backup_path), new_duration, video_id),
         )
     return get_video(video_id)
+
+
+def mark_as_edited(video_id: int) -> Video:
+    """Manually flags a video as edited (has_edit=1) without an actual
+    trim/backup -- useful for a video that's already edited from
+    elsewhere before being brought in, or just to suppress the
+    unedited-highlight border on one the user doesn't consider "raw"
+    even though the app itself never touched it. Leaves backup_path
+    alone (stays None if there wasn't already one) -- undo_edit() and
+    clear_edit_backup() both already correctly refuse to act without a
+    real backup_path regardless of has_edit, so this can't leave the
+    video in a state where Undo would try to restore from nothing."""
+    with db.get_conn() as conn:
+        conn.execute("UPDATE videos SET has_edit = 1 WHERE id = ?", (video_id,))
+    result = get_video(video_id)
+    write_library_manifest()
+    return result
 
 
 def undo_edit(video_id: int) -> Video:
