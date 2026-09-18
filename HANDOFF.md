@@ -328,6 +328,88 @@ Seven consecutive batches of Library/Settings/appearance
 features/bug fixes, given together each time. Newest first.
 
 ### This session
+**A real data-loss incident, root-caused and fixed, plus the durability
+feature it directly motivated.** Reported: every video's tags/filters
+gone (trims survived), and every video showing "created today" even
+though most were captured well before. Max also mentioned separately
+having moved the entire clips folder out and back in a while back --
+that's the actual trigger, confirmed directly.
+
+1. **Root cause: `prune_missing_videos()` had no defense against a
+   mass false-positive.** It checks `Path(row["path"]).exists()` for
+   every video and unconditionally `DELETE`s any that fail -- which
+   CASCADEs to `video_tags` via the schema's `ON DELETE CASCADE`.
+   Moving the whole clips folder out (even briefly) makes EVERY video
+   fail that check at once; the next prune pass then deletes all of
+   them, and `scan_and_ingest_new_videos()` immediately re-discovers
+   the same files (now back in place) as brand-new rows -- fresh ids,
+   zero tags, and a `created_at` of "now" instead of whenever they
+   were actually made. That exactly matches every symptom reported:
+   tags gone, trims fine (the file itself was untouched, so the
+   trimmed content survived re-ingestion), dates wrong.
+   **Fixed with a safety net in `prune_missing_videos()`:** refuses to
+   prune anything in a single pass if that would remove more than half
+   the library at once (and always allows pruning up to 5 videos
+   regardless, so a small library isn't stuck never able to prune a
+   single genuinely-deleted video) -- logs an error and does nothing
+   that pass instead, since a mass "everything just vanished" result
+   is a far stronger signal that the CHECK itself is wrong (a
+   transiently unmounted drive, a race at startup, a filesystem-
+   visibility difference between the GUI and the newer daemon-offload
+   scanning path) than that the user actually deleted most of their
+   library between one refresh and the next. A single video going
+   missing is completely ordinary and still pruned immediately, same
+   as before. Verified directly, both directions: moving files away to
+   simulate a mass false-positive is correctly refused (tags stay
+   intact), and a single genuinely-deleted file is still pruned
+   normally.
+2. **The "created today" date bug -- separate but related, also
+   fixed.** `add_video()` always stamped `datetime.now()` as
+   `created_at`, which is correct for the capture pipeline's own call
+   (a video OBS just finished recording) but wrong for
+   `scan_and_ingest_new_videos()` re-discovering a file well after it
+   was actually made. Added an optional `created_at` parameter
+   (defaulting to `None` -> "now", so the capture pipeline's own
+   behavior is unchanged) and had the scan function pass the file's
+   own `st_mtime` instead -- the best available answer given only
+   filesystem info to go on (survives an ordinary same-filesystem
+   `mv`, which is exactly what happened here; would NOT survive a
+   copy-then-delete or a cross-filesystem move, where the OS itself
+   has no better answer either). Verified both the ingestion path
+   (uses the file's real mtime, confirmed against a deliberately
+   backdated file) and that the capture pipeline's own direct
+   `add_video()` calls still default to "now" as before.
+3. **New: a durable, human-readable manifest file outside the SQLite
+   DB**, per Max's own direct follow-up request once the root cause
+   was found -- `library.write_library_manifest()` writes a plain
+   JSON snapshot (title, tags, favorite, has_edit, dates, for every
+   video) to `~/.config/afterglow/library_manifest.json`, called after
+   every mutation that changes what it describes (tag add/remove,
+   rename, favorite, delete, and both the scan and prune passes -- only
+   when something in it actually changed, not on every no-op call).
+   Deliberately NOT a live source of truth the app reads back from
+   automatically, and deliberately not baked into the video files
+   themselves (renaming already happens today when a title changes --
+   see `rename_video`'s existing file-rename logic -- but going further
+   and encoding tags/edited-status into filenames or container
+   metadata would fight the app's own filename-matching logic
+   throughout scan/prune/backup handling, for comparatively little
+   benefit over a plain external backup file): this is a recovery
+   reference a person can open and manually cross-check or restore
+   from by hand if the database itself is ever lost or corrupted again,
+   which is a substantially simpler and more robust thing to get right
+   than an automatic two-way sync between two sources of truth would
+   be. Verified directly: the manifest is created and correctly
+   reflects a tag addition, and updates correctly on both rename and
+   delete.
+
+**Not done this round:** item 3's follow-up (showing filter icons
+directly IN the dropdown/checkbox rows themselves -- context menu,
+quick-action Filters menu, and Sort popover filtering) was
+de-prioritized this session in favor of the data-loss investigation
+and fix, which took priority once reported.
+
+### Previous session
 Four more items, all found/fixed/verified.
 
 1. **Defensive fix to `resource_qpixmap`'s new cache** -- reported
