@@ -25,8 +25,8 @@ whatever window it's embedded in, rather than a fixed pixel size.
 """
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, QRectF, Signal, QTimer, QPropertyAnimation
-from PySide6.QtGui import QPainter, QColor, QPainterPath, QPen
+from PySide6.QtCore import Qt, QRectF, Signal, QTimer, QPropertyAnimation, QEvent
+from PySide6.QtGui import QPainter, QColor, QPainterPath, QPen, QRegion
 from PySide6.QtWidgets import (
     QVBoxLayout, QHBoxLayout, QLabel, QSlider, QAbstractButton,
     QSizePolicy, QWidget, QGraphicsOpacityEffect,
@@ -311,6 +311,18 @@ class VideoPreviewContent(QWidget):
         self.video_widget.position_changed.connect(self._on_position_changed)
         self.video_widget.duration_known.connect(self._on_duration_known)
         self.video_widget.playback_ended.connect(self._on_playback_ended)
+        # Rounds the VIDEO's own corners to match its frame's border,
+        # which was already rounded while the video itself stayed
+        # sharp-cornered inside it -- reported directly. MpvVideoWidget
+        # is a QOpenGLWidget, so a normal paintEvent-based rounded clip
+        # doesn't apply to its own GL-rendered content; setMask() with a
+        # QRegion works at the native surface level regardless of how
+        # the content was drawn, which is why that's used here instead.
+        # Installed as an event filter (QEvent.Resize) rather than
+        # touching MpvVideoWidget itself, since that class is shared
+        # with the Editor, which was never asked to round its own video
+        # corners -- scoping this to the previewer's own instance only.
+        self.video_widget.installEventFilter(self)
         self._video_frame._layout.addWidget(self.video_widget)
         video_row.addWidget(self._video_frame, stretch=1)
 
@@ -553,6 +565,24 @@ class VideoPreviewContent(QWidget):
         stops mpv playback/cleans up its resources, same as the old
         QDialog's closeEvent used to."""
         self.video_widget.shutdown()
+
+    def eventFilter(self, obj, event) -> bool:
+        if obj is self.video_widget and event.type() == QEvent.Resize:
+            self._update_video_mask()
+        return super().eventFilter(obj, event)
+
+    def _update_video_mask(self) -> None:
+        w, h = self.video_widget.width(), self.video_widget.height()
+        if w <= 0 or h <= 0:
+            return
+        appearance = config_module.load().appearance
+        radius = appearance.rounded_corner_radius if appearance.rounded_corners_enabled else 12
+        radius = min(radius, w / 2, h / 2) if radius else 0
+        if radius <= 0:
+            self.video_widget.clearMask()
+            return
+        path = rounded_rect_path(QRectF(0, 0, w, h), radius)
+        self.video_widget.setMask(QRegion(path.toFillPolygon().toPolygon()))
 
 
 class VideoPreviewOverlay(QWidget):

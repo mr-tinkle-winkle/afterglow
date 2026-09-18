@@ -173,6 +173,39 @@ class _InfoBox(QWidget):
         super().paintEvent(event)
 
 
+def _menu_stylesheet(appearance) -> str:
+    """QSS reskin for QMenu -- background/text/hover colors matching the
+    app's own theme, plus rounded corners and an accent border, instead
+    of native/KDE menu chrome. Applied to every QMenu (and each nested
+    submenu, since Qt does NOT cascade a parent QMenu's stylesheet down
+    into its child QMenus automatically) used for the right-click
+    context menu and the Filters submenu -- both reported directly as
+    "not custom". QSS is the standard, supported way to reskin QMenu's
+    look without losing its own submenu/keyboard-navigation/hover
+    machinery, which would be substantial to rebuild from scratch."""
+    return f"""
+        QMenu {{
+            background-color: {appearance.afterglow_color_card_background};
+            color: {appearance.card_text_color};
+            border: 1px solid {appearance.afterglow_color_accent};
+            border-radius: 8px;
+            padding: 4px;
+        }}
+        QMenu::item {{
+            padding: 6px 24px 6px 12px;
+            border-radius: 6px;
+        }}
+        QMenu::item:selected {{
+            background-color: {appearance.afterglow_color_accent};
+        }}
+        QMenu::separator {{
+            height: 1px;
+            background: {appearance.afterglow_color_accent};
+            margin: 4px 8px;
+        }}
+    """
+
+
 class VideoCard(QWidget):
     edit_requested = Signal(int)      # video_id
     deleted = Signal(int)             # video_id
@@ -864,6 +897,7 @@ class VideoCard(QWidget):
         count_suffix = f" ({len(target_ids)})" if multi else ""
 
         menu = QMenu(self)
+        menu.setStyleSheet(_menu_stylesheet(self._appearance))
         # Edit/Rename only make sense for exactly one video at a time --
         # hidden rather than shown-but-disabled for a multi-selection.
         edit_action = None
@@ -969,6 +1003,7 @@ class VideoCard(QWidget):
         dropdown's own "+ Add Filter", which also just creates the tag
         without applying it to anything)."""
         menu = QMenu("Filters", parent_menu)
+        menu.setStyleSheet(_menu_stylesheet(self._appearance))
 
         def make_checkbox(tag: str, target_menu: QMenu) -> None:
             checkbox = CustomCheckBox(tag, target_menu)
@@ -996,6 +1031,7 @@ class VideoCard(QWidget):
 
         for category_name, tag_names in grouped.items():
             category_menu = QMenu(category_name, menu)
+            category_menu.setStyleSheet(_menu_stylesheet(self._appearance))
             for tag in tag_names:
                 make_checkbox(tag, category_menu)
             menu.addMenu(category_menu)

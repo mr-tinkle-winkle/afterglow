@@ -328,6 +328,59 @@ Seven consecutive batches of Library/Settings/appearance
 features/bug fixes, given together each time. Newest first.
 
 ### This session
+Four more items, all found/fixed/verified.
+
+1. **Defensive fix to `resource_qpixmap`'s new cache** -- reported
+   directly that filter icons had gone invisible after last round's
+   caching change. Couldn't find a code path where the caching itself
+   would break a per-tag custom icon (those load via a completely
+   separate `QPixmap(path)` call, not `resource_qpixmap`), but the
+   caching COULD plausibly permanently lock in a transient failure for
+   any BUNDLED icon that DOES go through it (e.g. if something
+   requested an icon before a QApplication/QGuiApplication fully
+   existed, which can make Qt hand back a null pixmap without raising)
+   -- something the old always-reload behavior would have naturally
+   "healed" from on the very next call. Fixed regardless of whether
+   that's the exact mechanism at play here: `resource_qpixmap` now only
+   caches a SUCCESSFUL (non-null) load, so a failed one just retries
+   (and possibly fails again) on the next call instead of being
+   silently broken forever. Verified directly that requesting a
+   nonexistent file returns a null pixmap without polluting the cache.
+2. **Context menu and Filters submenu -- both now custom-styled.** Both
+   already used `CustomCheckBox`/`CustomButton` internally (from an
+   earlier session), but the surrounding `QMenu` chrome itself
+   (background, hover highlighting, borders, submenu appearance) was
+   still native/KDE styling -- what "not custom" actually meant here.
+   Added a shared `_menu_stylesheet()` (QSS: card-background fill,
+   accent-colored border and hover highlight, rounded corners) applied
+   to the right-click context menu, the Filters submenu, AND each
+   category sub-menu nested inside it -- Qt does NOT cascade a parent
+   QMenu's stylesheet down into its child QMenus automatically, so
+   each one needs it applied individually. QSS is the standard,
+   supported way to reskin QMenu without losing its own built-in
+   submenu/keyboard-navigation/hover machinery, which would have been
+   substantial to rebuild from scratch for comparatively little gain
+   over reskinning the existing one.
+3. **Icon preview added in Filters settings**, next to the filename --
+   `_TagIconRow` used to show only the filename text; now a real 24x24
+   scaled preview of the actual icon file sits next to it, updated on
+   every browse/clear, falling back to no preview if the path is empty
+   or the file's gone missing. Verified directly against a real icon
+   file.
+4. **Previewer's video now has rounded corners matching its frame's
+   border**, which was already rounded while the video itself stayed
+   sharp-cornered inside it. `MpvVideoWidget` is a `QOpenGLWidget`, so
+   a normal paintEvent-based rounded clip doesn't apply to its own
+   GL-rendered content -- used `setMask()` with a `QRegion` instead,
+   which clips at the native surface level regardless of how the
+   content was drawn. Installed as an event filter watching for
+   `QEvent.Resize` on the previewer's own video widget instance,
+   rather than touching `MpvVideoWidget` itself (shared with the
+   Editor, which was never asked to round its own video corners).
+   Verified the resulting mask is non-empty and genuinely excludes the
+   corners (not equal to the widget's full rectangular bounds).
+
+### Previous session
 The big one this round: the actual cause of the ~5 second startup
 time and the returned "click Library multiple times" bug, confirmed
 directly and fixed -- plus the quick-action-button shape, the

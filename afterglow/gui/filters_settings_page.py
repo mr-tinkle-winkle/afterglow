@@ -22,7 +22,9 @@ from PySide6.QtWidgets import (
     QMessageBox, QTabWidget, QFormLayout, QInputDialog, QToolButton,
     QMenu, QWidgetAction,
 )
-from PySide6.QtGui import QColor
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QColor, QPixmap
+from pathlib import Path
 
 from .. import library
 from .. import config as config_module
@@ -64,9 +66,14 @@ class _TagIconRow(QFrame):
         self.category_combo.currentIndexChanged.connect(self._on_category_changed)
         row.addWidget(self.category_combo)
 
+        self.icon_thumb = QLabel()
+        self.icon_thumb.setFixedSize(24, 24)
+        row.addWidget(self.icon_thumb)
+
         self.icon_preview = QLabel(self._icon_summary())
         self.icon_preview.setStyleSheet("color: gray;")
         row.addWidget(self.icon_preview)
+        self._update_icon_thumb()
 
         set_icon_btn = CustomButton("Set Icon...")
         set_icon_btn.clicked.connect(self._browse_icon)
@@ -122,6 +129,19 @@ class _TagIconRow(QFrame):
     def _icon_summary(self) -> str:
         return self.icon_path.rsplit("/", 1)[-1] if self.icon_path else "(no icon)"
 
+    def _update_icon_thumb(self) -> None:
+        """A real scaled preview of the chosen icon file, next to its
+        filename -- per Max's direct request, since the filename alone
+        doesn't show what the icon actually looks like."""
+        if self.icon_path and Path(self.icon_path).exists():
+            pixmap = QPixmap(self.icon_path)
+            if not pixmap.isNull():
+                self.icon_thumb.setPixmap(
+                    pixmap.scaled(24, 24, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                )
+                return
+        self.icon_thumb.clear()
+
     def _browse_icon(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
             self, "Choose Icon", "", "Images (*.png *.jpg *.jpeg *.svg *.ico);;All Files (*)"
@@ -129,10 +149,12 @@ class _TagIconRow(QFrame):
         if path:
             self.icon_path = path
             self.icon_preview.setText(self._icon_summary())
+            self._update_icon_thumb()
 
     def _clear_icon(self) -> None:
         self.icon_path = ""
         self.icon_preview.setText(self._icon_summary())
+        self._update_icon_thumb()
 
     def _pick_outline_color(self) -> None:
         from PySide6.QtWidgets import QColorDialog

@@ -53,13 +53,28 @@ def resource_qpixmap(name: str):
     everything downstream (set_icon_pixmap, hue_shift_pixmap_cached,
     tint_pixmap_cached, etc.) already treats these as read-only source
     images and returns a NEW pixmap/image for anything that needs to
-    look different."""
+    look different.
+
+    Deliberately does NOT cache a null/failed load -- if the file can't
+    be found or decoded for some transient reason (e.g. this got called
+    before a QApplication/QGuiApplication fully existed, which can make
+    Qt hand back an invalid QPixmap without raising), a permanent cache
+    would lock that failure in for the rest of the process's lifetime,
+    where the old always-reload behavior would have naturally "healed"
+    on the next call. A genuinely missing/corrupt file will just retry
+    (and fail again) every call instead of crashing or silently staying
+    broken forever -- a small, bounded cost given how rare that actually
+    is, versus the alternative of a permanently blank icon."""
     from PySide6.QtGui import QPixmap
 
-    if name not in _pixmap_cache:
-        with resource_path(name) as p:
-            _pixmap_cache[name] = QPixmap(str(p))
-    return _pixmap_cache[name]
+    cached = _pixmap_cache.get(name)
+    if cached is not None:
+        return cached
+    with resource_path(name) as p:
+        pixmap = QPixmap(str(p))
+    if not pixmap.isNull():
+        _pixmap_cache[name] = pixmap
+    return pixmap
 
 
 _pixmap_cache: dict[str, "QPixmap"] = {}
