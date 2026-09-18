@@ -243,8 +243,40 @@ class _NonClosingMenu(QMenu):
         action = self.activeAction() or self.actionAt(pos)
         return isinstance(action, QWidgetAction)
 
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._suppress_next_hide = False
+
+    def hideEvent(self, event) -> None:
+        # A SECOND, independent layer on top of the mousePressEvent/
+        # mouseReleaseEvent overrides below -- reported directly, a
+        # THIRD time, that the menu still closes on a checkbox click
+        # despite those. QMenu almost certainly has some internal
+        # closing mechanism that doesn't route through a Python
+        # subclass's mousePressEvent/mouseReleaseEvent overrides at
+        # all (the same category of PySide6 limitation already
+        # confirmed for CustomGroupBox's setLayout() override -- an
+        # internal C++-side call not dispatching to the Python
+        # override). Rather than keep guessing WHICH internal call is
+        # responsible, this reacts to the OUTCOME instead: whatever
+        # triggered it, if the menu is trying to hide right after a
+        # widget-action click, un-hide it immediately by re-showing at
+        # its own current position. _suppress_next_hide is set the
+        # moment a press lands on a widget action and cleared right
+        # after being consumed here, so this never blocks a REAL close
+        # (clicking outside, pressing Escape, choosing a plain action).
+        if self._suppress_next_hide:
+            self._suppress_next_hide = False
+            event.ignore()
+            pos = self.pos()
+            self.show()
+            self.move(pos)
+            return
+        super().hideEvent(event)
+
     def mousePressEvent(self, event) -> None:
         if self._is_widget_action_click(event.pos()):
+            self._suppress_next_hide = True
             return
         super().mousePressEvent(event)
 
@@ -894,6 +926,26 @@ class VideoCard(QWidget):
         return round_pixmap_corners(pixmap, radius)
 
     def mousePressEvent(self, event) -> None:
+        # If a title edit is in progress AND this click isn't on the
+        # edit box itself, commit it explicitly before anything else --
+        # a click elsewhere ON THIS SAME CARD (the thumbnail, an action
+        # button) is handled entirely by this card's own click logic
+        # below/elsewhere, which doesn't naturally shift Qt's own
+        # focus away from the still-focused title edit the way clicking
+        # some COMPLETELY unrelated widget would. Without this, "click
+        # off to save" only worked for clicks that happened to land on
+        # something that takes real Qt focus -- reported directly as
+        # not working reliably. Mapped via GLOBAL coordinates (not a
+        # direct geometry comparison) since self._title_edit's parent
+        # isn't necessarily `self` itself -- there can be intermediate
+        # layout container widgets -- so its geometry() alone isn't in
+        # the same coordinate space as this event's own pos().
+        if self._title_edit is not None:
+            global_pos = self.mapToGlobal(event.pos())
+            local_to_edit = self._title_edit.mapFromGlobal(global_pos)
+            if not self._title_edit.rect().contains(local_to_edit):
+                self._commit_title_edit()
+
         if event.button() == Qt.LeftButton:
             self.clicked.emit(self.video_id, event.modifiers())
             # A plain (unmodified) left-click directly on the thumbnail

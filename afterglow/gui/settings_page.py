@@ -20,7 +20,7 @@ import tomllib
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QLineEdit,
     QFileDialog, QLabel, QScrollArea,
-    QMessageBox, QComboBox, QColorDialog, QStackedWidget, QButtonGroup,
+    QComboBox, QColorDialog, QStackedWidget, QButtonGroup,
 )
 from PySide6.QtGui import QColor
 
@@ -36,6 +36,7 @@ from .custom_line_edit import CustomLineEdit
 from .custom_spinbox import CustomSpinBox, CustomDoubleSpinBox
 from .custom_combo_style import combo_box_stylesheet
 from .custom_group_box import CustomGroupBox
+from .custom_message_dialog import show_message
 from .theme import Theme
 from .page_outline import paint_page_outline, BORDER_WIDTH
 from .smooth_scroll_area import SmoothScrollArea
@@ -211,9 +212,9 @@ class SettingsPage(QWidget):
                         f"That clip will end up shorter than requested. "
                         f"Increase the buffer length in OBS's Output settings."
                     )
-            QMessageBox.information(self, "OBS Connection", msg)
+            show_message(self, "OBS Connection", msg)
         except OBSError as e:
-            QMessageBox.critical(self, "OBS Connection Failed", str(e))
+            show_message(self, "OBS Connection Failed", str(e))
 
     # ------------------------------------------------------------ clipping group
 
@@ -683,7 +684,7 @@ class SettingsPage(QWidget):
         try:
             config_module.export_to_file(path)
         except OSError as exc:
-            QMessageBox.warning(self, "Export Failed", f"Could not write settings to {path}:\n{exc}")
+            show_message(self, "Export Failed", f"Could not write settings to {path}:\n{exc}")
 
     def _import_settings(self) -> None:
         path, _ = QFileDialog.getOpenFileName(self, "Import Settings", "", "TOML Files (*.toml)")
@@ -692,9 +693,9 @@ class SettingsPage(QWidget):
         try:
             config_module.import_from_file(path)
         except (OSError, tomllib.TOMLDecodeError) as exc:
-            QMessageBox.warning(self, "Import Failed", f"Could not read settings from {path}:\n{exc}")
+            show_message(self, "Import Failed", f"Could not read settings from {path}:\n{exc}")
             return
-        QMessageBox.information(
+        show_message(
             self, "Settings Imported",
             "Settings were imported successfully. Reopen Settings to see the new values everywhere.",
         )
@@ -715,7 +716,7 @@ class SettingsPage(QWidget):
         settings.appearance = config_module.AppearanceSettings()
         config_module.save(settings)
         self._settings = settings
-        QMessageBox.information(
+        show_message(
             self, "Reverted",
             "All appearance settings have been reset to their defaults. "
             "Reopen Settings to see the reset values reflected in this page.",
@@ -798,11 +799,11 @@ class SettingsPage(QWidget):
         for row in self._rows:
             fields = row.to_fields()
             if not fields["name"]:
-                QMessageBox.warning(self, "Invalid Clip Option", "Every clip option needs a name.")
+                show_message(self, "Invalid Clip Option", "Every clip option needs a name.")
                 return
             key = fields["name"].lower()
             if key in seen_names:
-                QMessageBox.warning(
+                show_message(
                     self, "Duplicate Name",
                     f"Clip option name '{fields['name']}' is used more than once. "
                     f"Names must be unique.",
@@ -865,7 +866,7 @@ class SettingsPage(QWidget):
             ("Card Text Outline Color", self.card_text_outline_color_edit),
         ):
             if not QColor(edit.text().strip()).isValid():
-                QMessageBox.warning(
+                show_message(
                     self, "Invalid Color",
                     f"'{edit.text()}' isn't a valid color for {label} -- "
                     f"use a hex code like #257fff.",
@@ -896,7 +897,7 @@ class SettingsPage(QWidget):
                 else:
                     clips.update_clip_config(row.clip_config_id, **fields)
         except ClipError as e:
-            QMessageBox.critical(self, "Save Failed", str(e))
+            show_message(self, "Save Failed", str(e))
             return
 
         self.status_label.setText("Saved.")

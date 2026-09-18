@@ -19,8 +19,8 @@ from __future__ import annotations
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QFileDialog, QComboBox, QScrollArea, QFrame, QLineEdit,
-    QMessageBox, QTabWidget, QFormLayout, QInputDialog, QToolButton,
-    QMenu, QWidgetAction, QDialog,
+    QMessageBox, QFormLayout, QInputDialog, QToolButton,
+    QMenu, QWidgetAction, QDialog, QButtonGroup, QStackedWidget,
 )
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QPixmap
@@ -286,11 +286,40 @@ class FiltersSettingsPage(QWidget):
         self._auto_rows: list[_AutoFilterRow] = []
 
         outer = QVBoxLayout(self)
-        tabs = QTabWidget()
-        outer.addWidget(tabs)
 
-        tabs.addTab(self._build_filters_tab(), "Filters")
-        tabs.addTab(self._build_auto_filter_tab(), "Auto Add Filter")
+        # Same CustomButton + QStackedWidget tab pattern SettingsPage's
+        # own top-level tabs already use, replacing the native
+        # QTabWidget this used to be -- "filter page headers (Filters &
+        # Auto Add Filters)" reported directly as one of the few
+        # remaining non-custom things in Settings.
+        TAB_BUTTON_SPACING = 12
+        self._filters_stack = QStackedWidget()
+        tab_button_group = QButtonGroup(self)
+        tab_button_group.setExclusive(True)
+        tab_header = QHBoxLayout()
+        tab_header.setSpacing(0)
+
+        def _add_tab(label: str, page: QWidget) -> None:
+            index = self._filters_stack.count()
+            self._filters_stack.addWidget(page)
+            btn = CustomButton(label)
+            btn.setCheckable(True)
+            btn.setMinimumHeight(36)
+            tab_button_group.addButton(btn, index)
+            if tab_header.count() > 0:
+                tab_header.addSpacing(TAB_BUTTON_SPACING)
+            tab_header.addWidget(btn)
+            if index == 0:
+                btn.setChecked(True)
+
+        tab_button_group.idClicked.connect(self._filters_stack.setCurrentIndex)
+
+        _add_tab("Filters", self._build_filters_tab())
+        _add_tab("Auto Add Filter", self._build_auto_filter_tab())
+
+        tab_header.addStretch(1)
+        outer.addLayout(tab_header)
+        outer.addWidget(self._filters_stack, stretch=1)
 
     # ------------------------------------------------------------ Filters tab
 

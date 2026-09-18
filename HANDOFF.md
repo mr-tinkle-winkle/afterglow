@@ -328,6 +328,95 @@ Seven consecutive batches of Library/Settings/appearance
 features/bug fixes, given together each time. Newest first.
 
 ### This session
+Follow-up bug reports on the last batch, plus the remaining custom-
+Settings holdouts.
+
+1. **Spinbox arrows -- found the real, exact bug described.** Each
+   arrow was a fixed 22px, which needs ~50px+ of total spinbox height
+   to stack two without overlapping -- but a real spinbox is typically
+   only ~28-32px tall, so the two overlapped almost entirely, with
+   whichever was positioned/painted to "win" the shared space
+   appearing fully visible and the other barely showing at all,
+   exactly as reported ("the bottom increment button being the only
+   visible one, the top increment button only filling about 20% of
+   the box"). Fixed by sizing each arrow to exactly HALF the spinbox's
+   own height, computed fresh in `resizeEvent` rather than a fixed
+   constant -- guarantees perfect tiling (no overlap, no gap)
+   regardless of how tall or short any given spinbox actually is.
+   Verified at both a normal (30px) and a deliberately short (24px)
+   height.
+2. **"Click off to save the title" -- found the actual gap.** Verified
+   directly first that `editingFinished` DOES fire correctly on a
+   genuine Qt focus change (a real bug in my OWN test harness looked
+   like a product bug at first -- two separate top-level widgets don't
+   reliably exchange focus under this sandbox's offscreen platform;
+   redone with both widgets in the same window, it worked correctly).
+   The actual gap: clicking elsewhere on the SAME card (the thumbnail,
+   an action button) is fully consumed by that card's own click
+   handling and never naturally shifts Qt's focus away the way
+   clicking some unrelated widget would -- "click off doesn't save"
+   only failed for exactly that case. Fixed by explicitly committing
+   any in-progress title edit at the top of both `VideoCard.
+   mousePressEvent` and `VideoPreviewOverlay.mousePressEvent`,
+   whenever the click lands anywhere other than the edit box itself
+   (mapped via global coordinates, since the edit box's parent isn't
+   necessarily the widget whose mousePressEvent this is). Verified
+   both: clicking the thumbnail on the same card while editing, and
+   clicking the previewer's scrim (which also closes the whole
+   overlay right after) both now save correctly.
+3. **Context menu still closing on a filter/Edited toggle -- a third,
+   different technique after two failed attempts.** Both prior fixes
+   (checking `activeAction()`, then also `actionAt()`, in
+   `mousePressEvent`/`mouseReleaseEvent`) were reasoned attempts to
+   catch WHICH internal call was responsible, but evidently missed
+   whatever the actual mechanism is -- most likely another instance of
+   the same PySide6 limitation already confirmed for `CustomGroupBox.
+   setLayout()`: some internal C++-side call not dispatching to a
+   Python subclass's override at all. Rather than keep guessing which
+   call, `_NonClosingMenu` now reacts to the OUTCOME instead: a new
+   `hideEvent` override checks a flag set the moment a press lands on
+   a widget action, and if the menu tries to hide right after that, it
+   reverses it by immediately re-showing itself at its own current
+   position -- regardless of what actually triggered the hide.
+   Verified the mechanism directly (a suppressed hide is reversed; a
+   subsequent genuine hide still closes normally) -- flagged honestly
+   that two prior fixes for this exact report didn't hold up, so this
+   one should be treated as unconfirmed until verified for real.
+4. **OBS Test Connection (and every other QMessageBox in Settings) --
+   custom-styled.** New `custom_message_dialog.py`
+   (`CustomMessageDialog`/`show_message()`) -- same frameless +
+   translucent + rounded-fill treatment the video previewer and Add
+   Filter dialog already use. All 10 `QMessageBox.information/warning/
+   critical` call sites in settings_page.py now go through this one
+   shared dialog instead.
+5. **Advanced Sound dialog -- rounded, native OK/Cancel replaced.**
+   Same frameless/translucent/rounded treatment, and its
+   `QDialogButtonBox` swapped for two plain `CustomButton`s wired to
+   accept()/reject() directly (its internal sound-path fields were
+   already `CustomLineEdit`/`CustomButton` from an earlier session --
+   only the dialog's own outer chrome and its OK/Cancel buttons were
+   still native). Verified frameless+translucent attributes, zero
+   remaining `QDialogButtonBox` instances, and that accept() still
+   fires correctly through the new button.
+6. **Filter page headers (Filters & Auto Add Filters) -- native
+   QTabWidget replaced.** Same `CustomButton` + `QStackedWidget`
+   pattern SettingsPage's own top-level tabs already use. Verified
+   zero remaining `QTabWidget` instances and that clicking the new
+   tab buttons actually switches the stack.
+7. **Re-investigated the Filters-tab padding report with the exact
+   screenshot scenario reproduced** (a "games" category with 7 tags, a
+   "roblox games" category with 1) -- both group boxes size correctly
+   for their own content (no cutoff), and the only place content
+   isn't fully visible is where the WHOLE page's total content (425px)
+   exceeds the popover's existing 320px scroll cap, which is expected,
+   by-design scrolling, not a bug. This strongly suggests last
+   session's `CustomGroupBox.make_layout()` fix already resolved the
+   actual padding bug, and the screenshot may predate that build --
+   flagged as verified-by-reproduction rather than claimed fixed with
+   full certainty, since it can't be confirmed further without seeing
+   it live.
+
+### Previous session
 Continuing straight from the same batch (7 items plus one more added
 mid-way) -- picking up where the last handoff left off (items 1-4 and
 half of 5 were already done; this covers the rest).

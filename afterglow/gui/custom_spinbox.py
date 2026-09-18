@@ -20,7 +20,7 @@ from .. import config as config_module
 from .rounded_rect import rounded_rect_path
 from .theme import Theme, contrast_text
 
-_ARROW_SIZE = 22
+_ARROW_WIDTH = 20
 
 
 class _SpinArrowButton(QAbstractButton):
@@ -28,7 +28,6 @@ class _SpinArrowButton(QAbstractButton):
         super().__init__(parent)
         self._up = up
         self.setCursor(Qt.PointingHandCursor)
-        self.setFixedSize(_ARROW_SIZE, _ARROW_SIZE)
         self.setAutoRepeat(True)
         self.setAutoRepeatDelay(400)
         self.setAutoRepeatInterval(80)
@@ -100,10 +99,26 @@ class _CustomSpinBoxMixin:
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
-        margin = 3
-        x = self.width() - _ARROW_SIZE - margin
-        self._up_btn.move(x, margin)
-        self._down_btn.move(x, self.height() - _ARROW_SIZE - margin)
+        # Each arrow gets HALF the spinbox's own height, computed
+        # dynamically -- NOT a fixed 22px each. A fixed 22px assumed a
+        # tall spinbox (needing ~50px+ total to stack two 22px arrows
+        # without overlapping), but a real spinbox is typically only
+        # ~28-32px tall -- reported directly: "the bottom increment
+        # button [was] the only visible one, the top increment button
+        # only filling about 20% of the box," exactly what two
+        # oversized, overlapping buttons anchored from opposite edges
+        # would look like (the later-painted one visually winning the
+        # shared space). Sizing each to exactly half the box's own
+        # height guarantees they always tile perfectly with zero
+        # overlap and zero gap, regardless of how tall or short this
+        # particular spinbox actually is.
+        margin = 2
+        arrow_w = _ARROW_WIDTH
+        x = self.width() - arrow_w - margin
+        usable_h = self.height() - 2 * margin
+        arrow_h = usable_h // 2
+        self._up_btn.setGeometry(x, margin, arrow_w, arrow_h)
+        self._down_btn.setGeometry(x, margin + arrow_h, arrow_w, usable_h - arrow_h)
 
     def paintEvent(self, event) -> None:
         painter = QPainter(self)

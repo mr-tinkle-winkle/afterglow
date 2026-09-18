@@ -8,12 +8,17 @@ main form directly.
 """
 from __future__ import annotations
 
+from PySide6.QtCore import Qt, QRectF
+from PySide6.QtGui import QPainter
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QFormLayout, QHBoxLayout, QLineEdit,
     QFileDialog, QLabel, QDialogButtonBox, QWidget,
 )
 
 from .. import keyframes
+from .. import config as config_module
+from .theme import Theme
+from .rounded_rect import rounded_rect_path
 from .custom_line_edit import CustomLineEdit
 from .custom_button import CustomButton
 
@@ -25,11 +30,17 @@ class AdvancedSoundDialog(QDialog):
                  default_error_sound: str, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Advanced Sound")
+        appearance = config_module.load().appearance
+        self._appearance = appearance
+        self._theme = Theme(appearance)
+        self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
 
         self._advanced_edits: dict[str, QLineEdit] = {}
         self._error_edits: dict[str, QLineEdit] = {}
 
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 20, 20, 20)
 
         layout.addWidget(QLabel("<b>Keyframe Sounds</b> -- played as each stage completes"))
         sounds_form = QFormLayout()
@@ -50,10 +61,26 @@ class AdvancedSoundDialog(QDialog):
         default_error_row, self._default_error_edit = self._make_sound_row(default_error_sound)
         error_form.addRow("Default (fallback):", default_error_row)
 
-        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
+        button_row = QHBoxLayout()
+        button_row.addStretch(1)
+        cancel_btn = CustomButton("Cancel")
+        cancel_btn.clicked.connect(self.reject)
+        button_row.addWidget(cancel_btn)
+        ok_btn = CustomButton("OK")
+        ok_btn.clicked.connect(self.accept)
+        button_row.addWidget(ok_btn)
+        layout.addLayout(button_row)
+
+    def paintEvent(self, event) -> None:
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        rect = QRectF(self.rect())
+        radius = self._appearance.rounded_corner_radius if self._appearance.rounded_corners_enabled else 16
+        if radius:
+            painter.fillPath(rounded_rect_path(rect, radius), self._theme.library_background())
+        else:
+            painter.fillRect(rect, self._theme.library_background())
+        painter.end()
 
     def _make_sound_row(self, current_path: str) -> tuple[QWidget, QLineEdit]:
         row_widget = QWidget()

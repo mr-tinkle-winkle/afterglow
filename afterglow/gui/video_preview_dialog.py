@@ -704,6 +704,19 @@ class VideoPreviewOverlay(QWidget):
         painter.end()
 
     def mousePressEvent(self, event) -> None:
+        # If a title edit is in progress, commit it explicitly first --
+        # same reasoning as VideoCard's own mousePressEvent fix: a
+        # click on the scrim is about to tear down this whole overlay
+        # (close_overlay(), below), which would otherwise lose an
+        # in-progress edit instead of saving it; a click elsewhere in
+        # the content box (the video, a button) doesn't naturally
+        # shift Qt's own focus away from the still-focused edit either.
+        if self.content._title_edit is not None:
+            global_pos = self.mapToGlobal(event.pos())
+            local_to_edit = self.content._title_edit.mapFromGlobal(global_pos)
+            if not self.content._title_edit.rect().contains(local_to_edit):
+                self.content._commit_title_edit()
+
         # A click anywhere on the SCRIM (i.e. not on the content box
         # itself) closes the overlay -- a completely ordinary
         # mousePressEvent now that this lives inside the same window,
