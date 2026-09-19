@@ -821,7 +821,18 @@ class _VideoGridTab(QWidget):
             self.grid_layout.removeWidget(card)
         for index, card in enumerate(self._cards):
             row, col = divmod(index, columns)
-            self.grid_layout.addWidget(card, row, col, Qt.AlignTop)
+            # Qt.AlignLeft, not just Qt.AlignTop -- without a horizontal
+            # constraint too, a card with nothing else sharing its row
+            # (most visibly with a library of exactly one video, where
+            # there's only a single cell in the whole grid) could get
+            # STRETCHED to fill its entire column's width rather than
+            # staying at its own fixed natural size -- reported directly
+            # as "if you only have 1 clip it resizes it to match the
+            # library." AlignLeft pins it to its own natural width
+            # regardless of how much column space happens to be
+            # available, exactly like every other populated row already
+            # looks once there's more than one card to share space with.
+            self.grid_layout.addWidget(card, row, col, Qt.AlignLeft | Qt.AlignTop)
         self._current_columns = columns
 
         # Without an absorbing row after the real content, QGridLayout

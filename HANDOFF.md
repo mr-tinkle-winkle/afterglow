@@ -328,6 +328,73 @@ Seven consecutive batches of Library/Settings/appearance
 features/bug fixes, given together each time. Newest first.
 
 ### This session
+1. **Context menu -- reverted to the pre-FiltersPopup QMenu-based
+   version, per Max's own direct request**, after the Qt.Popup rebuild
+   still didn't reliably stay open AND looked worse than the version
+   before it. `_build_filters_menu`, `_open_filters_menu_for_self`,
+   the "Edited" `CustomCheckBox`-via-`QWidgetAction`, and the nested
+   `_NonClosingMenu` category submenus are all back exactly as they
+   were. `filters_popup.py` (the Qt.Popup-based `FiltersPopup`) is
+   left in the tree, unused, in case this gets picked up again later
+   -- explicitly set aside for now rather than attempting a sixth fix
+   blind, per Max's own "let's call it a day for fixing this one."
+2. **Scrubber pause-during-drag + real drag-to-seek from anywhere on
+   the track.** `_ClickToSeekSlider` now tracks its OWN
+   `_track_drag_active` state and manually emits
+   sliderPressed/sliderMoved/sliderReleased to exactly mirror a real
+   handle drag, rather than the previous one-shot "jump on press,
+   immediately synthesize release too" approach -- which worked for a
+   single click but couldn't support continuing to drag afterward, and
+   "you should be able to drag the scrubber around, even if you don't
+   click on it and rather click on the line" needed exactly that.
+   `VideoPreviewContent._on_scrub_start`/`_on_scrub_end` now pause
+   playback for the duration of any scrub (remembering whether it was
+   actually playing beforehand, so scrubbing an already-paused video
+   correctly leaves it paused afterward) and resume only if it
+   genuinely was playing when the drag started. Verified the full
+   cycle directly: pausing on drag start, continuous value updates
+   while dragging from a track-originated (not handle) press, resuming
+   on release only when it was playing before, and staying paused when
+   it wasn't.
+3. **Previewer fullscreen -- actually fullscreen now, no remaining
+   chrome.** Two more sources of "still in its own little window"
+   found and removed while entering the overlay-controls mode: the
+   Prev/Next arrows (still occupying their own space in `video_row`,
+   squeezing the video's own width even after the content box itself
+   was already sized to 100%) are now hidden entirely while
+   fullscreen, and BOTH this widget's own 16px outer margin AND the
+   video frame's own accent-colored border margin are set to zero --
+   restored to their normal values on exit. Verified directly: no
+   arrows, zero margins, zero border while expanded, and everything
+   restored correctly (arrows visible again, 16px margin, the border's
+   original nonzero width) on exit.
+4. **Single-clip card sizing bug -- found and fixed.** A card's own
+   `grid_layout.addWidget(card, row, col, Qt.AlignTop)` call had no
+   HORIZONTAL alignment constraint -- with more than one card sharing
+   a row, neighboring cards effectively pinned each column's width to
+   the cards' own fixed natural size, but a library with exactly ONE
+   video (a single cell in the whole grid, nothing else to constrain
+   its column) could let that lone card stretch to fill the entire
+   available column width instead of staying at its normal size --
+   reported directly as "resizes it to match the library." Added
+   `Qt.AlignLeft` alongside the existing `Qt.AlignTop`, pinning every
+   card to its own natural width regardless of how much column space
+   happens to be available. Verified directly: a library with exactly
+   one video and a library with eight both produce the identical card
+   width for that first card.
+5. **The vertical-resize bug -- investigated, no confirmed fix found
+   this session.** Checked for the most common causes (a fixed/
+   minimum/maximum size constraint somewhere on MainWindow or its
+   direct children, anything in `MainWindow.resizeEvent` that could
+   compute a height-based constraint) and found nothing conclusive.
+   Leading (unconfirmed) suspicion: the new OS-level fullscreen
+   previewer feature added this same session -- `showFullScreen()`/
+   `showNormal()` transitions can sometimes leave a window's resize
+   behavior in an odd state depending on the window manager, though
+   this wasn't verified against Max's actual environment. Flagged
+   honestly as unresolved rather than shipping a guessed fix.
+
+### Previous session
 Three direct follow-up reports on the previous round, all three
 genuine bugs, all three found and fixed.
 

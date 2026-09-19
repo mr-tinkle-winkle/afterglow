@@ -1001,7 +1001,7 @@ class VideoCard(QWidget):
         multi = len(target_ids) > 1
         count_suffix = f" ({len(target_ids)})" if multi else ""
 
-        menu = QMenu(self)
+        menu = _NonClosingMenu(self)
         menu.setStyleSheet(_menu_stylesheet(self._appearance))
         # Edit/Rename only make sense for exactly one video at a time --
         # hidden rather than shown-but-disabled for a multi-selection.
@@ -1016,26 +1016,35 @@ class VideoCard(QWidget):
         favorite_action = menu.addAction("Unfavorite" if all_favorited else "Favorite")
         upload_action = menu.addAction(f"Upload{count_suffix}")
 
-        # A plain QAction now, not a QMenu submenu -- see filters_popup.py's
-        # own module docstring for why: four separate QMenu-level fixes for
-        # "stays open while toggling several checkboxes" didn't hold up, so
-        # this now opens a genuine Qt.Popup widget (FiltersPopup) instead,
-        # positioned where the submenu used to appear, right after this
-        # main menu closes normally (which is fine -- the interactive part
-        # that needed to stay open moves to that separate popup, not this
-        # one-shot "open Filters" click).
-        filters_action = menu.addAction("Filters...")
+        filters_menu = self._build_filters_menu(menu, target_ids, target_videos)
+        menu.addMenu(filters_menu)
 
-        # A plain checkable action, not a custom checkbox -- unlike
-        # Filters (where staying open to toggle several tags in one visit
-        # genuinely matters), "Edited" is a single one-shot toggle, and
-        # the menu closing right after it -- completely normal QAction
-        # behavior -- is exactly as expected, the same as Favorite just
-        # above.
+        # A single "Edited" checkbox instead of two separate "Mark as
+        # Edited"/"Mark as Unedited" actions -- covers both directions
+        # in one control, per Max's own preference. Checked only when
+        # EVERY selected video already has has_edit set; toggling it
+        # sets ALL of them to the checkbox's new state (so checking it
+        # on a mixed selection marks everything edited in one go,
+        # rather than needing to reason about which ones already were).
+        # Embedded via QWidgetAction like the Filters checkboxes, and
+        # this menu is a _NonClosingMenu for exactly the same reason --
+        # toggling it shouldn't close the whole menu either.
         all_edited = all(v.has_edit for v in target_videos)
-        edited_action = menu.addAction(f"Edited{count_suffix}")
-        edited_action.setCheckable(True)
-        edited_action.setChecked(all_edited)
+        edited_checkbox = CustomCheckBox(f"Edited{count_suffix}", menu)
+        edited_checkbox.setChecked(all_edited)
+
+        def _on_edited_toggled(checked: bool) -> None:
+            for vid in target_ids:
+                if checked:
+                    library.mark_as_edited(vid)
+                else:
+                    library.mark_as_unedited(vid)
+            self.tags_changed.emit()  # reuses this signal purely to trigger a refresh -- nothing tag-related actually changed
+
+        edited_checkbox.toggled.connect(_on_edited_toggled)
+        edited_action = QWidgetAction(menu)
+        edited_action.setDefaultWidget(edited_checkbox)
+        menu.addAction(edited_action)
 
         copy_action = menu.addAction(f"Copy{count_suffix}")
         delete_action = menu.addAction(f"Delete{count_suffix}")
@@ -1052,15 +1061,6 @@ class VideoCard(QWidget):
         elif chosen == upload_action:
             for vid in target_ids:
                 self.upload_requested.emit(vid)
-        elif chosen == filters_action:
-            self._open_filters_popup(target_ids, target_videos, self.mapToGlobal(pos))
-        elif chosen == edited_action:
-            for vid in target_ids:
-                if edited_action.isChecked():
-                    library.mark_as_edited(vid)
-                else:
-                    library.mark_as_unedited(vid)
-            self.tags_changed.emit()  # reuses this signal purely to trigger a refresh -- nothing tag-related actually changed
         elif chosen == copy_action:
             self._bulk_copy_to_clipboard(target_ids)
         elif chosen == delete_action:
@@ -1118,29 +1118,86 @@ class VideoCard(QWidget):
         return row
 
     def _open_filters_menu_for_self(self) -> None:
-        """The "Filters" action button opens the SAME FiltersPopup the
-        right-click menu's Filters entry does, scoped to this one
-        video only."""
-        self._open_filters_popup({self.video_id}, [self._video], self.mapToGlobal(self.rect().center()))
-
-    def _open_filters_popup(self, target_ids: set[int], target_videos: list["library.Video"],
-                             global_pos) -> None:
-        """A genuine Qt.Popup widget (see filters_popup.py's own module
-        docstring for the full story of why this replaced a QMenu
-        submenu) listing every known tag, grouped into the same
-        categories, each as a checkbox: checked when EVERY video in
-        target_ids already has that tag, toggling adds/removes it
-        across all of them at once."""
-        from .filters_popup import FiltersPopup
-        popup = FiltersPopup(
-            target_ids, target_videos,
-            on_tags_changed=self.tags_changed.emit,
-            on_create_new_filter=self._create_new_filter,
-            parent=self,
-        )
+        """The "Filters" action button opens the SAME side-opening
+        category submenu the right-click menu's Filters entry does
+        (_build_filters_menu), just exec'd directly instead of nested
+        under another menu item -- scoped to this one video only."""
+        filters_menu = self._build_filters_menu(self, {self.video_id}, [self._video])
         self.context_menu_opened.emit()
-        popup.closed.connect(self.context_menu_closed.emit)
-        popup.show_near(global_pos)
+        filters_menu.exec(self.mapToGlobal(self.rect().center()))
+        self.context_menu_closed.emit()
+
+    def _build_filters_menu(self, parent_menu: QMenu, target_ids: set[int],
+                             target_videos: list["library.Video"]) -> QMenu:
+        """Replaces the old single-tag "Add Filter" dialog with a
+        side-opening submenu (hover to open, like the category submenus
+        in the Library's own Filters dropdown) listing every known tag,
+        grouped into the same categories, each as a checkbox: checked
+        when EVERY video in target_ids already has that tag, toggling
+        adds/removes it across all of them at once. A "+" at the bottom
+        creates a brand new tag (globally -- mirrors the Library
+        dropdown's own "+ Add Filter", which also just creates the tag
+        without applying it to anything).
+
+        Reverted back to this QMenu-based version (from the Qt.Popup-
+        based FiltersPopup) per Max's own direct request, after that
+        rebuild both still didn't reliably stay open AND looked worse
+        than this version -- setting the underlying "stays open while
+        toggling" problem aside for now rather than attempting a sixth
+        fix blind. filters_popup.py is left in the tree, unused, in
+        case a future session picks this back up."""
+        menu = _NonClosingMenu("Filters", parent_menu)
+        menu.setStyleSheet(_menu_stylesheet(self._appearance))
+        tag_icon_paths = library.tag_icons()  # {tag_name: icon_path}, only for tags that have one set
+
+        def make_checkbox(tag: str, target_menu: QMenu) -> None:
+            leading_icon = None
+            icon_path = tag_icon_paths.get(tag)
+            if icon_path and Path(icon_path).exists():
+                pixmap = QPixmap(icon_path)
+                if not pixmap.isNull():
+                    leading_icon = pixmap
+            checkbox = CustomCheckBox(tag, target_menu, leading_icon=leading_icon)
+            checkbox.setChecked(all(tag in v.tags for v in target_videos))
+
+            def on_toggled(checked: bool, tag=tag) -> None:
+                for vid in target_ids:
+                    if checked:
+                        library.add_tag_to_video(vid, tag)
+                    else:
+                        library.remove_tag_from_video(vid, tag)
+                self.tags_changed.emit()
+
+            checkbox.toggled.connect(on_toggled)
+            action = QWidgetAction(target_menu)
+            action.setDefaultWidget(checkbox)
+            target_menu.addAction(action)
+
+        all_tags = library.all_known_tags()
+        grouped, uncategorized = library.tags_grouped_by_category()
+
+        if not all_tags:
+            no_tags_action = menu.addAction("(no tags yet)")
+            no_tags_action.setEnabled(False)
+
+        for category_name, tag_names in grouped.items():
+            category_menu = _NonClosingMenu(category_name, menu)
+            category_menu.setStyleSheet(_menu_stylesheet(self._appearance))
+            for tag in tag_names:
+                make_checkbox(tag, category_menu)
+            menu.addMenu(category_menu)
+
+        for tag in uncategorized:
+            make_checkbox(tag, menu)
+
+        menu.addSeparator()
+        add_filter_btn = CustomButton("+ Add Filter")
+        add_filter_btn.clicked.connect(self._create_new_filter)
+        add_filter_action = QWidgetAction(menu)
+        add_filter_action.setDefaultWidget(add_filter_btn)
+        menu.addAction(add_filter_action)
+
+        return menu
 
     def _create_new_filter(self) -> None:
         from .add_filter_dialog import AddFilterDialog

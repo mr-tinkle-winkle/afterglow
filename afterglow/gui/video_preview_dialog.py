@@ -213,13 +213,34 @@ class _FullscreenButton(QAbstractButton):
 
 
 class _ClickToSeekSlider(QSlider):
-    """A QSlider that jumps DIRECTLY to wherever you click on its track,
-    instead of QSlider's own default of moving one page-step toward the
-    click -- used for both the scrubber and the volume slider, per
-    Max's direct request ("clicking on spots on the playback line and
-    volume line... teleports the player to that part"). Dragging the
-    handle itself is completely unaffected -- this only changes what a
-    plain click somewhere else on the track does."""
+    """A QSlider that jumps DIRECTLY to wherever you click on its track
+    (instead of QSlider's own default of moving one page-step toward
+    it) AND lets you continue dragging from there -- "you should be
+    able to drag the scrubber around, even if you don't click on it
+    and rather click on the line," per Max's direct request. Used for
+    both the scrubber and the volume slider. Dragging the handle
+    itself is completely unaffected -- this only changes what starting
+    a drag somewhere ELSE on the track does.
+
+    Tracks its own `_track_drag_active` state rather than relying on
+    QSlider's internal one, since that internal state is only ever set
+    up by QSlider's OWN mousePressEvent -- which is deliberately NOT
+    called for a track click (calling it would let QSlider's own
+    page-step reaction override the direct jump this makes instead).
+    sliderPressed/sliderMoved/sliderReleased are emitted manually here
+    to exactly mirror what a real handle drag would produce, so
+    everything connected to those (in VideoPreviewContent: pausing for
+    the duration of a drag, the live scrub preview, the actual seek on
+    release) keeps working identically regardless of which kind of
+    drag started it."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._track_drag_active = False
+
+    def _value_at(self, pos) -> int:
+        fraction = min(1.0, max(0.0, pos.x() / max(1, self.width())))
+        return round(self.minimum() + fraction * (self.maximum() - self.minimum()))
 
     def mousePressEvent(self, event) -> None:
         if event.button() == Qt.LeftButton:
@@ -228,45 +249,37 @@ class _ClickToSeekSlider(QSlider):
             )
             pos = event.position().toPoint() if hasattr(event, "position") else event.pos()
             if not handle_rect.contains(pos):
-                # A click somewhere else on the track -- jump directly
-                # there. NOT calling super() for this specific case:
-                # QSlider's own default mousePressEvent, for a click
-                # that didn't land on the handle, does its own separate
-                # page-step-based jump, which would silently override
-                # the direct jump just made here. A click ON the handle
-                # itself (the branch below) still goes through super()
-                # completely normally, which is what actually emits
-                # sliderPressed/sliderMoved/sliderReleased and sets up
-                # proper drag tracking -- skipping THAT unconditionally
-                # would have broken ordinary handle-dragging entirely,
-                # not just changed what a track click does.
-                fraction = pos.x() / max(1, self.width())
-                fraction = min(1.0, max(0.0, fraction))
-                value = round(self.minimum() + fraction * (self.maximum() - self.minimum()))
-                self.setValue(value)
-                self.sliderMoved.emit(value)
-                # ALSO emit sliderReleased explicitly, right away --
-                # reported directly that a track click "flicks it to
-                # it but immediately comes back": since super()'s own
-                # press handling never ran for this branch, Qt's
-                # internal "am I mid-drag" state was never set up
-                # either, so the mouse release that naturally follows
-                # this click was never recognized as completing a
-                # drag -- sliderReleased (which is what actually
-                # triggers the real seek, via _on_scrub_end) never
-                # fired at all. The slider's VALUE visibly jumped
-                # (setValue above), but nothing ever actually seeked,
-                # so the next routine position update from mpv -- still
-                # playing from the old, unseeked position -- snapped
-                # the handle right back. A click-to-seek is
-                # conceptually a press-and-release in the same
-                # instant, so synthesizing sliderReleased here too
-                # (not just sliderMoved) is what makes that instant
-                # click actually behave like a completed one.
-                self.sliderReleased.emit()
+                # A click somewhere else on the track -- starts a drag
+                # right here, rather than a one-shot jump: sliderPressed
+                # (not sliderMoved yet) so anything listening for "a
+                # drag just started" (pausing playback, see
+                # VideoPreviewContent._on_scrub_start) reacts the same
+                # way it would for a handle-originated drag, THEN jump
+                # to this position.
+                self._track_drag_active = True
+                self.sliderPressed.emit()
+                self.setValue(self._value_at(pos))
+                self.sliderMoved.emit(self.value())
                 event.accept()
                 return
         super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event) -> None:
+        if self._track_drag_active and (event.buttons() & Qt.LeftButton):
+            pos = event.position().toPoint() if hasattr(event, "position") else event.pos()
+            self.setValue(self._value_at(pos))
+            self.sliderMoved.emit(self.value())
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:
+        if self._track_drag_active:
+            self._track_drag_active = False
+            self.sliderReleased.emit()
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
 
     def _style_option(self):
         from PySide6.QtWidgets import QStyleOptionSlider
@@ -580,6 +593,15 @@ class VideoPreviewContent(QWidget):
 
     def _on_scrub_start(self) -> None:
         self._seeking = True
+        # "if you keep holding click it should leave the video paused
+        # until you let go of click" -- pauses for the duration of the
+        # drag, remembering whether it was actually playing beforehand
+        # so release only resumes it if it genuinely was (scrubbing an
+        # already-paused video should just stay paused afterward).
+        self._was_playing_before_scrub = not self.video_widget.is_paused
+        if self._was_playing_before_scrub:
+            self.video_widget.pause()
+            self.play_pause_btn.setChecked(False)
 
     def _on_scrub_moved(self, value: int) -> None:
         if self._duration > 0:
@@ -590,6 +612,9 @@ class VideoPreviewContent(QWidget):
         if self._duration > 0:
             self.video_widget.seek(self.scrubber.value() / 1000 * self._duration)
         self._seeking = False
+        if getattr(self, "_was_playing_before_scrub", False):
+            self.video_widget.play()
+            self.play_pause_btn.setChecked(True)
 
     # ------------------------------------------------------------ volume
 
@@ -641,7 +666,19 @@ class VideoPreviewContent(QWidget):
         into plain floating children of `self`, positioned via manual
         geometry instead of layout management, since a layout can't
         make two widgets occupy the same screen space the video itself
-        already fills."""
+        already fills.
+
+        ALSO hides the Prev/Next arrows and strips every remaining
+        margin/border around the video -- "get rid of the video switch
+        arrows and the background... it should be FULLSCREEN... nothing
+        from afterglow on screen unless the popups are currently over
+        the screen." The content box itself was already resized to
+        100% of the window by a previous fix, but the arrows (still
+        occupying their own space in video_row) and this widget's own
+        16px outer margin and the video frame's own accent border were
+        ALL still visibly squeezing the video into what still looked
+        like "its own little window" even though the outer box itself
+        was already the full screen size."""
         self._outer_layout.removeWidget(self._header_box)
         self._outer_layout.removeWidget(self._transport_box)
         self._header_box.setParent(self)
@@ -651,6 +688,11 @@ class VideoPreviewContent(QWidget):
         self._transport_box.show()
         self._header_box.raise_()
         self._transport_box.raise_()
+
+        self.prev_btn.hide()
+        self.next_btn.hide()
+        self._outer_layout.setContentsMargins(0, 0, 0, 0)
+        self._video_frame._layout.setContentsMargins(0, 0, 0, 0)
 
         self.setMouseTracking(True)
         self._overlay_visible = True
@@ -672,6 +714,12 @@ class VideoPreviewContent(QWidget):
         self._header_box.show()
         self._transport_box.show()
         self._overlay_visible = True
+
+        self.prev_btn.show()
+        self.next_btn.show()
+        self._outer_layout.setContentsMargins(16, 16, 16, 16)
+        border = config_module.load().appearance.unedited_selected_border_width
+        self._video_frame._layout.setContentsMargins(border, border, border, border)
 
     def _position_overlay_controls(self) -> None:
         header_h = self._header_box.sizeHint().height()
