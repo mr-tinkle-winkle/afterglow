@@ -673,6 +673,21 @@ class SettingsPage(QWidget):
         )
         note.setWordWrap(True)
         layout.addWidget(note)
+
+        self.auto_copy_mp4_checkbox = CustomCheckBox("Auto Copy as MP4")
+        self.auto_copy_mp4_checkbox.setChecked(self._settings.auto_copy_as_mp4)
+        self.auto_copy_mp4_checkbox.toggled.connect(self._save)
+        layout.addWidget(self.auto_copy_mp4_checkbox)
+
+        mp4_note = QLabel(
+            "When on, Copying a video whose file isn't already .mp4 puts a "
+            ".mp4-named copy on the clipboard instead of the original "
+            "extension -- a pure rename via a fresh copy, not a remux or "
+            "re-encode of any kind. The original file in the library is "
+            "never touched."
+        )
+        mp4_note.setWordWrap(True)
+        layout.addWidget(mp4_note)
         return group
 
     def _export_settings(self) -> None:
@@ -823,6 +838,7 @@ class SettingsPage(QWidget):
         self._settings.error_sounds = dict(self._pending_error_sounds)
         self._settings.default_error_sound_path = self._pending_default_error_sound
         self._settings.offload_library_scan_to_daemon = self.offload_scan_checkbox.isChecked()
+        self._settings.auto_copy_as_mp4 = self.auto_copy_mp4_checkbox.isChecked()
 
         a = self._settings.appearance
         a.rounded_corners_enabled = self.rounded_corners_check.isChecked()

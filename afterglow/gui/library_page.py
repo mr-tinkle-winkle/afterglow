@@ -370,7 +370,20 @@ class _VideoGridTab(QWidget):
         self._card_signal_debounce = QTimer(self)
         self._card_signal_debounce.setSingleShot(True)
         self._card_signal_debounce.setInterval(150)
-        self._card_signal_debounce.timeout.connect(self.refresh)
+        self._card_signal_debounce.timeout.connect(self._on_card_signal_debounce_timeout)
+        # Counts how many cards currently have a context menu open --
+        # this is the actual root cause finally found for "the context
+        # menu still closes when checking a box," after two earlier
+        # fixes (both aimed at QMenu's OWN closing behavior) didn't
+        # hold up: menu.exec() runs its own nested event loop, which
+        # STILL processes timers -- so this debounce firing WHILE a
+        # menu is open would rebuild the whole grid (destroying the
+        # VideoCard the open menu is parented to), closing the menu as
+        # a side effect of its own parent being destroyed, completely
+        # independent of anything QMenu itself does. Rescheduling
+        # instead of firing while any menu is open avoids that
+        # entirely.
+        self._menu_open_count = 0
 
         self.refresh()
 
@@ -526,34 +539,25 @@ class _VideoGridTab(QWidget):
         return self._wrap_scrollable(page)
 
     @staticmethod
-    def _wrap_scrollable(page: QWidget) -> QScrollArea:
-        """Bounds each SortPopover page to a comfortable fixed height,
-        capped at 320px so a Filters page with many tags can't grow the
-        whole popover past the screen -- but sized to the page's OWN
-        actual content when that's shorter, not always forced to the
-        full 320px. Forcing every page to exactly 320px regardless of
-        content was the real cause of a reported bug that looked like
-        two different problems at once: a short page (few tags) showed
-        a lot of dead space at the bottom (setWidgetResizable(True)
-        stretches a too-short widget to fill the whole fixed viewport,
-        so THAT PAGE'S OWN addStretch(1) was then filling real, visible
-        blank space instead of just "not mattering"); a long page (many
-        tags) could still look "cut off" at exactly 320px with no
-        stretch to blame, since content genuinely exceeded the capped
-        height. Computing the actual needed height directly (up to the
-        cap) fixes the short-page case; the long-page case still
-        scrolls correctly past the cap, which was never broken -- just
-        easy to misread as the same bug from the short-page symptom
-        sitting right next to it."""
-        scroll = SmoothScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QScrollArea.NoFrame)
-        natural_height = page.sizeHint().height()
-        scroll.setFixedHeight(min(max(natural_height, 60), 320))
-        scroll.viewport().setAutoFillBackground(False)
-        scroll.setAttribute(Qt.WA_TranslucentBackground, True)
-        scroll.setWidget(page)
-        return scroll
+    def _wrap_scrollable(page: QWidget) -> QWidget:
+        """Used to bound each SortPopover page to a fixed, capped
+        height inside a scrolling viewport -- removed entirely per
+        Max's own direct suggestion after the padding/cutoff issue
+        this was involved in persisted even after the previous fix to
+        it (computing each page's own actual content height instead of
+        forcing a fixed 320px). The popover itself now simply grows to
+        fit however tall a given page's content actually is, with no
+        cap and no scrolling at all -- trading "a very long tag list
+        could push the popover past the screen" for "there is no
+        scrolling-related sizing bug left to have," which is the
+        simpler, more reliable trade given the number of attempts the
+        capped/scrolling version needed and still didn't fully
+        resolve. Kept as a no-op passthrough (not deleted, and every
+        call site unchanged) so a future session could reintroduce a
+        cap here specifically if a genuinely huge tag list turns out
+        to need one."""
+        page.setAttribute(Qt.WA_TranslucentBackground, True)
+        return page
 
     def _toggle_favorite_filter(self, checked: bool) -> None:
         self._favorite_only = checked
@@ -618,6 +622,31 @@ class _VideoGridTab(QWidget):
         self.refresh()
 
     # ------------------------------------------------------------ grid rendering
+
+    def _on_context_menu_opened(self) -> None:
+        self._menu_open_count += 1
+
+    def _on_context_menu_closed(self) -> None:
+        self._menu_open_count = max(0, self._menu_open_count - 1)
+        # A toggle made just before the menu closed may have queued a
+        # refresh that got rescheduled below while the menu was still
+        # open -- fire it now rather than waiting out another full
+        # interval for something the user is already done with.
+        if self._menu_open_count == 0 and self._card_signal_debounce.isActive():
+            self._card_signal_debounce.stop()
+            self.refresh()
+
+    def _on_card_signal_debounce_timeout(self) -> None:
+        if self._menu_open_count > 0:
+            # Don't rebuild the grid (destroying every VideoCard,
+            # including whichever one a currently-open context menu is
+            # parented to) while that menu is still open -- reschedule
+            # instead of refreshing right now; _on_context_menu_closed
+            # picks this up the moment the menu actually closes instead
+            # of waiting out a full extra interval.
+            self._card_signal_debounce.start()
+            return
+        self.refresh()
 
     def refresh(self) -> None:
         # Leading-edge debounce: the FIRST call in any 750ms window acts
@@ -704,6 +733,8 @@ class _VideoGridTab(QWidget):
             card.deleted.connect(lambda _vid: self.refresh())
             card.tags_changed.connect(self._card_signal_debounce.start)
             card.renamed.connect(self._card_signal_debounce.start)
+            card.context_menu_opened.connect(self._on_context_menu_opened)
+            card.context_menu_closed.connect(self._on_context_menu_closed)
             card.upload_requested.connect(self._handle_upload_request)
             card.filter_left_clicked.connect(self._on_icon_left_clicked)
             card.filter_right_clicked.connect(self._on_icon_right_clicked)

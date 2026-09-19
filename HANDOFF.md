@@ -328,6 +328,82 @@ Seven consecutive batches of Library/Settings/appearance
 features/bug fixes, given together each time. Newest first.
 
 ### This session
+Three persistent bugs (two of which had already survived multiple
+fix attempts) finally root-caused for real, plus a new feature.
+
+1. **Context menu closing on a checkbox toggle -- the ACTUAL root
+   cause found, after two fixes aimed at the wrong thing entirely.**
+   Both prior attempts assumed QMenu itself had some internal closing
+   mechanism not routing through the Python overrides -- reasonable,
+   but wrong. The real cause: `menu.exec()` runs its own NESTED event
+   loop, which still processes timers -- so the debounced grid-refresh
+   timer (added a few sessions back to fix toggle lag) could fire
+   WHILE a context menu was still open, rebuilding the entire grid
+   from scratch and destroying the very VideoCard the open menu was
+   parented to. The menu closing was purely a side effect of its own
+   parent widget being deleted out from under it -- completely
+   unrelated to anything QMenu's own behavior does, which is exactly
+   why fixing QMenu's behavior twice never touched it. Fixed properly
+   this time: VideoCard gained `context_menu_opened`/
+   `context_menu_closed` signals (emitted around both `menu.exec()`
+   call sites), and `_VideoGridTab` now tracks how many menus are
+   currently open, deferring (rescheduling, not dropping) the debounced
+   refresh for as long as any are -- firing it promptly the moment the
+   last one closes instead. Verified by directly reproducing the race:
+   open a "menu," trigger the debounced refresh, confirm the grid does
+   NOT rebuild while the menu is open, then confirm the deferred
+   refresh actually runs immediately once the menu closes.
+2. **Click-off-to-save only worked on the SAME card -- fixed with an
+   app-wide event filter.** The previous fix checked clicks within one
+   card's own `mousePressEvent`, which could never see a click landing
+   on a genuinely different widget (a different card, the empty grid
+   background) -- Qt delivers a mouse press to whichever widget the
+   cursor is actually over, not to every other widget in the app.
+   `VideoCard._rename()` now installs itself as an
+   `QApplication`-wide event filter for as long as it's editing
+   (removed the moment the edit commits), watching for a
+   `QEvent.MouseButtonPress` ANYWHERE and committing if it lands
+   outside the edit box, regardless of what it actually landed on.
+   Caught a real flaw in my OWN verification while testing this, not
+   after: calling `.mousePressEvent()` directly on a widget bypasses
+   Qt's real event dispatch entirely (and with it, every installed
+   event filter) -- a test written that way would have falsely
+   "confirmed" a fix that only works for real Qt-delivered clicks.
+   Fixed by using `QApplication.sendEvent()` instead, which correctly
+   exercises the whole dispatch chain. Verified against both a
+   different card and a click on empty background.
+3. **Filters tab padding -- removed the scroller entirely, per Max's
+   own direct suggestion**, rather than continuing to refine the
+   capped/scrolling version through a third attempt.
+   `_wrap_scrollable()` is now a documented no-op passthrough (kept,
+   not deleted, so a future session could reintroduce a cap if a truly
+   huge tag list ever needs one) -- the popover simply grows to fit
+   however tall a page's content actually is, no cap, no scrolling.
+   Verified against the exact multi-category screenshot scenario from
+   the report: full natural height, nothing hidden or capped.
+4. **New: "Auto Copy as MP4"** (Settings > Advanced, on by default) --
+   `VideoCard._resolve_copy_path()`: when on, Copying a video whose
+   file isn't already `.mp4` puts a freshly-made `.mp4`-named COPY on
+   the clipboard instead of the original extension -- a pure rename
+   via a copy, explicitly NOT a remux or re-encode of any kind (so not
+   guaranteed to be genuinely valid MP4 if the underlying container/
+   codec really isn't compatible -- accepted on purpose, exactly as
+   asked for). The library's own tracked file is never touched;
+   repeated copies of the same video overwrite the same temp path
+   rather than accumulating new ones. Verified directly: a non-mp4
+   source gets copied and renamed with byte-identical content, the
+   setting defaults to on, turning it off leaves the original path
+   untouched, and an already-.mp4 file is never copied at all.
+
+Caught one more real bug in my OWN edit while wiring the Settings
+checkbox for item 4, not left for Max to hit: a `str_replace` meant to
+insert the new checkbox's note label accidentally consumed the
+following method's own `def _export_settings(self):` line, which
+would have crashed Settings outright on construction -- caught
+immediately by actually constructing a `SettingsPage` and checking,
+not assumed to be fine because the edit "looked right."
+
+### Previous session
 Follow-up bug reports on the last batch, plus the remaining custom-
 Settings holdouts.
 

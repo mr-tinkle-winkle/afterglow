@@ -9,12 +9,14 @@ from __future__ import annotations
 
 from pathlib import Path
 from datetime import datetime
+import tempfile
+import shutil
 
-from PySide6.QtCore import Qt, Signal, QSize, QRectF, QTimer, QVariantAnimation
+from PySide6.QtCore import Qt, Signal, QSize, QRectF, QTimer, QVariantAnimation, QEvent
 from PySide6.QtGui import QPixmap, QPainter, QColor, QIcon, QFontMetrics, QPen
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QMenu, QMessageBox, QLineEdit,
-    QHBoxLayout, QInputDialog, QWidgetAction, QDialog,
+    QHBoxLayout, QInputDialog, QWidgetAction, QDialog, QApplication,
 )
 
 from .. import library, thumbnails, config as config_module
@@ -296,6 +298,8 @@ class VideoCard(QWidget):
     filter_right_clicked = Signal(str)  # tag_name, ditto (block)
     clicked = Signal(int, object)       # video_id, Qt.KeyboardModifiers -- parent handles selection
     preview_requested = Signal(object, object)  # video, neighbor_provider -- bubbles up to MainWindow
+    context_menu_opened = Signal()  # a menu.exec() is about to block -- parent should pause any grid rebuild
+    context_menu_closed = Signal()  # that exec() returned -- safe to rebuild again
 
     def __init__(self, video: "library.Video", parent=None, highlight_enabled: bool = True,
                  font_scale: float = 1.0, get_selected_ids=None, ensure_selected=None,
@@ -1045,7 +1049,9 @@ class VideoCard(QWidget):
         copy_action = menu.addAction(f"Copy{count_suffix}")
         delete_action = menu.addAction(f"Delete{count_suffix}")
 
+        self.context_menu_opened.emit()
         chosen = menu.exec(self.mapToGlobal(pos))
+        self.context_menu_closed.emit()
         if edit_action is not None and chosen == edit_action:
             self.edit_requested.emit(self.video_id)
         elif rename_action is not None and chosen == rename_action:
@@ -1117,7 +1123,9 @@ class VideoCard(QWidget):
         (_build_filters_menu), just exec'd directly instead of nested
         under another menu item -- scoped to this one video only."""
         filters_menu = self._build_filters_menu(self, {self.video_id}, [self._video])
+        self.context_menu_opened.emit()
         filters_menu.exec(self.mapToGlobal(self.rect().center()))
+        self.context_menu_closed.emit()
 
     def _build_filters_menu(self, parent_menu: QMenu, target_ids: set[int],
                              target_videos: list["library.Video"]) -> QMenu:
@@ -1214,15 +1222,16 @@ class VideoCard(QWidget):
         from PySide6.QtCore import QUrl, QMimeData
         from PySide6.QtWidgets import QApplication
 
+        auto_mp4 = config_module.load().auto_copy_as_mp4
         urls = []
         missing = []
         for vid in target_ids:
             video = library.get_video(vid)
             path = Path(video.path)
-            if path.exists():
-                urls.append(QUrl.fromLocalFile(str(path)))
-            else:
+            if not path.exists():
                 missing.append(str(path))
+                continue
+            urls.append(QUrl.fromLocalFile(str(self._resolve_copy_path(path, auto_mp4))))
         if missing:
             QMessageBox.warning(
                 self, "Copy Failed",
@@ -1232,6 +1241,30 @@ class VideoCard(QWidget):
             mime = QMimeData()
             mime.setUrls(urls)
             QApplication.clipboard().setMimeData(mime)
+
+    @staticmethod
+    def _resolve_copy_path(path: Path, auto_mp4: bool) -> Path:
+        """Returns the path that should actually go on the clipboard
+        for Copy -- the original, unless "Auto Copy as MP4" is on AND
+        the file isn't already .mp4, in which case a fresh copy of the
+        exact same bytes is made in the system temp directory under a
+        .mp4 name instead, and THAT path is returned. A pure rename
+        via a copy, not a remux/re-encode of any kind -- the library's
+        own tracked file at `path` is never touched, since repointing
+        the clipboard at a renamed version of it directly would mean
+        either mutating the library's own path bookkeeping or lying
+        about what file is actually still there. Deliberately not
+        guaranteed to produce genuinely valid, standards-conformant MP4
+        if the underlying container/codec really isn't MP4-compatible
+        -- it's exactly what "no remuxing or encoding, just a rename"
+        asked for, accepting that tradeoff on purpose. Repeated copies
+        of the same video overwrite the same temp path rather than
+        accumulating a new file every time."""
+        if not auto_mp4 or path.suffix.lower() == ".mp4":
+            return path
+        temp_path = Path(tempfile.gettempdir()) / (path.stem + ".mp4")
+        shutil.copyfile(path, temp_path)
+        return temp_path
 
     def _bulk_delete(self, target_ids: set[int]) -> None:
         if len(target_ids) == 1:
@@ -1300,6 +1333,24 @@ class VideoCard(QWidget):
         self._title_autosave_timer.timeout.connect(self._autosave_title)
         self._title_autosave_timer.start()
 
+        # App-wide, not just this card's own mousePressEvent -- reported
+        # directly that "click off to save" only worked for a click on
+        # THIS SAME card, not a different card or empty background.
+        # Neither of those naturally routes through this card's own
+        # click handling at all (Qt delivers a mouse press to whichever
+        # widget the cursor is actually over, not to every OTHER widget
+        # in the app), so a per-card check could never catch them --
+        # only a genuinely app-wide filter sees every click everywhere.
+        QApplication.instance().installEventFilter(self)
+
+    def eventFilter(self, obj, event) -> bool:
+        if event.type() == QEvent.MouseButtonPress and self._title_edit is not None:
+            global_pos = event.globalPosition().toPoint() if hasattr(event, "globalPosition") else event.globalPos()
+            local_to_edit = self._title_edit.mapFromGlobal(global_pos)
+            if not self._title_edit.rect().contains(local_to_edit):
+                self._commit_title_edit()
+        return super().eventFilter(obj, event)
+
     def _autosave_title(self) -> None:
         """Runs once a second while editing -- persists the CURRENT
         text to the DB without emitting `renamed` (which would trigger
@@ -1317,6 +1368,7 @@ class VideoCard(QWidget):
     def _commit_title_edit(self) -> None:
         if self._title_edit is None:
             return
+        QApplication.instance().removeEventFilter(self)
         self._title_autosave_timer.stop()
         new_title = self._title_edit.text().strip()
         if new_title and new_title != self._video.title:
