@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QScrollArea, QFrame
+from .smooth_scroll_area import SmoothScrollArea
 
 from .. import library
 from .custom_button import CustomButton
@@ -50,7 +51,7 @@ class StatsPage(QWidget):
         header_row.addWidget(self.refresh_btn)
         outer.addLayout(header_row)
 
-        scroll = QScrollArea()
+        scroll = SmoothScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QScrollArea.NoFrame)
         body = QWidget()

@@ -9,16 +9,17 @@ deciding when to actually save (see SettingsPage for the save strategy).
 """
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, Signal, QPropertyAnimation, QEasingCurve
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QLabel, QLineEdit,
-    QSpinBox, QToolButton, QFileDialog, QFrame,
+    QToolButton, QFileDialog, QFrame,
 )
 
 from ..hotkeys import ComboError, parse_combo
 from .hotkey_record_dialog import HotkeyRecordDialog
 from .custom_line_edit import CustomLineEdit
-from .collapse_toggle_button import CollapseToggleButton
+from .collapse_toggle_button import CollapseToggleButton, _ANIM_DURATION_MS as _TOGGLE_ANIM_MS
+from .custom_spinbox import CustomSpinBox
 from .custom_button import CustomButton
 
 
@@ -58,7 +59,7 @@ class ClipConfigRow(QFrame):
         self.name_edit.textChanged.connect(self._on_any_change)
         form.addRow("Name:", self.name_edit)
 
-        self.length_spin = QSpinBox()
+        self.length_spin = CustomSpinBox()
         self.length_spin.setRange(1, 3600)
         self.length_spin.setSuffix(" sec")
         self.length_spin.setValue(length_seconds)
@@ -97,7 +98,39 @@ class ClipConfigRow(QFrame):
 
     def _on_toggle(self) -> None:
         expanded = self.toggle_btn.isChecked()
-        self.body.setVisible(expanded)
+        self._animate_body(expanded)
+
+    def _animate_body(self, expanded: bool) -> None:
+        """Glides the body open/closed in sync with the toggle button's
+        own arrow rotation (same _TOGGLE_ANIM_MS duration and OutCubic
+        easing) instead of the old instant setVisible(expanded)
+        teleport. Animates maximumHeight rather than a raw resize --
+        that's what lets the surrounding QVBoxLayout smoothly reflow
+        everything below this row as the body grows/shrinks, frame by
+        frame, rather than the layout just snapping in one jump."""
+        natural_height = self.body.sizeHint().height()
+        if expanded:
+            self.body.setVisible(True)
+            self.body.setMaximumHeight(0)
+            start, end = 0, natural_height
+        else:
+            start, end = self.body.height(), 0
+
+        anim = QPropertyAnimation(self.body, b"maximumHeight", self)
+        anim.setDuration(_TOGGLE_ANIM_MS)
+        anim.setEasingCurve(QEasingCurve.OutCubic)
+        anim.setStartValue(start)
+        anim.setEndValue(end)
+        if expanded:
+            # Lifts the cap back off entirely once open, so later
+            # content changes (e.g. picking a longer sound file path)
+            # aren't stuck capped at this one snapshot of the natural
+            # height taken when it was opened.
+            anim.finished.connect(lambda: self.body.setMaximumHeight(16777215))
+        else:
+            anim.finished.connect(lambda: self.body.setVisible(False))
+        anim.start()
+        self._body_anim = anim  # keep a reference so it isn't garbage-collected mid-animation
 
     def _on_any_change(self, *_args) -> None:
         self._update_summary()

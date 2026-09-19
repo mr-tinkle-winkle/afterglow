@@ -328,6 +328,1332 @@ Seven consecutive batches of Library/Settings/appearance
 features/bug fixes, given together each time. Newest first.
 
 ### This session
+Three direct follow-up reports on the previous round, all three
+genuine bugs, all three found and fixed.
+
+1. **Context menu STILL closing, and "looks worse than before" -- found
+   two concrete, real differences from the proven-working reference
+   implementations this was modeled on.** Compared `FiltersPopup`
+   directly against `SortPopover`/`SearchBubble` (both confirmed
+   working) line-by-line rather than guessing again, and found:
+   (a) `FiltersPopup` only set `Qt.Popup` alone, while BOTH working
+   references always pair it with `Qt.FramelessWindowHint` -- without
+   that, the popup could still pick up a native window-manager frame/
+   title bar despite Qt.Popup being set, which would explain "looks
+   worse" (a native frame around otherwise-rounded custom content)
+   AND is a plausible source of premature closing through an entirely
+   different mechanism than any of the four earlier QMenu-level
+   attempts were even looking at; (b) the flags were being set via a
+   separate `setWindowFlags()` call AFTER construction, not passed
+   directly to `super().__init__(parent, flags)` the way both
+   references do it -- setting window flags on an already-constructed
+   widget requires Qt to re-create the underlying platform window to
+   fully take effect, which doesn't reliably happen in every case.
+   Fixed both: flags now passed directly to the constructor, exactly
+   matching the proven pattern. Re-verified the popup still stays open
+   while toggling and still correctly reports closing.
+2. **Click-to-seek "flicks to it but immediately comes back" -- a real
+   bug in the fix itself, traced precisely.** `_ClickToSeekSlider`
+   correctly updated the slider's VISUAL value for a track click, but
+   skipping `super().mousePressEvent()` for that case (needed to stop
+   QSlider's own page-step reaction from overriding the jump) also
+   meant Qt's internal "am I mid-drag" state was never initialized --
+   so the mouse release that naturally follows a click was never
+   recognized as completing anything, and `sliderReleased` (which is
+   what actually triggers the real seek, via `_on_scrub_end`) never
+   fired at all. The slider's position visibly jumped, but nothing
+   ever actually sought, so the very next routine position update from
+   mpv -- still playing from the old, un-sought position -- snapped the
+   handle right back, exactly as reported. Fixed by explicitly
+   emitting `sliderReleased` immediately after the manual `setValue()`
+   for a track click, synthesizing the same "press-and-release
+   completed" signal a real drag-then-release would have produced.
+   Verified directly against the actual mpv `seek()` call this time
+   (not just the slider's own visual value): a click at 60% of a 10s
+   video now genuinely issues a seek to ~6.0s, and a subsequent
+   position update consistent with that seeked position doesn't snap
+   anything back.
+3. **"Auto hide/slide is good, but it should be ACTUALLY fullscreen" --
+   two remaining sources of padding/rounding found and removed.** The
+   WINDOW itself was already genuinely fullscreen (from last round's
+   fix), but the CONTENT box inside it was still sized to 97% of that
+   (leaving a visible ~3% margin all around) and its own `paintEvent`
+   still rounded its corners unconditionally regardless of fullscreen
+   state. Fixed both: content now fills 100% of the window with zero
+   margin while expanded, and corner rounding is skipped entirely in
+   that state (a rounded rect for something that's supposed to BE the
+   whole screen just clips its own corners against the scrim behind
+   it, which is what was actually being seen). Verified directly: the
+   content's geometry exactly matches the full window with no padding,
+   and a corner pixel is (within antialiasing noise) identical to a
+   pixel just inside it -- no real rounding -- while expanded; exiting
+   correctly restores the smaller, rounded, non-fullscreen size.
+
+### Previous session
+The context menu issue is finally resolved with a fundamentally
+different architecture (after four straight failed QMenu-level fixes),
+plus two substantial video previewer features and a real pre-existing
+keyboard bug caught along the way.
+
+1. **Context menu closing -- abandoned patching QMenu entirely, after
+   four fixes at that level all failed.** Rather than attempt a fifth
+   guess at QMenu's exact internal closing mechanism, the Filters
+   interaction (both the context menu's entry and the quick-action
+   button) now uses a genuine `Qt.Popup`-flagged custom widget
+   (`filters_popup.py`, `FiltersPopup`) -- the SAME proven technique
+   `SearchBubble`/`SortPopover` already rely on successfully elsewhere
+   in this exact codebase. Qt.Popup's own native behavior is precisely
+   "a click outside this widget closes it; clicks inside are delivered
+   normally and never close it on their own," which is exactly what
+   was needed and sidesteps whatever QMenu-specific mechanism was
+   actually responsible (still not identified with certainty across
+   four attempts). Also simplified "Edited" back to a plain checkable
+   QAction -- a single one-shot toggle closing the menu afterward is
+   completely normal, expected behavior (same as Favorite); the
+   persistent, repeatedly-reported problem was always specifically the
+   Filters list, where toggling several tags in one visit genuinely
+   needs to keep it open. Caught a real bug of my own while verifying
+   this, not left for Max to hit: connecting to the popup's
+   `destroyed` signal to track when it closes would likely never have
+   fired at all, since a Qt.Popup typically just HIDES (not destroys)
+   on an outside click -- fixed by adding an explicit `closed` signal
+   emitted from the popup's own `hideEvent` instead. Verified directly:
+   toggling a checkbox inside the popup leaves it open and actually
+   applies the tag change, and closing it correctly fires the tracking
+   signal library_page.py depends on to know when it's safe to run a
+   deferred grid refresh again.
+2. **Ghost playback line + click-to-seek on both sliders.** The
+   scrubber and volume slider both gained an explicit
+   `QSlider::add-page` style (previously unstyled, so the "unplayed"
+   remainder just showed the plain groove color and read as "the line
+   just ends") -- a semi-transparent lighter overlay now makes the
+   rest of the timeline clearly visible as its own distinct thing. New
+   `_ClickToSeekSlider` (used for both) jumps directly to wherever you
+   click on the track, rather than QSlider's own default of moving one
+   page-step toward it. Caught a real bug in my own first attempt:
+   skipping `super().mousePressEvent()` unconditionally for every left
+   click would have broken ORDINARY handle-dragging entirely (that's
+   what actually emits sliderPressed/sliderMoved/sliderReleased) --
+   fixed by distinguishing a click ON the handle itself (goes through
+   completely normal Qt handling) from a click elsewhere on the track
+   (jumps directly, bypassing only QSlider's own page-step reaction to
+   that specific case). Verified both: clicking the track seeks
+   correctly, and clicking-then-checking the handle's own drag
+   handling still fires normally.
+3. **Actual OS-level fullscreen with auto-hiding, sliding overlay
+   controls.** Toggling fullscreen now calls `showFullScreen()` on the
+   actual MainWindow (this widget is embedded inside it, not a
+   separate top-level window), not just filling most of the existing
+   overlay. While fullscreen, the header/transport boxes are
+   reparented out of their normal layout slots into floating children
+   positioned via manual geometry, overlaying the video directly
+   rather than occupying their own separate space above/below it --
+   auto-hiding via slide animation (QPropertyAnimation on geometry,
+   not opacity or a teleport) after 2 seconds of no mouse movement or
+   immediately on the window losing focus, sliding back in on any
+   mouse movement. Exiting fullscreen reparents them straight back
+   into the normal QVBoxLayout. Verified the full cycle directly:
+   hide-after-inactivity, show-on-mouse-movement, and clean layout
+   restoration on exit -- and caught a real bug in my OWN test while
+   confirming this, not a product bug: an inactivity timer sped up for
+   an earlier part of the same test was left running and kept
+   re-firing during a later wait, hiding the controls again right
+   after they'd just been shown -- not a flaw in the actual show/hide
+   logic itself.
+4. **Frame-by-frame nudging** -- `,`/`<` steps one frame backward,
+   `.`/`>` one frame forward (new `MpvVideoWidget.frame_step()`/
+   `frame_back_step()`, thin wrappers around mpv's own commands of the
+   same name, which already pause playback as part of what they do).
+   "Holding it nudges many frames in quick succession until let go"
+   comes entirely for free from the OS/Qt's own key-repeat mechanism
+   (a held key re-delivers keyPressEvent repeatedly) -- no separate
+   timer needed, just acting on every delivery regardless of whether
+   it's a repeat. While wiring this in, found and fixed a genuine
+   PRE-EXISTING bug, not something introduced this session:
+   `VideoPreviewOverlay` is what actually holds keyboard focus (its
+   own `showEvent` calls `self.setFocus()` on itself), but its
+   `keyPressEvent` never forwarded anything to
+   `VideoPreviewContent.keyPressEvent` for any key other than Escape
+   -- meaning Space-bar play/pause (and now frame-step) could never
+   actually have been reachable in the running app at all, regardless
+   of whatever `VideoPreviewContent` itself implemented. Fixed by
+   having the overlay explicitly forward unhandled keys to
+   `self.content.keyPressEvent()`. Verified all four key variants
+   step correctly, that simulated auto-repeat presses each nudge a
+   frame, and that Space now actually reaches the content widget too.
+
+### Previous session
+Three persistent bugs (two of which had already survived multiple
+fix attempts) finally root-caused for real, plus a new feature.
+
+1. **Context menu closing on a checkbox toggle -- the ACTUAL root
+   cause found, after two fixes aimed at the wrong thing entirely.**
+   Both prior attempts assumed QMenu itself had some internal closing
+   mechanism not routing through the Python overrides -- reasonable,
+   but wrong. The real cause: `menu.exec()` runs its own NESTED event
+   loop, which still processes timers -- so the debounced grid-refresh
+   timer (added a few sessions back to fix toggle lag) could fire
+   WHILE a context menu was still open, rebuilding the entire grid
+   from scratch and destroying the very VideoCard the open menu was
+   parented to. The menu closing was purely a side effect of its own
+   parent widget being deleted out from under it -- completely
+   unrelated to anything QMenu's own behavior does, which is exactly
+   why fixing QMenu's behavior twice never touched it. Fixed properly
+   this time: VideoCard gained `context_menu_opened`/
+   `context_menu_closed` signals (emitted around both `menu.exec()`
+   call sites), and `_VideoGridTab` now tracks how many menus are
+   currently open, deferring (rescheduling, not dropping) the debounced
+   refresh for as long as any are -- firing it promptly the moment the
+   last one closes instead. Verified by directly reproducing the race:
+   open a "menu," trigger the debounced refresh, confirm the grid does
+   NOT rebuild while the menu is open, then confirm the deferred
+   refresh actually runs immediately once the menu closes.
+2. **Click-off-to-save only worked on the SAME card -- fixed with an
+   app-wide event filter.** The previous fix checked clicks within one
+   card's own `mousePressEvent`, which could never see a click landing
+   on a genuinely different widget (a different card, the empty grid
+   background) -- Qt delivers a mouse press to whichever widget the
+   cursor is actually over, not to every other widget in the app.
+   `VideoCard._rename()` now installs itself as an
+   `QApplication`-wide event filter for as long as it's editing
+   (removed the moment the edit commits), watching for a
+   `QEvent.MouseButtonPress` ANYWHERE and committing if it lands
+   outside the edit box, regardless of what it actually landed on.
+   Caught a real flaw in my OWN verification while testing this, not
+   after: calling `.mousePressEvent()` directly on a widget bypasses
+   Qt's real event dispatch entirely (and with it, every installed
+   event filter) -- a test written that way would have falsely
+   "confirmed" a fix that only works for real Qt-delivered clicks.
+   Fixed by using `QApplication.sendEvent()` instead, which correctly
+   exercises the whole dispatch chain. Verified against both a
+   different card and a click on empty background.
+3. **Filters tab padding -- removed the scroller entirely, per Max's
+   own direct suggestion**, rather than continuing to refine the
+   capped/scrolling version through a third attempt.
+   `_wrap_scrollable()` is now a documented no-op passthrough (kept,
+   not deleted, so a future session could reintroduce a cap if a truly
+   huge tag list ever needs one) -- the popover simply grows to fit
+   however tall a page's content actually is, no cap, no scrolling.
+   Verified against the exact multi-category screenshot scenario from
+   the report: full natural height, nothing hidden or capped.
+4. **New: "Auto Copy as MP4"** (Settings > Advanced, on by default) --
+   `VideoCard._resolve_copy_path()`: when on, Copying a video whose
+   file isn't already `.mp4` puts a freshly-made `.mp4`-named COPY on
+   the clipboard instead of the original extension -- a pure rename
+   via a copy, explicitly NOT a remux or re-encode of any kind (so not
+   guaranteed to be genuinely valid MP4 if the underlying container/
+   codec really isn't compatible -- accepted on purpose, exactly as
+   asked for). The library's own tracked file is never touched;
+   repeated copies of the same video overwrite the same temp path
+   rather than accumulating new ones. Verified directly: a non-mp4
+   source gets copied and renamed with byte-identical content, the
+   setting defaults to on, turning it off leaves the original path
+   untouched, and an already-.mp4 file is never copied at all.
+
+Caught one more real bug in my OWN edit while wiring the Settings
+checkbox for item 4, not left for Max to hit: a `str_replace` meant to
+insert the new checkbox's note label accidentally consumed the
+following method's own `def _export_settings(self):` line, which
+would have crashed Settings outright on construction -- caught
+immediately by actually constructing a `SettingsPage` and checking,
+not assumed to be fine because the edit "looked right."
+
+### Previous session
+Follow-up bug reports on the last batch, plus the remaining custom-
+Settings holdouts.
+
+1. **Spinbox arrows -- found the real, exact bug described.** Each
+   arrow was a fixed 22px, which needs ~50px+ of total spinbox height
+   to stack two without overlapping -- but a real spinbox is typically
+   only ~28-32px tall, so the two overlapped almost entirely, with
+   whichever was positioned/painted to "win" the shared space
+   appearing fully visible and the other barely showing at all,
+   exactly as reported ("the bottom increment button being the only
+   visible one, the top increment button only filling about 20% of
+   the box"). Fixed by sizing each arrow to exactly HALF the spinbox's
+   own height, computed fresh in `resizeEvent` rather than a fixed
+   constant -- guarantees perfect tiling (no overlap, no gap)
+   regardless of how tall or short any given spinbox actually is.
+   Verified at both a normal (30px) and a deliberately short (24px)
+   height.
+2. **"Click off to save the title" -- found the actual gap.** Verified
+   directly first that `editingFinished` DOES fire correctly on a
+   genuine Qt focus change (a real bug in my OWN test harness looked
+   like a product bug at first -- two separate top-level widgets don't
+   reliably exchange focus under this sandbox's offscreen platform;
+   redone with both widgets in the same window, it worked correctly).
+   The actual gap: clicking elsewhere on the SAME card (the thumbnail,
+   an action button) is fully consumed by that card's own click
+   handling and never naturally shifts Qt's focus away the way
+   clicking some unrelated widget would -- "click off doesn't save"
+   only failed for exactly that case. Fixed by explicitly committing
+   any in-progress title edit at the top of both `VideoCard.
+   mousePressEvent` and `VideoPreviewOverlay.mousePressEvent`,
+   whenever the click lands anywhere other than the edit box itself
+   (mapped via global coordinates, since the edit box's parent isn't
+   necessarily the widget whose mousePressEvent this is). Verified
+   both: clicking the thumbnail on the same card while editing, and
+   clicking the previewer's scrim (which also closes the whole
+   overlay right after) both now save correctly.
+3. **Context menu still closing on a filter/Edited toggle -- a third,
+   different technique after two failed attempts.** Both prior fixes
+   (checking `activeAction()`, then also `actionAt()`, in
+   `mousePressEvent`/`mouseReleaseEvent`) were reasoned attempts to
+   catch WHICH internal call was responsible, but evidently missed
+   whatever the actual mechanism is -- most likely another instance of
+   the same PySide6 limitation already confirmed for `CustomGroupBox.
+   setLayout()`: some internal C++-side call not dispatching to a
+   Python subclass's override at all. Rather than keep guessing which
+   call, `_NonClosingMenu` now reacts to the OUTCOME instead: a new
+   `hideEvent` override checks a flag set the moment a press lands on
+   a widget action, and if the menu tries to hide right after that, it
+   reverses it by immediately re-showing itself at its own current
+   position -- regardless of what actually triggered the hide.
+   Verified the mechanism directly (a suppressed hide is reversed; a
+   subsequent genuine hide still closes normally) -- flagged honestly
+   that two prior fixes for this exact report didn't hold up, so this
+   one should be treated as unconfirmed until verified for real.
+4. **OBS Test Connection (and every other QMessageBox in Settings) --
+   custom-styled.** New `custom_message_dialog.py`
+   (`CustomMessageDialog`/`show_message()`) -- same frameless +
+   translucent + rounded-fill treatment the video previewer and Add
+   Filter dialog already use. All 10 `QMessageBox.information/warning/
+   critical` call sites in settings_page.py now go through this one
+   shared dialog instead.
+5. **Advanced Sound dialog -- rounded, native OK/Cancel replaced.**
+   Same frameless/translucent/rounded treatment, and its
+   `QDialogButtonBox` swapped for two plain `CustomButton`s wired to
+   accept()/reject() directly (its internal sound-path fields were
+   already `CustomLineEdit`/`CustomButton` from an earlier session --
+   only the dialog's own outer chrome and its OK/Cancel buttons were
+   still native). Verified frameless+translucent attributes, zero
+   remaining `QDialogButtonBox` instances, and that accept() still
+   fires correctly through the new button.
+6. **Filter page headers (Filters & Auto Add Filters) -- native
+   QTabWidget replaced.** Same `CustomButton` + `QStackedWidget`
+   pattern SettingsPage's own top-level tabs already use. Verified
+   zero remaining `QTabWidget` instances and that clicking the new
+   tab buttons actually switches the stack.
+7. **Re-investigated the Filters-tab padding report with the exact
+   screenshot scenario reproduced** (a "games" category with 7 tags, a
+   "roblox games" category with 1) -- both group boxes size correctly
+   for their own content (no cutoff), and the only place content
+   isn't fully visible is where the WHOLE page's total content (425px)
+   exceeds the popover's existing 320px scroll cap, which is expected,
+   by-design scrolling, not a bug. This strongly suggests last
+   session's `CustomGroupBox.make_layout()` fix already resolved the
+   actual padding bug, and the screenshot may predate that build --
+   flagged as verified-by-reproduction rather than claimed fixed with
+   full certainty, since it can't be confirmed further without seeing
+   it live.
+
+### Previous session
+Continuing straight from the same batch (7 items plus one more added
+mid-way) -- picking up where the last handoff left off (items 1-4 and
+half of 5 were already done; this covers the rest).
+
+1. **Fixed the lag half of item 5.** Root cause: `card.tags_changed`/
+   `card.renamed` were connected DIRECTLY to `_VideoGridTab.refresh()`
+   -- a full rebuild of every card in the grid, immediately, on every
+   single filter toggle or title-edit commit. `_VideoGridTab` gained
+   its own `_card_signal_debounce` (150ms, mirroring the existing
+   pattern `LibraryPage` already uses for its DB-file-watcher), and
+   both signals route through that now instead of calling `refresh()`
+   directly -- a burst of several rapid toggles coalesces into ONE
+   rebuild shortly after the last one, rather than one rebuild per
+   toggle. Verified directly: emitting the signal returns near-
+   instantly with no rebuild yet, and a burst of 4 emits in quick
+   succession produces exactly 1 refresh.
+2. **Root-caused item 6 (unnecessary padding / cut-off filters) for
+   real this time.** `CustomGroupBox`'s core technique -- set the
+   widget's own `contentsMargins` before a layout gets attached,
+   assuming the layout would inherit them -- was flatly wrong,
+   confirmed by direct experiment (a layout attached afterward falls
+   back to the style's own default margins instead, completely
+   ignoring whatever the widget's margins already were). This has been
+   silently wrong in EVERY CustomGroupBox in the app since it was
+   built. Also confirmed that overriding `setLayout()` to fix this
+   doesn't work either -- PySide6 does not route the internal
+   `QVBoxLayout(widget)`/`QFormLayout(widget)` attachment call through
+   a Python subclass's `setLayout()` override at all (confirmed with a
+   print statement that simply never fired). Fixed with a new
+   `make_layout()` factory method that constructs the layout AND
+   immediately applies the correct margins in one step, updated at
+   all 11 call sites across settings_page.py, filters_settings_page.py,
+   and library_page.py's Sort-popover category grouping (a `showEvent`
+   override remains too, as a defensive fallback for anything that
+   might still attach a layout the old way). Verified against the
+   literal reported scenario: a category with 3 checkboxes underneath
+   it, previously cut off -- now sized tall enough to show all of them.
+3. **Made `_NonClosingMenu` more robust and applied it to the ENTIRE
+   context menu**, not just the Filters submenu, per "context menus
+   still close when toggling filters" -- checks BOTH
+   `self.activeAction()` (hover-tracked) and `self.actionAt(pos)`
+   (position-based, independent of hover state) as two separate ways
+   to reach the same "this was a widget-action click" conclusion, and
+   overrides `mousePressEvent` in addition to `mouseReleaseEvent` in
+   case the close was reacting to the press half. Verified via the
+   class's own logic directly.
+4. **New "Extended Dates" setting** (Settings > Appearance) -- when
+   on, every place a video's date is shown (the Library card, the
+   previewer's header) uses the full timestamp (date + hours/minutes/
+   seconds, whatever's in `created_at`) instead of just the date.
+   `_format_date()` reads this setting fresh on every call (same
+   pattern as other appearance-driven formatting in this codebase)
+   rather than threading a parameter through every call site, so both
+   places automatically stay in sync with it. Verified both the
+   formatting function directly and the Settings checkbox actually
+   persisting to disk.
+5. **Item 1: rounded the Add Filter dialog** -- frameless + translucent
+   + a custom-painted rounded fill, the same technique the video
+   previewer already uses for its own corners (a plain
+   `setStyleSheet()` background-color on a normal `QDialog` still
+   renders with square corners, since that's the native WINDOW frame,
+   not something a stylesheet touches).
+6. **Item 2: video titles are now inline-editable directly on the
+   card**, not via a popup dialog -- clicking the title (via the
+   context menu's Rename, which now triggers this instead of opening
+   `QInputDialog`) swaps it for a `CustomLineEdit` pre-filled with the
+   current title. Autosaves once a second while editing, in addition
+   to committing on Enter or clicking away. Caught a real design flaw
+   BEFORE it shipped, not after: naively emitting the card's own
+   `renamed` signal on every autosave tick would have triggered a full
+   grid rebuild every second while the user was still typing --
+   destroying the very edit widget they were typing into, mid-edit.
+   Fixed so autosave only persists to the DB silently; the refresh-
+   triggering signal fires exactly once, on the actual commit.
+   Verified the whole cycle directly, including that autosave does
+   NOT fire `renamed` and that it fires exactly once on commit.
+7. **Item 4: replaced "Mark as Edited" with a single "Edited"
+   checkbox** in the context menu (embedded via `QWidgetAction`, same
+   as the Filters checkboxes), covering both directions Max asked for
+   in one control rather than two separate menu items -- checked only
+   when EVERY selected video already has `has_edit` set; toggling
+   applies the checkbox's new state to the whole selection. New
+   `library.mark_as_unedited()` (the reverse of the existing
+   `mark_as_edited()`), leaves `backup_path` completely untouched
+   either way. Verified toggling flips `has_edit` correctly in both
+   directions.
+8. **Item 3: a real pass at "make everything in Settings custom."**
+   New shared `custom_combo_style.py` (`combo_box_stylesheet()`,
+   extracted from what the Add Filter dialog already had, since it's
+   now used identically in several more places) -- a QSS reskin
+   applied to EVERY `QComboBox` across settings_page.py,
+   filters_settings_page.py, and the Add Filter dialog (6 total).
+   Every remaining native `QSpinBox`/`QDoubleSpinBox` (22 across
+   settings_page.py, 1 in clip_config_row.py) swapped to
+   `CustomSpinBox`/`CustomDoubleSpinBox`. A genuinely custom dropdown
+   (its own popup-list widget, matching the search bar's own text-
+   bubble attachment) remains a separate, bigger undertaking not
+   attempted here -- this covers the "custom LOOK" for every combo box
+   in Settings via styling, not a full custom widget rebuild. Verified
+   directly: all 22+ spinboxes in Settings are the Custom classes, a
+   value round-trips correctly through save/reload, and every combo
+   box in both Settings pages carries the custom stylesheet.
+
+### Previous session
+Six of the seven items from Max's latest batch -- item 2 ("adjust all
+of the settings things to be custom instead of KDE") is still
+outstanding, the biggest remaining piece by far, not started this
+round.
+
+1. **"Add New" button in Settings > Filters** -- the Filters SETTINGS
+   tab could only manage existing tags (icon, category, outline,
+   rename), with no way to create a brand new one without leaving to
+   the Library's own "+ Add Filter". Added.
+2. **Context menu no longer closes when toggling a filter checkbox.**
+   Root cause: `CustomCheckBox` is embedded via `QWidgetAction`, and
+   the checkbox itself already receives and handles clicks completely
+   normally (Qt delivers mouse events directly to whichever real
+   widget is under the cursor) -- but `QMenu`'s OWN mouseReleaseEvent
+   ALSO reacts to that same click by closing itself, independent of
+   whatever the embedded widget did with it. New `_NonClosingMenu`
+   subclass skips only that specific reaction (checking
+   `self.activeAction()` is a `QWidgetAction`), leaving every other
+   kind of click (a plain QAction, clicking outside any item)
+   completely unaffected. Used for the Filters submenu and its
+   category sub-menus. Verified directly against the class's own
+   `mouseReleaseEvent` logic (no `close()` reaction for a widget
+   action; normal handling otherwise).
+3. **"Mark as Edited" added to the context menu** -- new
+   `library.mark_as_edited()`, manually flips `has_edit` without a
+   real trim/backup, for a video that's already edited from elsewhere
+   or one Max doesn't consider "raw" even though the app itself never
+   touched it. Deliberately leaves `backup_path` alone (stays None) --
+   `undo_edit()`/`clear_edit_backup()` already correctly refuse to act
+   without a real backup regardless of `has_edit`, so this can't put a
+   video into a state where Undo would try to restore from nothing.
+   Shown as a bulk action (works across a multi-selection), only
+   offered when at least one selected video isn't already marked
+   edited. Verified directly, including that Undo still correctly
+   refuses afterward.
+4. **The wrong-dates bug -- found the missing piece and fixed it
+   properly this time.** Last session's fix (using a file's mtime
+   instead of "now" during re-ingestion) only prevents the bug from
+   corrupting NEW data going forward -- it does nothing for videos
+   that were ALREADY corrupted by the mass-false-positive prune bug
+   before that fix existed. New `library.repair_incorrect_creation_dates()`,
+   called once at every LibraryPage startup (cheap/safe to call
+   repeatedly -- already-correct videos are a no-op): for every video,
+   compares its stored `created_at` against its file's own mtime, and
+   corrects it when the file is impossibly OLDER than its claimed
+   creation date by more than an hour (a physical impossibility for a
+   genuine original capture, but exactly what a bad re-ingestion looks
+   like). Caught a real edge case in this fix while testing it, not
+   after: a completely fresh, correctly-dated video can have its file
+   finish writing a few MILLISECONDS before its DB row gets created
+   (the file write always completes just before `add_video()` runs),
+   which an exact `mtime < stored` check with zero tolerance flagged
+   as "wrong" too -- added a generous one-hour tolerance, since the
+   capture pipeline's real gap is always well under a second, while an
+   hour still easily catches the actual multi-day/week corruption
+   pattern. Verified both directions: a deliberately backdated file
+   gets its date corrected, and a genuinely fresh video's correct date
+   is left completely alone on a second repair pass.
+5. **A shared, custom "Add Filter" dialog with a category dropdown.**
+   Replaced the plain `QInputDialog.getText()` used in THREE places
+   (the Library's own "+ Add Filter", the context menu's Filters
+   submenu, and this session's new Settings button) with one
+   `AddFilterDialog` (new file, add_filter_dialog.py) -- custom-styled
+   (theme-colored background, `CustomLineEdit`/`CustomButton`
+   throughout) and lets a category be assigned right at creation
+   instead of needing a second trip to Settings > Filters afterward.
+   The dropdown itself is a QSS-reskinned `QComboBox` (same technique
+   as last session's QMenu reskin -- theme colors, rounded corners),
+   not yet a fully custom popup-list widget of its own; that remains
+   part of item 2's still-outstanding scope. Verified end-to-end: the
+   dialog's own result values round-trip correctly, and simulating an
+   accepted dialog through `LibraryPage._add_new_filter()` actually
+   creates the tag AND assigns it to the chosen category.
+6. **Previewer video titles are now editable in place.** Clicking the
+   title swaps it for a `CustomLineEdit` pre-filled with the current
+   title; committing (Enter, or clicking away -- both go through
+   `editingFinished`, which fires for either) calls
+   `library.rename_video()` and swaps back to the label showing
+   whatever the result actually is. Caught a real construction-order
+   bug while testing this, not a design mistake caught after the fact:
+   the event filter watching for a click on the title label can fire
+   DURING `__init__` (a layout/show event on the label itself, before
+   `self.video_widget` exists a few lines later in the same
+   constructor) -- the filter's OTHER branch checked `obj is
+   self.video_widget` unconditionally, which crashed outright the very
+   first time the dialog was ever constructed. Fixed with
+   `getattr(self, "video_widget", None)` instead of the bare
+   attribute access. Verified the full cycle: clicking swaps to an
+   editable field pre-filled correctly, committing writes to the DB
+   and swaps back to the label showing the new title, and re-editing
+   with no actual change made doesn't error or do anything unexpected.
+
+### Previous session
+Finished the item de-prioritized last round (once the data-loss
+investigation was done): tag icons now show directly in the dropdowns
+themselves, not just on the video card.
+
+**`CustomCheckBox` gained an optional `leading_icon` parameter** --
+shown between the checkbox indicator and its text label, distinct from
+`_checkmark` (which shows INSIDE the indicator box to mark checked
+state) and `FilterCheckBox`'s own block-state x icon. `FilterCheckBox`
+passes it straight through to the base class. Wired into every place a
+tag appears as a checkbox with an icon available to show:
+- `_build_filters_menu` (video_card.py) -- covers BOTH the right-click
+  context menu's Filters submenu and the quick-action Filters button's
+  menu, since they share this one method.
+- `_build_filters_page` (library_page.py) -- the Sort popover's
+  Filters page, i.e. the actual search/filtering UI.
+
+Both look up each tag's icon via the same `library.tag_icons()` used
+elsewhere (video_card.py's own `_build_icon_row` for the on-card
+display), falling back to no icon when a tag doesn't have one set or
+its file's gone missing, same leniency as everywhere else in this
+codebase that loads a user-chosen icon path.
+
+Caught a real bug in my OWN test while verifying this, not a product
+bug: `library.create_tag()` returns `None` (it's fire-and-forget, used
+by callers that don't need the id back) -- an early draft of the test
+assumed it returned the new tag's id and passed `None` straight into
+`set_tag_icon()`, which silently updated zero rows (`WHERE id = NULL`
+never matches anything in SQL). Fixed the test to look the id up via
+`all_tags_with_ids()` instead, which is what surfaced the real,
+correct behavior it needed to check in the first place.
+
+Verified directly: a tag with an icon set shows up with
+`_has_leading_icon() == True` on its `CustomCheckBox` in BOTH the
+Filters menu and the Sort popover's Filters page.
+
+### Previous session
+**A real data-loss incident, root-caused and fixed, plus the durability
+feature it directly motivated.** Reported: every video's tags/filters
+gone (trims survived), and every video showing "created today" even
+though most were captured well before. Max also mentioned separately
+having moved the entire clips folder out and back in a while back --
+that's the actual trigger, confirmed directly.
+
+1. **Root cause: `prune_missing_videos()` had no defense against a
+   mass false-positive.** It checks `Path(row["path"]).exists()` for
+   every video and unconditionally `DELETE`s any that fail -- which
+   CASCADEs to `video_tags` via the schema's `ON DELETE CASCADE`.
+   Moving the whole clips folder out (even briefly) makes EVERY video
+   fail that check at once; the next prune pass then deletes all of
+   them, and `scan_and_ingest_new_videos()` immediately re-discovers
+   the same files (now back in place) as brand-new rows -- fresh ids,
+   zero tags, and a `created_at` of "now" instead of whenever they
+   were actually made. That exactly matches every symptom reported:
+   tags gone, trims fine (the file itself was untouched, so the
+   trimmed content survived re-ingestion), dates wrong.
+   **Fixed with a safety net in `prune_missing_videos()`:** refuses to
+   prune anything in a single pass if that would remove more than half
+   the library at once (and always allows pruning up to 5 videos
+   regardless, so a small library isn't stuck never able to prune a
+   single genuinely-deleted video) -- logs an error and does nothing
+   that pass instead, since a mass "everything just vanished" result
+   is a far stronger signal that the CHECK itself is wrong (a
+   transiently unmounted drive, a race at startup, a filesystem-
+   visibility difference between the GUI and the newer daemon-offload
+   scanning path) than that the user actually deleted most of their
+   library between one refresh and the next. A single video going
+   missing is completely ordinary and still pruned immediately, same
+   as before. Verified directly, both directions: moving files away to
+   simulate a mass false-positive is correctly refused (tags stay
+   intact), and a single genuinely-deleted file is still pruned
+   normally.
+2. **The "created today" date bug -- separate but related, also
+   fixed.** `add_video()` always stamped `datetime.now()` as
+   `created_at`, which is correct for the capture pipeline's own call
+   (a video OBS just finished recording) but wrong for
+   `scan_and_ingest_new_videos()` re-discovering a file well after it
+   was actually made. Added an optional `created_at` parameter
+   (defaulting to `None` -> "now", so the capture pipeline's own
+   behavior is unchanged) and had the scan function pass the file's
+   own `st_mtime` instead -- the best available answer given only
+   filesystem info to go on (survives an ordinary same-filesystem
+   `mv`, which is exactly what happened here; would NOT survive a
+   copy-then-delete or a cross-filesystem move, where the OS itself
+   has no better answer either). Verified both the ingestion path
+   (uses the file's real mtime, confirmed against a deliberately
+   backdated file) and that the capture pipeline's own direct
+   `add_video()` calls still default to "now" as before.
+3. **New: a durable, human-readable manifest file outside the SQLite
+   DB**, per Max's own direct follow-up request once the root cause
+   was found -- `library.write_library_manifest()` writes a plain
+   JSON snapshot (title, tags, favorite, has_edit, dates, for every
+   video) to `~/.config/afterglow/library_manifest.json`, called after
+   every mutation that changes what it describes (tag add/remove,
+   rename, favorite, delete, and both the scan and prune passes -- only
+   when something in it actually changed, not on every no-op call).
+   Deliberately NOT a live source of truth the app reads back from
+   automatically, and deliberately not baked into the video files
+   themselves (renaming already happens today when a title changes --
+   see `rename_video`'s existing file-rename logic -- but going further
+   and encoding tags/edited-status into filenames or container
+   metadata would fight the app's own filename-matching logic
+   throughout scan/prune/backup handling, for comparatively little
+   benefit over a plain external backup file): this is a recovery
+   reference a person can open and manually cross-check or restore
+   from by hand if the database itself is ever lost or corrupted again,
+   which is a substantially simpler and more robust thing to get right
+   than an automatic two-way sync between two sources of truth would
+   be. Verified directly: the manifest is created and correctly
+   reflects a tag addition, and updates correctly on both rename and
+   delete.
+
+**Not done this round:** item 3's follow-up (showing filter icons
+directly IN the dropdown/checkbox rows themselves -- context menu,
+quick-action Filters menu, and Sort popover filtering) was
+de-prioritized this session in favor of the data-loss investigation
+and fix, which took priority once reported.
+
+### Previous session
+Four more items, all found/fixed/verified.
+
+1. **Defensive fix to `resource_qpixmap`'s new cache** -- reported
+   directly that filter icons had gone invisible after last round's
+   caching change. Couldn't find a code path where the caching itself
+   would break a per-tag custom icon (those load via a completely
+   separate `QPixmap(path)` call, not `resource_qpixmap`), but the
+   caching COULD plausibly permanently lock in a transient failure for
+   any BUNDLED icon that DOES go through it (e.g. if something
+   requested an icon before a QApplication/QGuiApplication fully
+   existed, which can make Qt hand back a null pixmap without raising)
+   -- something the old always-reload behavior would have naturally
+   "healed" from on the very next call. Fixed regardless of whether
+   that's the exact mechanism at play here: `resource_qpixmap` now only
+   caches a SUCCESSFUL (non-null) load, so a failed one just retries
+   (and possibly fails again) on the next call instead of being
+   silently broken forever. Verified directly that requesting a
+   nonexistent file returns a null pixmap without polluting the cache.
+2. **Context menu and Filters submenu -- both now custom-styled.** Both
+   already used `CustomCheckBox`/`CustomButton` internally (from an
+   earlier session), but the surrounding `QMenu` chrome itself
+   (background, hover highlighting, borders, submenu appearance) was
+   still native/KDE styling -- what "not custom" actually meant here.
+   Added a shared `_menu_stylesheet()` (QSS: card-background fill,
+   accent-colored border and hover highlight, rounded corners) applied
+   to the right-click context menu, the Filters submenu, AND each
+   category sub-menu nested inside it -- Qt does NOT cascade a parent
+   QMenu's stylesheet down into its child QMenus automatically, so
+   each one needs it applied individually. QSS is the standard,
+   supported way to reskin QMenu without losing its own built-in
+   submenu/keyboard-navigation/hover machinery, which would have been
+   substantial to rebuild from scratch for comparatively little gain
+   over reskinning the existing one.
+3. **Icon preview added in Filters settings**, next to the filename --
+   `_TagIconRow` used to show only the filename text; now a real 24x24
+   scaled preview of the actual icon file sits next to it, updated on
+   every browse/clear, falling back to no preview if the path is empty
+   or the file's gone missing. Verified directly against a real icon
+   file.
+4. **Previewer's video now has rounded corners matching its frame's
+   border**, which was already rounded while the video itself stayed
+   sharp-cornered inside it. `MpvVideoWidget` is a `QOpenGLWidget`, so
+   a normal paintEvent-based rounded clip doesn't apply to its own
+   GL-rendered content -- used `setMask()` with a `QRegion` instead,
+   which clips at the native surface level regardless of how the
+   content was drawn. Installed as an event filter watching for
+   `QEvent.Resize` on the previewer's own video widget instance,
+   rather than touching `MpvVideoWidget` itself (shared with the
+   Editor, which was never asked to round its own video corners).
+   Verified the resulting mask is non-empty and genuinely excludes the
+   corners (not equal to the widget's full rectangular bounds).
+
+### Previous session
+The big one this round: the actual cause of the ~5 second startup
+time and the returned "click Library multiple times" bug, confirmed
+directly and fixed -- plus the quick-action-button shape, the
+previewer's fade in/out, and its size reverted back to fixed pixels.
+
+**Startup performance -- confirmed root cause, fixed at both layers.**
+Max's own diagnosis was exactly right: `resource_qpixmap()`/
+`resource_qicon()` (afterglow/gui/resources/__init__.py) had NO
+caching at all -- every single call re-read the file from disk AND
+re-decoded the full-resolution PNG from scratch, even for the exact
+same file requested by many different widgets (a filter icon or
+`CustomCheckBox`'s checkmark, for example, loaded fresh for every
+single VideoCard/checkbox instance). On top of that, several of the
+actual PNG files Max had provided across recent sessions were
+enormously oversized for how they're ever displayed on screen --
+`checkmark_icon.png` was 1920x1920 (577KB), the four new action icons
+were all 2048x2048 (up to 421KB each), `volume_speaker_icon.png` was
+2048x2048 at 1.26MB, several sidebar/tab icons were 2048x2048 too --
+all rendered at roughly 20-140px on screen. Both problems compounded:
+no caching meant these huge images got decoded over and over, and
+each individual decode was itself far more expensive than it needed
+to be. Fixed both layers:
+1. Added a module-level cache (`_pixmap_cache`/`_icon_cache`, keyed by
+   filename) to both functions -- safe since nothing downstream
+   mutates a pixmap it gets back from these (every effect --
+   `hue_shift_pixmap_cached`, `tint_pixmap_cached`,
+   `set_icon_pixmap`, etc. -- already treats these as read-only source
+   images and returns a NEW pixmap for anything that needs to look
+   different).
+2. Resized the actual on-disk files, per Max's own suggested target
+   sizes: small UI icons (checkmark, x, search/refresh/sort,
+   edit/copy/filters/delete, volume speaker) down to 128x128; sidebar/
+   tab full-art icons (library/editor/settings/local/uploaded videos)
+   and the editor's `bar_marker.png` texture down to 256x256. Left the
+   already-appropriately-sized 512x512 gradient textures (stretched
+   across full card-sized backgrounds) and `app_icon_source.png`
+   (never loaded by the running app at all -- only used at build time
+   to generate the desktop icon set) untouched. Total resources folder
+   dropped from several megabytes to about 2.2MB.
+   Verified concretely, not just "should be faster now": confirmed
+   `resource_qpixmap()` now returns the literal same object on repeat
+   calls (not a fresh decode); confirmed every runtime-loaded PNG is
+   now under 512px in its largest dimension; and measured actual
+   construction time directly -- `SettingsPage()` (Max's own suspicion
+   for why Settings specifically was slow, given how many
+   `CustomCheckBox`es it has) now constructs in ~51ms. `LibraryPage()`
+   with 20 videos still takes real time (~850ms) -- that remaining
+   cost is VideoCard construction itself (thumbnails, gradient
+   rendering, etc.), a separate, already-flagged-once concern
+   ("lazy-load the grid") rather than anything to do with icon
+   loading, and NOT something this fix was trying to solve -- flagged
+   here rather than silently left unmentioned.
+2. **Quick-action buttons -- now real circles, not tall rectangles.**
+   They were sized via `setMinimumHeight(48)` alone, with no width
+   constraint -- a `QHBoxLayout` stretches each button to fill
+   available row width, so they rendered as wide rectangles with a
+   small icon centered in the middle of mostly-empty space ("barely
+   visible"). Switched to `set_circular(56)` -- the same mechanism the
+   Search/Refresh/Sort header buttons already use -- which fixes both
+   the shape AND the size in one call (slightly larger than the old
+   48px, per Max's own "slightly increase the size"). Also reduced
+   `CustomButton`'s own icon margin fraction (0.2 -> 0.14, applies to
+   every icon-bearing CustomButton, not just these four) so icons fill
+   more of whatever shape they're drawn in generally. Verified pixel-
+   level that these are genuinely circular (corner color differs from
+   fill), not just a big rounded-corner rectangle.
+3. **Preview overlay now fades in and out**, instead of appearing/
+   disappearing instantly. Fade-in is fast (90ms, "very quickly as to
+   be responsive"); fade-out is slower (220ms, "normal speed") --
+   both via one `QGraphicsOpacityEffect` on the overlay itself
+   (covers the scrim and the content box together, so they fade as
+   one unit, not separately). `close_overlay()` now takes an
+   `immediate` flag: a normal user-initiated close (scrim click,
+   Escape) fades out first, THEN actually hides/cleans up; MainWindow
+   replacing an already-open overlay with a fresh one (a second
+   preview request arriving before the first closed) uses
+   `immediate=True` to skip the fade entirely, since fading the old
+   one out while a new one fades in on top would just look like two
+   overlapping scrims rather than a clean swap. Verified directly:
+   opacity starts near 0 and animates to 1 on show; closing (non-
+   immediate) stays visible and holds full opacity briefly before
+   actually animating down, and the overlay only truly closes (its
+   `closed` signal fires, triggering MainWindow's own cleanup) once
+   that fade-out completes.
+4. **Preview content size reverted to a fixed pixel size**, per Max's
+   direct request -- back to 1581x1035 (the same value from before the
+   proportional-sizing overlay rewrite), rather than a percentage of
+   whatever window it's embedded in. Still clamped to fit the overlay's
+   own bounds (`min(CONTENT_WIDTH, 97% of overlay width)`, same for
+   height) so it can't overflow a genuinely smaller window.
+
+### Previous session
+Two pieces landed and packaged so far -- a critical regression fix
+(the previewer redesign from last session broke in exactly the ways a
+separate top-level window would be expected to), and the action-button
+icons Max provided. Four more items (page-load lag, the still-invisible
+outlines, the Filters tab's own remaining issues, and custom Settings
+widgets) are queued but not started yet this round -- see "Next up".
+
+**Video previewer -- rebuilt as an embedded overlay, not a top-level
+window.** Reported after the previous fix: fully detached from the
+main window, clicking the background did nothing, and it was even
+possible to open two at once. All three are exactly the failure modes
+of a genuinely separate OS window (a modal dialog can make the window
+manager swallow clicks on whatever's behind it before the app ever
+sees them; nothing prevented a second `.show()` from creating a second
+one). Per Max's own suggestion ("put the window in the main window and
+size it proportionally"): `VideoPreviewDialog` (a `QDialog`) is now
+`VideoPreviewContent` (a plain `QWidget`) wrapped by a new
+`VideoPreviewOverlay`, which is a direct CHILD of MainWindow's central
+widget -- not a top-level window at all. The overlay paints a semi-
+transparent scrim over the current page and sizes the content box to
+85% of whatever its own size is (kept matched to the central widget's
+full size via `MainWindow.resizeEvent`), so "click outside" is now a
+completely ordinary `mousePressEvent` within the SAME window, and
+MainWindow tracks the one active overlay itself (`_show_preview_overlay`
+replaces rather than stacks). The open request now bubbles up through
+a `preview_requested` signal (VideoCard -> `_VideoGridTab` ->
+`LibraryPage` -> MainWindow), the same pattern `edit_requested` already
+used, rather than VideoCard constructing anything directly (it has no
+reference to MainWindow to embed into). Caught two real bugs while
+verifying this, not just trusting it worked: a dropped `QTimer` import
+from the refactor that would have crashed the very first time a
+preview was opened (autoplay's delay logic depends on it), and a
+version of a bug already documented once before in this codebase --
+`deleteLater()`'s deletion is deferred to the next event-loop pass, so
+replacing an already-open overlay needs an explicit `hide()` too, or
+the old one stays visibly on screen for that brief window. Verified
+directly: the overlay is a real child of the central widget (not a
+top-level window), sized to match it, with the content box
+proportionally smaller and centered; clicking the scrim closes it;
+opening a second preview replaces the first with the old one hidden
+immediately, not left visible until Qt gets around to deleting it.
+
+**Video-card action-button icons.** The 4 icons Max provided (pencil/
+copy/funnel/trash) replace the Edit/Copy/Filters/Delete text labels on
+the action-buttons row -- shown at their own original colors (not
+retinted, unlike the Search/Refresh/Sort toolbar icons, since these
+are individually-branded action icons rather than icons meant to
+blend into the text color system). Verified all 4 buttons carry a
+real, non-null icon pixmap and that the underlying handlers (checked
+directly via Edit) are unchanged.
+
+### Previous session
+Continuing straight from last round's four bug reports -- three more
+came back with follow-ups (one fully explained, one root-caused
+further, one flagged as "still not visible"), plus four new items.
+
+1. **Autoplay doubled the audio -- root cause was the SAME reload
+   workaround from last session's fix, one layer deeper.** Last
+   round's fix made `_reload_first_video` preserve whatever pause
+   state was already in effect instead of forcing paused -- correct,
+   and it did stop the "plays then stops" symptom. But that reload
+   still re-issues `self._mpv.play(path)` (a genuine restart of the
+   file) 150ms after the original load, and if OUR OWN explicit
+   `play()` had already started real audio output by then, the reload
+   briefly overlapped a second copy of it starting on top -- "doubles
+   up on the audio... jarring." Per Max's own suggested fix (delay the
+   autoplay a little): `VideoPreviewDialog._load_video()` now checks
+   `MpvVideoWidget._first_load_done` and, ONLY on the very first video
+   ever loaded into a fresh widget (Prev/Next never re-trigger the
+   workaround), delays its own `play()` call via
+   `QTimer.singleShot(200, ...)` -- comfortably past the 150ms reload
+   -- so there's only ever one play command in flight by the time
+   audio actually starts. Subsequent loads (arrows) still play
+   immediately, unchanged.
+2. **Click-off-close STILL wasn't working -- found the actual reason.**
+   The event-filter logic itself was correct, but the dialog was
+   opened MODALLY (`.exec()`) -- a modal window can make the OS/window
+   manager swallow clicks on whatever's behind it entirely (a shake or
+   a beep, no real `QMouseEvent` ever delivered to the app), so the
+   filter's own geometry check never even got a chance to run for
+   those clicks. Switched to non-modal (`.show()`), with a live
+   reference kept on the originating `VideoCard`
+   (`self._active_preview_dialog`) so the Python wrapper isn't
+   garbage-collected the moment the opening method returns.
+3. **Selection replacing the unedited-highlight border -- confirmed
+   and fixed.** `_render_background`'s video-thumbnail-border branch
+   was gated on `if not selected and show_highlight`, treating
+   selection and the highlight as mutually exclusive -- so selecting
+   an unedited video silently swapped its gradient border for the
+   plain accent() one. Changed to gate on `show_highlight` alone;
+   selection's own outer ring (built separately, unchanged) is layered
+   on top of whichever thumbnail border is already showing, exactly as
+   it always should have been. Verified directly: an unedited video's
+   highlight border is now confirmed present both before AND after
+   selecting it.
+4. **Selection snapping instead of fading -- implemented a real
+   cross-fade.** `VideoCard` now keeps the pre-change cached
+   background (`_fade_from`) alongside the newly-rendered one, and
+   blends between them over a 200ms `QVariantAnimation` (draw the old
+   pixmap, then the new one on top at partial opacity) rather than an
+   instant swap -- both are already-cached bitmaps, so each frame of
+   the fade is just two cheap blits, not a re-render. Caught a real
+   bug in this fix while verifying it, not just trusting the animation
+   "ran": the fade's progress value needs to be reset to 0.0
+   SYNCHRONOUSLY the moment the fade starts, not left for the
+   animation's own first tick, since `QVariantAnimation` doesn't
+   guarantee emitting its first `valueChanged` synchronously within
+   `start()` -- without the explicit reset, a repaint landing before
+   that first tick would still show the OLD, fully-settled progress
+   value from whatever fade last completed, silently skipping the
+   blend for that frame.
+5. **Page switch lag, still present -- removed the automatic Library
+   refresh entirely, per Max's own suggestion.** Both of last round's
+   fixes (a faster crossfade, deferring the refresh call) only changed
+   WHEN or HOW FAST the rebuild happened, never WHETHER it happened --
+   rebuilding potentially hundreds of VideoCards is real, unavoidable
+   work no amount of scheduling trickery removes. Per "maybe just
+   leave the pages loaded after switching off of them": `_on_nav_clicked`
+   no longer calls `library_page.refresh()` at all. Switching to
+   Library is now a plain, instant page swap; the page stays exactly
+   as it was until something ACTUALLY changes it -- the existing
+   DB-file-watcher (already there, catching daemon/Editor writes) or
+   the Library's own manual Refresh button.
+6. **Sidebar and page outlines still not visible -- likely cause
+   found: paint ORDER, not the margin fix from last round.** Every
+   affected `paintEvent` was drawing the border FIRST, then calling
+   `super().paintEvent(event)` SECOND. On a real KDE/Plasma-integrated
+   Qt style (unlike this sandbox's offscreen platform), the base
+   `QWidget.paintEvent()` can genuinely paint an OPAQUE background of
+   its own -- if that ran after the border, it would silently erase
+   it, matching a bug CLASS already seen once before in this exact
+   codebase (a sandbox-vs-real-compositor rendering difference).
+   Reordered all FIVE affected `paintEvent`s (the four pages from last
+   round, plus the sidebar itself -- new `_Sidebar(QWidget)` subclass
+   in main_window.py, since Max explicitly listed "sidebar" as still
+   missing one this round) to call `super().paintEvent()` FIRST and
+   draw the border SECOND, guaranteeing the border is always the last
+   thing painted regardless of what the base class does on any given
+   platform. Verified this doesn't regress anything in this sandbox
+   (all prior pixel checks still pass) and added a matching check for
+   the sidebar itself -- genuinely can't confirm this is the real
+   fix without Max's own machine, flagged as such.
+7. **Sort popover's Filters-tab padding -- actually fixed this time,
+   found the real cause.** Last round's fix (cap each page's own
+   wrapping QScrollArea to `min(sizeHint, 320)`) was necessary but not
+   sufficient: `_RoundedContentArea` (the `QStackedWidget` holding all
+   three pages) had no `sizeHint()`/`minimumSizeHint()` override, so
+   it fell back to `QStackedWidget`'s own default -- which sizes to
+   the LARGEST of ALL its pages, not just the one showing. A short
+   Filters page (few tags) was still being stretched to whatever
+   height the tallest of the three pages (often Sort By, with 8 fixed
+   radio options) needed, leaving real unfilled space below its own
+   content -- exactly the reported symptom, still present because the
+   actual bottleneck was one level up from where last round's fix
+   landed. Fixed by overriding both to return the CURRENT page's own
+   size instead, and by having `SortPopover.set_current_index()`
+   re-run `adjustSize()` so switching tabs while the popover is
+   already open resizes it immediately rather than waiting for the
+   next time it's reopened. Verified directly: with a single tag, the
+   popover now sizes to ~159px (matching the Filters page's own
+   ~127px sizeHint plus margins) instead of being forced toward the
+   old ~320px regardless of content, and switching to the Sort By tab
+   resizes it again to fit that page's own (taller) content.
+
+**New items, all done:**
+8. Previewer resized again, 1.15x on top of last round's 1.25x
+   (1581x1035, was 1375x900).
+
+### Previous session
+Four direct bug reports on last session's work, all four were real
+bugs, all four found and fixed -- plus a codebase-wide audit that
+caught two MORE instances of one of them before they got reported
+separately.
+
+1. **Autoplay "plays for a moment then stops" -- real race condition,
+   found and fixed.** `MpvVideoWidget` has a workaround for a known
+   black-screen bug on the very first video played after the app
+   opens: it reloads that first video a second time, 150ms later, via
+   `_reload_first_video()`. That method unconditionally forced
+   `pause = True` regardless of what the caller actually wanted --
+   so the previewer's explicit `.play()` call (issued right after
+   `load()`) would genuinely start playback, only for this delayed
+   callback to silently undo it 150ms later. This only ever hit the
+   FIRST video shown in a freshly-opened previewer (a fresh
+   `MpvVideoWidget` each time means `_first_load_done` is always
+   False on open) -- exactly matching "it DOES autoplay when you go
+   to a new clip with the arrows" (no fresh reload-workaround firing
+   on those) "but not the first time." Fixed by having
+   `_reload_first_video` capture and re-apply whatever pause state was
+   ACTUALLY in effect right before it fires, instead of hardcoding
+   `True` -- this method exists purely to work around a rendering bug,
+   it was never supposed to have its own opinion about play state.
+   Verified both directions: the previewer's load-then-play sequence
+   now survives the delayed reload, AND Editor's own default
+   paused-on-load behavior (which never calls `.play()` after `load()`)
+   is confirmed unchanged.
+2. **Page switch lag -- a SECOND blocking call found sitting right next
+   to the one fixed last session.** Last round's fix addressed
+   `crossfade_to_index()` itself (no longer grabbing a snapshot before
+   switching). Still reported as laggy, because `_on_nav_clicked` also
+   calls `library_page.refresh()` (a full filesystem scan + every
+   VideoCard rebuilt from scratch) or `settings_page.
+   refresh_dynamic_lists()` SYNCHRONOUSLY, right alongside the page
+   switch -- so even with the switch itself now fast, nothing could
+   actually get painted on screen until that heavier call finished
+   too. Fixed by deferring both with `QTimer.singleShot(0, ...)`, so
+   Qt gets a chance to paint the already-switched page before the
+   heavier refresh work runs. Verified with a simulated slow
+   `refresh()` (artificially sleeping 300ms): clicking Library now
+   returns in ~7ms instead of blocking for the full 300ms, and the
+   deferred refresh is confirmed to still run afterward.
+3. **Sort By tab missing its outline -- a real, and apparently
+   recurring, Qt gotcha.** `Qt.NoPen` is a PEN STYLE, not merely "no
+   color set yet" -- calling `.setColor()`/`.setWidthF()` on a pen
+   that's still styled `Qt.NoPen` does nothing; the stroke still won't
+   render regardless of what gets set on it afterward. `CustomRadioButton`
+   drew its fill via `setPen(Qt.NoPen)` then tried to reuse that exact
+   pen object (via `painter.pen()`) for the outline stroke -- which
+   silently never drew anything. Audited the ENTIRE codebase for this
+   same pattern (a small script scanning every `paintEvent` for
+   `setPen(Qt.NoPen)` followed by a later `painter.pen()` call in the
+   same method) and found it in two more places written this same
+   recent stretch: `_FullscreenButton` (the corner brackets) and
+   `_VolumeButton` (the speaker arcs/mute-X) in the video previewer --
+   neither had ever actually been rendering their own icon detail,
+   just an accent-colored circle. All three fixed by constructing a
+   brand-new `QPen(...)` for the stroke pass instead of mutating the
+   dead one. Verified pixel-level that the radio button's ring now
+   actually appears (a broad "does the accent color show up anywhere
+   on this widget" scan, not a single fragile coordinate guess).
+4. **Page outlines not appearing -- likely root cause found (can't
+   fully confirm without Max's real display, but fixed regardless).**
+   The border-drawing code itself was correct, but it relied on
+   whatever the ACTIVE QSTYLE's own default QLayout margin happens to
+   be to leave room for the border -- which this sandbox's default
+   offscreen-platform style happens to leave nonzero, but a real
+   KDE/Qt style easily might not. If that margin were ever zero, child
+   content (the scroll area, the mpv widget, Settings' own group
+   boxes) would sit flush against each page's outer edge and
+   completely paint over the border drawn beneath it in `paintEvent`
+   -- matching a bug CLASS already documented once before in this
+   exact codebase (a stylesheet-cascade difference between this
+   sandbox's offscreen platform and a real compositor). Fixed by
+   making the margin EXPLICIT (3px, matching `page_outline.BORDER_
+   WIDTH`) on all four pages' own outer layouts, rather than hoping
+   the ambient default happens to leave enough room. Caught a real
+   bug of my OWN while wiring this in and testing it properly rather
+   than assuming it worked: `settings_page.py` was missing the actual
+   `BORDER_WIDTH` import (only `paint_page_outline` had been
+   imported), which would have crashed SettingsPage outright on
+   construction -- caught immediately by actually constructing one
+   and checking, not left for Max to hit.
+
+### Previous session
+A huge combined batch on top of the previewer's first version --
+previewer polish, two real bugs found and fixed, three new custom
+widget classes, and page-level outlines. Grouped by area.
+
+**Video previewer polish (all the items from this round):**
+- Title now centered and larger, with tags/length/size/date collapsed
+  onto ONE line directly beneath it, both inside a new `_CardBox`
+  (rounded, `card_background()`-colored) -- matches a Library card's
+  own info-box treatment rather than being plain dialog chrome.
+- Speed control is now `CustomDoubleSpinBox` (see below) instead of a
+  plain `QDoubleSpinBox`.
+- Close button removed entirely.
+- Resized to 1.25x (1375x900, was 1100x720).
+- Real rounded window corners: `Qt.FramelessWindowHint` +
+  `WA_TranslucentBackground`, painted directly in the dialog's own
+  `paintEvent` (falls back to square when fullscreen, since a
+  fullscreen window covering the whole screen has no corners to round
+  against anyway).
+- The video itself sits inside a new `_VideoFrame`, bordered in
+  `accent()` at `unedited_selected_border_width` thickness -- the same
+  border a Library thumbnail gets by default (see video_card.py's
+  plain, non-highlighted video-box fill).
+- Transport controls (play/pause, scrubber, volume, speed, fullscreen)
+  now sit inside their own `_CardBox` "protrusion," matching the
+  header's treatment.
+- Click-anywhere-outside now closes the dialog -- an app-wide
+  `eventFilter` installed in `showEvent`/removed in `hideEvent`
+  (checking whether a `QEvent.MouseButtonPress`'s global position
+  falls outside `self.geometry()`), not a `Qt.Popup` window flag: a
+  Popup's own mouse-grab behavior is meant for lightweight, momentary
+  content like SearchBubble/SortPopover, and would have been fragile
+  for a window this complex (mpv embedding, sliders, a spinbox).
+- Prev/Next arrows added, cycling through whichever Library tab/sort
+  the video was opened from -- reuses the EXACT same
+  `neighbor_provider` shape MainWindow already passes to the Editor
+  (`_VideoGridTab.neighbors`), just plumbed through a new
+  `VideoCard.__init__(..., neighbor_provider=...)` parameter instead,
+  since the previewer opens directly from a card rather than through
+  MainWindow's own nav. `_VideoGridTab.refresh()` now passes
+  `neighbor_provider=self.neighbors` when constructing each card.
+  Navigating calls the dialog's own `_load_video()` (resets title,
+  info, mpv source, speed, and re-queries neighbors) rather than
+  opening a second dialog instance.
+- **Real bug found and fixed: autoplay wasn't actually autoplaying.**
+  `MpvVideoWidget.load()` always loads paused by design ("Editor
+  decides whether/when to auto-play") -- the previous version only set
+  the Play/Pause BUTTON's visual checked state to true without ever
+  calling `.play()` on the underlying widget, so the video sat there
+  paused despite the button showing "playing." Fixed by calling
+  `self.video_widget.play()` explicitly right after `load()`.
+- **Real perf bug found and fixed: switching to Library or Settings
+  took a perceptible delay to even BEGIN, reported directly ("Editor
+  is fine").** Traced to last session's `crossfade_to_index()`: it
+  called `old_widget.grab()` -- a full synchronous re-render of the
+  ENTIRE outgoing widget subtree -- BEFORE switching pages. For a big
+  Library grid (many VideoCards) or a Settings page full of custom-
+  painted controls, that grab could take long enough to be a
+  perceptible blocking delay before any visual change happened at all,
+  even though each widget's own paint is individually cheap (cached).
+  Editor's simple layout never had enough content for the cost to be
+  noticeable. Rewrote `crossfade_to_index()` to switch FIRST (instant,
+  as it should be) and fade the already-current new page in via
+  `QGraphicsOpacityEffect` instead of grabbing-then-fading-out a
+  snapshot of the old one -- no pre-switch render cost at all.
+  Verified directly: the function call itself now completes in ~1ms
+  for a 500-widget page, and the page has already switched by the time
+  it returns.
+
+**New custom widgets:**
+- `custom_spinbox.py` -- `CustomSpinBox`/`CustomDoubleSpinBox`. Native
+  up/down arrows hidden (`setButtonSymbols(NoButtons)`); two small
+  custom-painted triangle buttons positioned over the box do the same
+  job via `stepBy()`, which is what both spinbox variants already
+  implement to apply one step correctly regardless of range/wrapping,
+  so the buttons don't need separate int/float logic. The box itself
+  reuses the same rounded/accent-outlined/card-background-filled look
+  as `CustomLineEdit`. Used so far by the previewer's speed control;
+  ready to drop into Settings' own numeric fields next.
+- `custom_radio_button.py` -- `CustomRadioButton`. Same
+  card-background-box + checkmark-icon look as `CustomCheckBox`, just
+  circular instead of rounded-rect, matching the conventional
+  round-vs-square distinction between radio buttons and checkboxes.
+  Replaces the Sort By tab's `QRadioButton`s -- exclusivity still
+  enforced by the same `QButtonGroup` as before.
+- `page_outline.py` -- `paint_page_outline()`. A plain 3px,
+  15%-darker-than-itself outline for a "page" widget, with
+  `skip_top`/`skip_bottom`/`skip_left`/`skip_right` for whichever edge
+  touches something else with no gap. Applied to `_VideoGridTab`
+  (Local/Uploaded -- `library_background()`, skipping the top edge
+  since it's flush against the Library header right above it, per
+  "make sure this doesn't bleed into the middle where they combine"),
+  `LibraryPage` itself (full outline, same color), `EditorPage` and
+  `SettingsPage` (both `app_background()`, full outline -- neither
+  page sets an explicit background of its own, so that's the
+  "itself" being darkened for each). Verified pixel-level: Local's
+  left/bottom edges show the exact darkened color, its top edge does
+  NOT, and LibraryPage's own top edge DOES (the "outer" page, not
+  skipping anything).
+
+**Sort popover fixes:**
+- **Filters tab padding bug -- root cause found.** Every popover page
+  was forced to a fixed 320px height regardless of actual content
+  (`_wrap_scrollable`'s old `scroll.setFixedHeight(320)`). Combined
+  with `setWidgetResizable(True)`, a SHORT page (few tags) got
+  stretched to fill that full 320px anyway, and its own trailing
+  `addStretch(1)` was then filling real, visible dead space at the
+  bottom -- reported as "unnecessary padding... isn't even filled."
+  A LONG page (many tags) genuinely exceeding 320px was a separate,
+  correctly-scrolling case that just happened to look like the same
+  complaint from the outside. Fixed by computing each page's actual
+  `sizeHint().height()` and using `min(that, 320)` instead of always
+  320 -- short pages now size to their own content (no wasted
+  padding), long pages still cap at 320 and scroll as before (that
+  part was never actually broken).
+- Sort By tab's radio buttons are now `CustomRadioButton` (see above).
+
+**Not done this round:** applying `CustomSpinBox`/`CustomComboBox` to
+Settings' own numeric fields and dropdowns -- the spinbox class is
+built and proven (used in the previewer) but not yet swapped into
+Settings itself; a custom combo box (its own popup list, text-bubble
+attachment style like search) still isn't started at all.
+
+### Previous session
+Continuing straight from the last handoff -- same batch, picking up
+where it left off after packaging what was already done.
+
+**Video previewer -- first working version.** New
+`video_preview_dialog.py`, `VideoPreviewDialog(QDialog)`. Opens on a
+plain (unmodified) left-click directly on a card's thumbnail; shows
+title (with the favorite star if set), tags, and length/file-size/
+date, alongside a real embedded player reusing `MpvVideoWidget` (the
+exact same embedding editor_page.py uses) at a much larger size than
+a Library card -- play/pause, a seek scrubber, volume + mute, a
+fullscreen toggle, and a Watch Speed spinbox mirroring the Editor's
+own (same range/step/decimals/suffix, same "resets to 1x, preview-
+only" behavior). No trimming -- this is read-only playback, distinct
+from the Editor.
+
+No answer was ever given to the two clarifying questions asked before
+starting (click behavior vs. the existing multi-select; Local-only vs.
+Uploaded scope), so both were decided as reasonable defaults rather
+than continuing to block:
+- **Scope: Local videos only for now.** Uploaded already has its own
+  separate, previously-speced double-click -> embed/fallback-to-
+  YouTube behavior; this new dialog doesn't touch that.
+- **Click behavior, and a real conflict found while implementing it:**
+  a plain left-click on a card ALREADY drives multi-select (unchanged
+  here), and double-click was ALREADY wired to open the Editor
+  (`VideoCard.mouseDoubleClickEvent`) -- discovered while
+  investigating exactly where "left click" could safely hook in
+  without breaking either. Landed on: an UNMODIFIED (no Ctrl/Shift)
+  left-click, only when it lands on the thumbnail specifically (not
+  the info box or action buttons), opens the preview -- but only
+  after a 250ms delay, cancelled if a genuine double-click arrives in
+  that window. Ctrl/Shift-clicks (multi-select) never trigger it.
+  This is the standard Qt technique for disambiguating a single click
+  from the first half of a double-click, since Qt has no built-in
+  event that already tells you which one you're in until the second
+  press either does or doesn't arrive. Verified all three cases
+  directly with synthesized mouse events: a plain click opens the
+  preview after the delay and does NOT fire edit_requested; a
+  double-click fires edit_requested (opens the Editor) and does NOT
+  also flash the preview open first; a Ctrl-click never opens the
+  preview at all.
+
+Play/pause, fullscreen, and the volume/mute button are all custom-
+painted (a triangle/two bars, four corner brackets, a speaker cone +
+arcs) rather than needing a provided icon asset for any of them --
+per Max's own "see which of these you can do yourself." The scrubber
+and volume level are real `QSlider`s (dragging, click-to-seek, and
+keyboard stepping all come for free from that) recolored via
+stylesheet to match the theme, rather than built from scratch.
+
+Caught one real bug immediately via the test suite, not by luck:
+`MpvVideoWidget.is_paused` is a `@property` (confirmed directly from
+editor_page.py's own usage, which never calls it with parentheses) --
+an early draft of this dialog called it as `is_paused()`, which would
+have crashed on the very first Play/Pause click. Fixed both call
+sites before this ever reached a real run.
+
+Verified end-to-end against a real ffmpeg-generated clip (with a
+stubbed-out `mpv` module tracking every property write, since this
+sandbox has no libmpv): play/pause actually flips the underlying
+`pause` property both ways; the volume slider drives `set_volume`
+exactly; mute/unmute round-trips through the last non-zero volume
+correctly; the speed spinbox drives `set_speed`; dragging the
+scrubber and releasing it calls `seek()` at the mathematically
+correct position for the fraction dragged to.
+
+**Not done this round, still deferred:** custom spinboxes/dropdowns
+in Settings (unchanged from last note -- still the biggest remaining
+piece, a real dropdown needs its own popup list styled like the
+search bar's text-bubble attachment).
+
+### Previous session
+Five more items from Max's latest feedback round, all implemented and
+verified:
+
+1. **Smooth scrolling everywhere**, not just the Library grid. Every
+   `QScrollArea` instantiation across the app (filters_settings_page.py
+   x2, settings_page.py, stats_settings_page.py, and the Sort
+   popover's own `_wrap_scrollable` in library_page.py) now uses
+   `SmoothScrollArea` instead of plain `QScrollArea` -- a one-line swap
+   at each call site since `SmoothScrollArea` only overrides
+   `wheelEvent`, nothing else about `QScrollArea`'s API changed.
+2. **Found and fixed the actual cause of the action buttons' "inconsistent
+   outline."** `CustomButton`'s outline was being stroked on a
+   SEPARATELY inset copy of the button's rect, with the corner radius
+   ALSO independently reduced by the same inset amount
+   (`max(0, radius - inset)`). Insetting a rect and shrinking its
+   corner radius by the same linear amount does NOT produce a
+   concentric rounded shape -- straight edges scale one way, corner
+   arcs scale differently -- so the gap between the fill's rounded
+   corner and the outline's own (separately-computed) rounded corner
+   visibly widened or narrowed right at each corner, while staying
+   constant along the straight edges. That inconsistency IS what
+   looked "off." Fixed by tracing the outline stroke on the EXACT SAME
+   rect + radius the fill already uses -- Qt centers a stroke on its
+   own path by default, so the pen's outer half simply has no widget
+   area left to draw into (invisible, not distorted) rather than
+   needing a manual inset at all. Verified at the code level that the
+   fill's clip path and the outline's stroke path are now built from
+   one identical `rounded_rect_path(rect, radius)` call, not two
+   separately-computed ones -- a more reliable check than pixel
+   measurements here, since "is this shape geometrically concentric"
+   is exactly what the bug was about.
+3. **Custom group box headers** -- new `custom_group_box.py`,
+   `CustomGroupBox`. A drop-in replacement for the exact
+   `QGroupBox("Title")` + `QVBoxLayout(group)` construction pattern
+   already used everywhere (Qt seeds a newly-attached layout's margins
+   from the widget's own `contentsMargins`, which `CustomGroupBox`
+   sets in `__init__` to reserve room for its own painted title, so
+   no call site needed to change beyond the class name itself).
+   Replaces every `QGroupBox` in settings_page.py and
+   filters_settings_page.py, AND the Sort popover's tag-category
+   grouping in library_page.py's `_build_filters_page` -- the "sort
+   tab" headers Max meant. Rounded, accent-colored border with a
+   punched-out gap behind the title text (same idea as a native
+   groupbox's own title notch), filled with the actual palette window
+   color so the border doesn't visibly run behind the text.
+4. **Clip Options now glide open/closed**, synced to the SAME
+   `_ANIM_DURATION_MS` (180ms) and easing curve the `>` arrow's own
+   rotation already uses (imported directly from
+   `collapse_toggle_button.py` rather than a second hardcoded 180,
+   so the two can't silently drift out of sync later) -- animates the
+   body's `maximumHeight` from 0 up to its natural `sizeHint()` height
+   (or the reverse), rather than the old instant
+   `setVisible(expanded)` teleport. The surrounding `QVBoxLayout`
+   reflows everything below the row smoothly frame-by-frame as a
+   direct result, since animating maximumHeight (not a one-shot
+   resize) is what gives the layout something to keep re-measuring
+   against on every frame. Releases the height cap entirely once an
+   expand finishes (so a later content change, e.g. picking a longer
+   sound file path, isn't stuck capped at that one snapshot), and
+   hides the body entirely once a collapse finishes (matching the old
+   behavior's end state). Verified both directions actually reach
+   their correct end state, not just that an animation started.
+5. **Fade between page changes** -- new `crossfade_to_index()` in
+   scale_reveal.py, used for both Local<->Uploaded
+   (`LibraryPage._switch_page`) and the main sidebar's Library/Editor/
+   Settings (`MainWindow._on_nav_clicked` and `_open_in_editor`). Same
+   "don't fight the real widget's layout, animate a disposable
+   snapshot on top of it instead" principle `ScaleRevealOverlay`
+   already established: the actual page switch
+   (`QStackedWidget.setCurrentIndex`) happens immediately and
+   normally, and only a grabbed snapshot of whatever USED to be
+   showing gets overlaid on top and animated to transparent, revealing
+   the already-fully-correct new page underneath as it fades --
+   rather than attempting a true two-layer cross-blend, which would
+   need both pages' geometry animated simultaneously and would fight
+   the stack's own layout the same way a direct scale animation would
+   have. Verified the overlay appears immediately after a page switch
+   and cleans itself up once the fade finishes.
+
+Hit one real bug while writing item 5 (not a product bug, a mistake in
+my own edit): a `str_replace` meant to insert `crossfade_to_index`
+before `animate_popup_from_point` accidentally consumed that
+function's own `def` line, leaving its body orphaned under the wrong
+function -- caught immediately by the very next compile check (a
+plain `ImportError`, not a subtle runtime issue), fixed by restoring
+the missing `def` line.
+
+**Not done this round, explicitly deferred:** custom spinboxes/
+dropdowns in Settings (spinboxes need custom-painted increment/
+decrement controls; dropdowns need a real popup list styled like the
+search bar's own text-bubble attachment -- both meaningfully bigger
+builds than anything else in this batch), and the video previewer
+(queued from last session, no answer yet on the two open questions
+about click behavior vs. the existing multi-select and Local-only vs.
+Uploaded scope).
+
+### Previous session
 Max provided a real app icon (replacing the `library.png`-derived
 placeholder from last session) and gave three more animation notes:
 

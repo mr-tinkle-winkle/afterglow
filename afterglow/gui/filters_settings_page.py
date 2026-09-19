@@ -17,17 +17,22 @@ Three groups:
 from __future__ import annotations
 
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QGroupBox, QLabel,
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QFileDialog, QComboBox, QScrollArea, QFrame, QLineEdit,
-    QMessageBox, QTabWidget, QFormLayout, QInputDialog, QToolButton,
-    QMenu, QWidgetAction,
+    QMessageBox, QFormLayout, QInputDialog, QToolButton,
+    QMenu, QWidgetAction, QDialog, QButtonGroup, QStackedWidget,
 )
-from PySide6.QtGui import QColor
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QColor, QPixmap
+from pathlib import Path
 
 from .. import library
 from .. import config as config_module
 from .. import autofilter
 from .custom_line_edit import CustomLineEdit
+from .custom_group_box import CustomGroupBox
+from .custom_combo_style import combo_box_stylesheet
+from .smooth_scroll_area import SmoothScrollArea
 from .custom_button import CustomButton
 from .custom_checkbox import CustomCheckBox
 
@@ -58,13 +63,19 @@ class _TagIconRow(QFrame):
         row.addWidget(self.name_label, stretch=1)
 
         self.category_combo = QComboBox()
+        self.category_combo.setStyleSheet(combo_box_stylesheet(config_module.load().appearance))
         self._populate_category_combo(categories, category_id)
         self.category_combo.currentIndexChanged.connect(self._on_category_changed)
         row.addWidget(self.category_combo)
 
+        self.icon_thumb = QLabel()
+        self.icon_thumb.setFixedSize(24, 24)
+        row.addWidget(self.icon_thumb)
+
         self.icon_preview = QLabel(self._icon_summary())
         self.icon_preview.setStyleSheet("color: gray;")
         row.addWidget(self.icon_preview)
+        self._update_icon_thumb()
 
         set_icon_btn = CustomButton("Set Icon...")
         set_icon_btn.clicked.connect(self._browse_icon)
@@ -120,6 +131,19 @@ class _TagIconRow(QFrame):
     def _icon_summary(self) -> str:
         return self.icon_path.rsplit("/", 1)[-1] if self.icon_path else "(no icon)"
 
+    def _update_icon_thumb(self) -> None:
+        """A real scaled preview of the chosen icon file, next to its
+        filename -- per Max's direct request, since the filename alone
+        doesn't show what the icon actually looks like."""
+        if self.icon_path and Path(self.icon_path).exists():
+            pixmap = QPixmap(self.icon_path)
+            if not pixmap.isNull():
+                self.icon_thumb.setPixmap(
+                    pixmap.scaled(24, 24, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                )
+                return
+        self.icon_thumb.clear()
+
     def _browse_icon(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
             self, "Choose Icon", "", "Images (*.png *.jpg *.jpeg *.svg *.ico);;All Files (*)"
@@ -127,10 +151,12 @@ class _TagIconRow(QFrame):
         if path:
             self.icon_path = path
             self.icon_preview.setText(self._icon_summary())
+            self._update_icon_thumb()
 
     def _clear_icon(self) -> None:
         self.icon_path = ""
         self.icon_preview.setText(self._icon_summary())
+        self._update_icon_thumb()
 
     def _pick_outline_color(self) -> None:
         from PySide6.QtWidgets import QColorDialog
@@ -215,6 +241,7 @@ class _AutoFilterRow(QFrame):
         # a normal typable box, since the app you want to match might
         # not be running yet when this row is being set up.
         self.app_combo = QComboBox()
+        self.app_combo.setStyleSheet(combo_box_stylesheet(config_module.load().appearance))
         self.app_combo.setEditable(True)
         self.app_combo.setPlaceholderText("App/process name match")
         self._refresh_running_apps(keep_text=app_match)
@@ -227,6 +254,7 @@ class _AutoFilterRow(QFrame):
         row.addWidget(refresh_apps_btn)
 
         self.mode_combo = QComboBox()
+        self.mode_combo.setStyleSheet(combo_box_stylesheet(config_module.load().appearance))
         self.mode_combo.addItem("While app is open", "open")
         self.mode_combo.addItem("Only while app is focused", "focused")
         index = self.mode_combo.findData(mode)
@@ -258,11 +286,40 @@ class FiltersSettingsPage(QWidget):
         self._auto_rows: list[_AutoFilterRow] = []
 
         outer = QVBoxLayout(self)
-        tabs = QTabWidget()
-        outer.addWidget(tabs)
 
-        tabs.addTab(self._build_filters_tab(), "Filters")
-        tabs.addTab(self._build_auto_filter_tab(), "Auto Add Filter")
+        # Same CustomButton + QStackedWidget tab pattern SettingsPage's
+        # own top-level tabs already use, replacing the native
+        # QTabWidget this used to be -- "filter page headers (Filters &
+        # Auto Add Filters)" reported directly as one of the few
+        # remaining non-custom things in Settings.
+        TAB_BUTTON_SPACING = 12
+        self._filters_stack = QStackedWidget()
+        tab_button_group = QButtonGroup(self)
+        tab_button_group.setExclusive(True)
+        tab_header = QHBoxLayout()
+        tab_header.setSpacing(0)
+
+        def _add_tab(label: str, page: QWidget) -> None:
+            index = self._filters_stack.count()
+            self._filters_stack.addWidget(page)
+            btn = CustomButton(label)
+            btn.setCheckable(True)
+            btn.setMinimumHeight(36)
+            tab_button_group.addButton(btn, index)
+            if tab_header.count() > 0:
+                tab_header.addSpacing(TAB_BUTTON_SPACING)
+            tab_header.addWidget(btn)
+            if index == 0:
+                btn.setChecked(True)
+
+        tab_button_group.idClicked.connect(self._filters_stack.setCurrentIndex)
+
+        _add_tab("Filters", self._build_filters_tab())
+        _add_tab("Auto Add Filter", self._build_auto_filter_tab())
+
+        tab_header.addStretch(1)
+        outer.addLayout(tab_header)
+        outer.addWidget(self._filters_stack, stretch=1)
 
     # ------------------------------------------------------------ Filters tab
 
@@ -270,8 +327,8 @@ class FiltersSettingsPage(QWidget):
         page = QWidget()
         layout = QVBoxLayout(page)
 
-        display_group = QGroupBox("Display")
-        form = QFormLayout(display_group)
+        display_group = CustomGroupBox("Display")
+        form = display_group.make_layout(QFormLayout)
 
         self.show_names_check = CustomCheckBox()
         self.show_names_check.setChecked(self._settings.filter_display.show_filter_names)
@@ -282,6 +339,7 @@ class FiltersSettingsPage(QWidget):
         form.addRow("Show Filter Icons:", self.show_icons_check)
 
         self.icon_location_combo = QComboBox()
+        self.icon_location_combo.setStyleSheet(combo_box_stylesheet(config_module.load().appearance))
         for label, value in _ICON_LOCATIONS:
             self.icon_location_combo.addItem(label, value)
         index = self.icon_location_combo.findData(self._settings.filter_display.filter_icon_location)
@@ -290,9 +348,14 @@ class FiltersSettingsPage(QWidget):
 
         layout.addWidget(display_group)
 
-        icons_group = QGroupBox("Tag Icons")
-        icons_layout = QVBoxLayout(icons_group)
-        scroll = QScrollArea()
+        icons_group = CustomGroupBox("Tag Icons")
+        icons_layout = icons_group.make_layout(QVBoxLayout)
+
+        add_new_btn = CustomButton("+ Add New")
+        add_new_btn.clicked.connect(self._add_new_tag)
+        icons_layout.addWidget(add_new_btn)
+
+        scroll = SmoothScrollArea()
         scroll.setWidgetResizable(True)
         rows_container = QWidget()
         self.rows_layout = QVBoxLayout(rows_container)
@@ -303,6 +366,19 @@ class FiltersSettingsPage(QWidget):
 
         self._reload_tag_rows()
         return page
+
+    def _add_new_tag(self) -> None:
+        from .add_filter_dialog import AddFilterDialog
+        dialog = AddFilterDialog(library.all_categories(), parent=self)
+        if dialog.exec() == QDialog.Accepted:
+            name, category_id = dialog.result_values()
+            if name:
+                library.create_tag(name)
+                if category_id is not None:
+                    tag_id = next((tid for tid, tname in library.all_tags_with_ids() if tname == name), None)
+                    if tag_id is not None:
+                        library.set_tag_category(tag_id, category_id)
+                self._reload_tag_rows()
 
     def _reload_tag_rows(self) -> None:
         for row in self._tag_rows:
@@ -338,7 +414,7 @@ class FiltersSettingsPage(QWidget):
         info.setStyleSheet("color: gray;")
         layout.addWidget(info)
 
-        scroll = QScrollArea()
+        scroll = SmoothScrollArea()
         scroll.setWidgetResizable(True)
         rows_container = QWidget()
         self.auto_rows_layout = QVBoxLayout(rows_container)

@@ -108,23 +108,34 @@ class CustomButton(QToolButton):
         painter.setClipping(False)
 
         if self._outline_override is not None and self._outline_width > 0:
+            # Traced on the EXACT SAME rect + radius as the fill above --
+            # not an inset copy with a separately-reduced radius, which
+            # is what this used to do and was the actual cause of the
+            # outline looking "inconsistent around itself": insetting
+            # the rect AND shrinking the radius by the same amount
+            # doesn't scale a rounded rectangle's corner arc the same
+            # way it scales a straight edge, so the two rounded shapes
+            # (fill's and outline's) weren't concentric -- the gap
+            # between them visibly widened or narrowed right at each
+            # corner. Qt strokes a path CENTERED on its own geometry by
+            # default, so tracing the identical path the fill already
+            # uses gives a uniform-width border everywhere, corners
+            # included; the pen's outer half simply has no widget area
+            # left to draw into and is invisible, which is the desired
+            # look anyway (the border reads as fully inside the
+            # button), not a distortion of its shape.
             pen = painter.pen()
             pen.setColor(self._outline_override)
             pen.setWidthF(self._outline_width)
             painter.setPen(pen)
             painter.setBrush(Qt.NoBrush)
-            # Inset by half the stroke width -- an un-inset stroke drawn
-            # exactly on the button's own edge gets half its width
-            # clipped off outside the widget's bounds.
-            inset = self._outline_width / 2
-            outline_rect = rect.adjusted(inset, inset, -inset, -inset)
             if radius:
-                painter.drawPath(rounded_rect_path(outline_rect, max(0.0, radius - inset)))
+                painter.drawPath(rounded_rect_path(rect, radius))
             else:
-                painter.drawRect(outline_rect)
+                painter.drawRect(rect)
 
         if self._icon_pixmap is not None and not self._icon_pixmap.isNull():
-            margin = max(4, round(min(self.width(), self.height()) * 0.2))
+            margin = max(3, round(min(self.width(), self.height()) * 0.14))
             target = self.rect().adjusted(margin, margin, -margin, -margin)
             scaled = self._icon_pixmap.scaled(
                 target.width(), target.height(), Qt.KeepAspectRatio, Qt.SmoothTransformation

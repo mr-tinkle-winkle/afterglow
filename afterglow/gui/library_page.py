@@ -12,12 +12,13 @@ grid/search/filter wiring twice.
 """
 from __future__ import annotations
 
+from pathlib import Path
 from PySide6.QtCore import Qt, Signal, QSize, QFileSystemWatcher, QTimer, QRectF
 from PySide6.QtGui import QPainter, QPixmap, QColor
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLineEdit,
     QScrollArea, QLabel, QStackedWidget, QMessageBox,
-    QStyle, QInputDialog, QGroupBox, QRadioButton,
+    QStyle, QInputDialog, QDialog,
     QButtonGroup, QAbstractButton, QApplication,
 )
 
@@ -33,6 +34,10 @@ from .smooth_scroll_area import SmoothScrollArea
 from .sort_popover import SortPopover
 from .search_bubble import SearchBubble
 from .pixmap_effects import tint_pixmap_cached
+from .custom_group_box import CustomGroupBox
+from .custom_radio_button import CustomRadioButton
+from .scale_reveal import crossfade_to_index
+from .page_outline import paint_page_outline, BORDER_WIDTH
 from .custom_checkbox import CustomCheckBox
 
 # Approximate on-screen width of one card (thumbnail + its own internal
@@ -145,8 +150,8 @@ class FilterCheckBox(CustomCheckBox):
 
     state_changed = Signal(str, str)  # tag_name, new state
 
-    def __init__(self, tag_name: str, parent=None):
-        super().__init__(tag_name, parent)
+    def __init__(self, tag_name: str, parent=None, leading_icon=None):
+        super().__init__(tag_name, parent, leading_icon=leading_icon)
         self._tag_name = tag_name
         self._state = FILTER_STATE_NONE
         self._x_icon = resource_qpixmap("x_icon.png")
@@ -208,6 +213,7 @@ class _SelectionClearingContainer(QWidget):
 
 class _VideoGridTab(QWidget):
     edit_requested = Signal(int)
+    preview_requested = Signal(object, object)  # video, neighbor_provider
 
     def __init__(self, uploaded_only: bool, local_only: bool, parent=None):
         super().__init__(parent)
@@ -254,6 +260,19 @@ class _VideoGridTab(QWidget):
         self._refresh_cooldown_timer.timeout.connect(self._clear_refresh_cooldown)
 
         outer = QVBoxLayout(self)
+
+        # Explicit margin reserving room for the 3px page outline
+        # painted below -- NOT relying on whatever the ambient QStyle's
+        # own default QLayout margin happens to be (often nonzero, but
+        # not guaranteed, and can differ between this sandbox's default
+        # offscreen-platform style and Max's real one). If a style ever
+        # left zero margin here, child content would sit flush against
+        # this widget's own edge and completely paint over the border
+        # drawn beneath it in paintEvent -- exactly matching "the page
+        # outlines don't seem to appear," reported directly. Top is 0
+        # since this tab's own outline skips that edge anyway (flush
+        # against the Library header above it).
+        outer.setContentsMargins(BORDER_WIDTH, 0, BORDER_WIDTH, BORDER_WIDTH)
 
         # ---- grid ----
         # Search/Refresh/Sort now live once, shared, in LibraryPage's own
@@ -338,9 +357,62 @@ class _VideoGridTab(QWidget):
         self.empty_label.setAlignment(Qt.AlignCenter)
         outer.addWidget(self.empty_label)
 
+        # Debounces refreshes triggered by a card's own signals
+        # (tags_changed, renamed) -- these used to call self.refresh()
+        # DIRECTLY, meaning every single filter toggle (or an inline
+        # title-edit's own commit) rebuilt every card in the grid from
+        # scratch, immediately, reported directly as real, noticeable
+        # lag on every toggle "wherever you do it." A single toggle
+        # still refreshes (this doesn't skip work, only coalesces
+        # BURSTS of them -- e.g. toggling several filters in a row
+        # while a menu stays open) into one rebuild shortly after the
+        # last one, rather than one rebuild per individual toggle.
+        self._card_signal_debounce = QTimer(self)
+        self._card_signal_debounce.setSingleShot(True)
+        self._card_signal_debounce.setInterval(150)
+        self._card_signal_debounce.timeout.connect(self._on_card_signal_debounce_timeout)
+        # Counts how many cards currently have a context menu open --
+        # this is the actual root cause finally found for "the context
+        # menu still closes when checking a box," after two earlier
+        # fixes (both aimed at QMenu's OWN closing behavior) didn't
+        # hold up: menu.exec() runs its own nested event loop, which
+        # STILL processes timers -- so this debounce firing WHILE a
+        # menu is open would rebuild the whole grid (destroying the
+        # VideoCard the open menu is parented to), closing the menu as
+        # a side effect of its own parent being destroyed, completely
+        # independent of anything QMenu itself does. Rescheduling
+        # instead of firing while any menu is open avoids that
+        # entirely.
+        self._menu_open_count = 0
+
         self.refresh()
 
     # ------------------------------------------------------------ filters menu
+
+    def paintEvent(self, event) -> None:
+        # super().paintEvent() FIRST, border SECOND -- reported as not
+        # visible at all on a real machine despite passing every pixel
+        # check in this sandbox. Likely cause: a real KDE/Plasma-
+        # integrated Qt style can have WA_StyledBackground effectively
+        # active (this sandbox's offscreen platform doesn't), in which
+        # case QWidget's own base paintEvent() actually paints an
+        # OPAQUE background via the current style -- if that ran AFTER
+        # this border (the previous order), it would silently paint
+        # right over it. Calling the base class first and drawing the
+        # border on top guarantees the border is always the last thing
+        # painted here, regardless of what the base class does on any
+        # given platform/style.
+        super().paintEvent(event)
+        # 3px, 15%-darker-than-itself outline -- per Max's direct
+        # request for every "page" (Local/Uploaded/Library/Editor/
+        # Settings). Skips the TOP edge specifically: this tab's own
+        # content area sits flush against the Library header (the
+        # search/refresh/sort row and the Local/Uploaded page-switch
+        # buttons) with no gap, so a full outline would visibly
+        # double up or bleed into that seam -- "make sure this
+        # doesn't bleed into the middle where they combine."
+        theme = Theme(config_module.load().appearance)
+        paint_page_outline(self, theme.library_background(), skip_top=True)
 
     def rebuild_sort_popover_pages(self, popover: SortPopover) -> None:
         """Fills `popover`'s three pages with THIS tab's current
@@ -367,9 +439,16 @@ class _VideoGridTab(QWidget):
 
         all_tags = library.all_known_tags()
         grouped, uncategorized = library.tags_grouped_by_category()
+        tag_icon_paths = library.tag_icons()  # {tag_name: icon_path}, only for tags that have one set
 
         def _make_checkbox(tag: str, target_layout: QVBoxLayout) -> None:
-            checkbox = FilterCheckBox(tag)
+            leading_icon = None
+            icon_path = tag_icon_paths.get(tag)
+            if icon_path and Path(icon_path).exists():
+                pixmap = QPixmap(icon_path)
+                if not pixmap.isNull():
+                    leading_icon = pixmap
+            checkbox = FilterCheckBox(tag, leading_icon=leading_icon)
             if tag in self._excluded_tags:
                 checkbox.set_state(FILTER_STATE_EXCLUDE)
             elif tag in self._active_tags:
@@ -387,8 +466,8 @@ class _VideoGridTab(QWidget):
         # for a submenu to open TO, so each category is just its own
         # labeled group instead, in the same vertical flow).
         for category_name, tag_names in grouped.items():
-            group = QGroupBox(category_name)
-            group_layout = QVBoxLayout(group)
+            group = CustomGroupBox(category_name)
+            group_layout = group.make_layout(QVBoxLayout)
             for tag in tag_names:
                 _make_checkbox(tag, group_layout)
             layout.addWidget(group)
@@ -428,7 +507,7 @@ class _VideoGridTab(QWidget):
             ("Video length (long to short)", library.SORT_LENGTH_LONG_TO_SHORT),
         ]
         for label, sort_by in sort_options:
-            radio = QRadioButton(label)
+            radio = CustomRadioButton(label)
             radio.setChecked(sort_by == self._sort_by)
             radio.toggled.connect(lambda checked, s=sort_by: self._set_sort_by(s) if checked else None)
             group.addButton(radio)
@@ -460,19 +539,25 @@ class _VideoGridTab(QWidget):
         return self._wrap_scrollable(page)
 
     @staticmethod
-    def _wrap_scrollable(page: QWidget) -> QScrollArea:
-        """Bounds each SortPopover page to a comfortable fixed height
-        (a Filters page with many tags could otherwise grow the whole
-        popover past the screen) while keeping the popover's own
-        painted background visible through it."""
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QScrollArea.NoFrame)
-        scroll.setFixedHeight(320)
-        scroll.viewport().setAutoFillBackground(False)
-        scroll.setAttribute(Qt.WA_TranslucentBackground, True)
-        scroll.setWidget(page)
-        return scroll
+    def _wrap_scrollable(page: QWidget) -> QWidget:
+        """Used to bound each SortPopover page to a fixed, capped
+        height inside a scrolling viewport -- removed entirely per
+        Max's own direct suggestion after the padding/cutoff issue
+        this was involved in persisted even after the previous fix to
+        it (computing each page's own actual content height instead of
+        forcing a fixed 320px). The popover itself now simply grows to
+        fit however tall a given page's content actually is, with no
+        cap and no scrolling at all -- trading "a very long tag list
+        could push the popover past the screen" for "there is no
+        scrolling-related sizing bug left to have," which is the
+        simpler, more reliable trade given the number of attempts the
+        capped/scrolling version needed and still didn't fully
+        resolve. Kept as a no-op passthrough (not deleted, and every
+        call site unchanged) so a future session could reintroduce a
+        cap here specifically if a genuinely huge tag list turns out
+        to need one."""
+        page.setAttribute(Qt.WA_TranslucentBackground, True)
+        return page
 
     def _toggle_favorite_filter(self, checked: bool) -> None:
         self._favorite_only = checked
@@ -499,11 +584,17 @@ class _VideoGridTab(QWidget):
         self._on_filter_state_changed(tag, new_state)
 
     def _add_new_filter(self) -> None:
-        name, ok = QInputDialog.getText(self, "Add Filter", "Filter name:")
-        name = name.strip()
-        if ok and name:
-            library.create_tag(name)
-            self.refresh()
+        from .add_filter_dialog import AddFilterDialog
+        dialog = AddFilterDialog(library.all_categories(), parent=self)
+        if dialog.exec() == QDialog.Accepted:
+            name, category_id = dialog.result_values()
+            if name:
+                library.create_tag(name)
+                if category_id is not None:
+                    tag_id = next((tid for tid, tname in library.all_tags_with_ids() if tname == name), None)
+                    if tag_id is not None:
+                        library.set_tag_category(tag_id, category_id)
+                self.refresh()
 
     def _toggle_highlight_unedited(self, checked: bool) -> None:
         self._highlight_unedited = checked
@@ -531,6 +622,31 @@ class _VideoGridTab(QWidget):
         self.refresh()
 
     # ------------------------------------------------------------ grid rendering
+
+    def _on_context_menu_opened(self) -> None:
+        self._menu_open_count += 1
+
+    def _on_context_menu_closed(self) -> None:
+        self._menu_open_count = max(0, self._menu_open_count - 1)
+        # A toggle made just before the menu closed may have queued a
+        # refresh that got rescheduled below while the menu was still
+        # open -- fire it now rather than waiting out another full
+        # interval for something the user is already done with.
+        if self._menu_open_count == 0 and self._card_signal_debounce.isActive():
+            self._card_signal_debounce.stop()
+            self.refresh()
+
+    def _on_card_signal_debounce_timeout(self) -> None:
+        if self._menu_open_count > 0:
+            # Don't rebuild the grid (destroying every VideoCard,
+            # including whichever one a currently-open context menu is
+            # parented to) while that menu is still open -- reschedule
+            # instead of refreshing right now; _on_context_menu_closed
+            # picks this up the moment the menu actually closes instead
+            # of waiting out a full extra interval.
+            self._card_signal_debounce.start()
+            return
+        self.refresh()
 
     def refresh(self) -> None:
         # Leading-edge debounce: the FIRST call in any 750ms window acts
@@ -610,11 +726,15 @@ class _VideoGridTab(QWidget):
                 video, highlight_enabled=self._highlight_unedited, font_scale=self._font_scale,
                 get_selected_ids=lambda: self._selected_ids,
                 ensure_selected=self._ensure_selected_for_context_menu,
+                neighbor_provider=self.neighbors,
             )
             card.edit_requested.connect(self.edit_requested.emit)
+            card.preview_requested.connect(self.preview_requested.emit)
             card.deleted.connect(lambda _vid: self.refresh())
-            card.tags_changed.connect(self.refresh)
-            card.renamed.connect(self.refresh)
+            card.tags_changed.connect(self._card_signal_debounce.start)
+            card.renamed.connect(self._card_signal_debounce.start)
+            card.context_menu_opened.connect(self._on_context_menu_opened)
+            card.context_menu_closed.connect(self._on_context_menu_closed)
             card.upload_requested.connect(self._handle_upload_request)
             card.filter_left_clicked.connect(self._on_icon_left_clicked)
             card.filter_right_clicked.connect(self._on_icon_right_clicked)
@@ -735,10 +855,12 @@ class _VideoGridTab(QWidget):
 
 class LibraryPage(QWidget):
     edit_requested = Signal(int)  # bubbled up from either tab, for MainWindow to route to Editor
+    preview_requested = Signal(object, object)  # video, neighbor_provider -- ditto, for the preview overlay
 
     def __init__(self, parent=None):
         super().__init__(parent)
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(BORDER_WIDTH, BORDER_WIDTH, BORDER_WIDTH, BORDER_WIDTH)
 
         # Ingest/prune before the tabs build their initial grids, so the
         # very first render already reflects reality (manually-dropped-in
@@ -752,6 +874,15 @@ class LibraryPage(QWidget):
             library.scan_and_ingest_new_videos()
             library.prune_missing_videos()
             library.remove_stray_orig_entries()
+        # Repairs any video whose date got corrupted by the mass-
+        # false-positive prune bug (see prune_missing_videos' and
+        # repair_incorrect_creation_dates' own docstrings) -- once here
+        # at startup regardless of the daemon-offload setting above
+        # (this repairs EXISTING bad data already sitting in the DB,
+        # it isn't part of the ongoing scan/prune/ingest cycle that
+        # setting controls), and cheap/safe to call unconditionally --
+        # already-correct videos are a no-op.
+        library.repair_incorrect_creation_dates()
 
         self.local_tab = _VideoGridTab(uploaded_only=False, local_only=True)
         self.uploaded_tab = _VideoGridTab(uploaded_only=True, local_only=False)
@@ -767,6 +898,8 @@ class LibraryPage(QWidget):
         self.uploaded_tab.edit_requested.connect(
             lambda vid: self._on_tab_edit_requested(self.uploaded_tab, vid)
         )
+        self.local_tab.preview_requested.connect(self.preview_requested.emit)
+        self.uploaded_tab.preview_requested.connect(self.preview_requested.emit)
 
         self._stack = QStackedWidget()
         self._stack.addWidget(self.local_tab)
@@ -923,11 +1056,18 @@ class LibraryPage(QWidget):
 
     # ------------------------------------------------------------ page switching
 
+    def paintEvent(self, event) -> None:
+        # super() first, border second -- see _VideoGridTab's own
+        # paintEvent comment for why this order matters.
+        super().paintEvent(event)
+        theme = Theme(config_module.load().appearance)
+        paint_page_outline(self, theme.library_background())
+
     def _active_tab(self) -> "_VideoGridTab":
         return self._stack.currentWidget()
 
     def _switch_page(self, index: int) -> None:
-        self._stack.setCurrentIndex(index)
+        crossfade_to_index(self._stack, index)
         self._sync_search_bubble_for_active_tab()
 
     # ------------------------------------------------------------ shared search bubble

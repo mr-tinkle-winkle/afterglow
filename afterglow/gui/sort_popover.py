@@ -93,6 +93,26 @@ class _RoundedContentArea(QStackedWidget):
         self._radius = radius
         self.setAttribute(Qt.WA_StyledBackground, False)
 
+    def sizeHint(self):
+        # QStackedWidget's OWN default sizeHint()/minimumSizeHint() is
+        # the LARGEST across ALL of its pages, not just the one
+        # actually showing -- each page here is already wrapped in its
+        # own independently-sized QScrollArea (_wrap_scrollable, in
+        # library_page.py), so a short page (few tags in Filters) was
+        # still forcing the whole popover to whatever height the
+        # TALLEST of the three pages needed, leaving real, visible
+        # unfilled space below the shorter page's own content --
+        # reported directly ("unnecessary padding... isn't even filled
+        # by the elements"). Returning the CURRENT page's own sizeHint
+        # instead makes the popover's height track whichever page is
+        # actually showing.
+        current = self.currentWidget()
+        return current.sizeHint() if current is not None else super().sizeHint()
+
+    def minimumSizeHint(self):
+        current = self.currentWidget()
+        return current.minimumSizeHint() if current is not None else super().minimumSizeHint()
+
     def paintEvent(self, event) -> None:
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
@@ -176,6 +196,14 @@ class SortPopover(QWidget):
         self._stack.setCurrentIndex(index)
         for i, btn in enumerate(self._tab_buttons):
             btn.setChecked(i == index)
+        # Re-sizes the whole popover to the NEWLY-current page's own
+        # height immediately -- without this, switching tabs while the
+        # popover is already open would leave it at whatever size the
+        # PREVIOUSLY-selected page needed until the next time it's
+        # reopened, since _RoundedContentArea's sizeHint only gets
+        # re-queried when something actually asks for a size update.
+        self.adjustSize()
+        self.resize(320, self.height())
 
     def show_below(self, anchor: QWidget) -> None:
         """Grows out of `anchor`'s own position rather than just

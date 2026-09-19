@@ -18,9 +18,9 @@ from __future__ import annotations
 import tomllib
 
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QGroupBox, QLineEdit,
-    QSpinBox, QDoubleSpinBox, QPushButton, QFileDialog, QLabel, QScrollArea,
-    QMessageBox, QComboBox, QColorDialog, QStackedWidget, QButtonGroup,
+    QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QLineEdit,
+    QFileDialog, QLabel, QScrollArea,
+    QComboBox, QColorDialog, QStackedWidget, QButtonGroup,
 )
 from PySide6.QtGui import QColor
 
@@ -33,6 +33,13 @@ from .stats_settings_page import StatsPage
 from .custom_button import CustomButton
 from .custom_checkbox import CustomCheckBox
 from .custom_line_edit import CustomLineEdit
+from .custom_spinbox import CustomSpinBox, CustomDoubleSpinBox
+from .custom_combo_style import combo_box_stylesheet
+from .custom_group_box import CustomGroupBox
+from .custom_message_dialog import show_message
+from .theme import Theme
+from .page_outline import paint_page_outline, BORDER_WIDTH
+from .smooth_scroll_area import SmoothScrollArea
 
 
 class SettingsPage(QWidget):
@@ -43,6 +50,7 @@ class SettingsPage(QWidget):
         self._deleted_ids: set[int] = set()
 
         outer = QVBoxLayout(self)
+        outer.setContentsMargins(BORDER_WIDTH, BORDER_WIDTH, BORDER_WIDTH, BORDER_WIDTH)
 
         # ---- header row: one fully separate, fully-rounded custom
         # button per settings page, each with real padding between them
@@ -124,14 +132,25 @@ class SettingsPage(QWidget):
 
     # ------------------------------------------------------------ OBS group
 
-    def _build_obs_group(self) -> QGroupBox:
-        group = QGroupBox("OBS Connection")
-        form = QFormLayout(group)
+    def paintEvent(self, event) -> None:
+        # super() first, border second -- same reasoning as Editor's
+        # own paintEvent (a real style could paint an opaque background
+        # via the base class that would erase a border drawn first).
+        super().paintEvent(event)
+        # 3px, 15%-darker-than-itself page outline -- Settings has no
+        # explicit background of its own, so this darkens the same
+        # inherited app_background() Editor's outline uses too.
+        theme = Theme(config_module.load().appearance)
+        paint_page_outline(self, theme.app_background())
+
+    def _build_obs_group(self) -> CustomGroupBox:
+        group = CustomGroupBox("OBS Connection")
+        form = group.make_layout(QFormLayout)
 
         self.obs_host_edit = CustomLineEdit(self._settings.obs.host)
         form.addRow("Host:", self.obs_host_edit)
 
-        self.obs_port_spin = QSpinBox()
+        self.obs_port_spin = CustomSpinBox()
         self.obs_port_spin.setRange(1, 65535)
         self.obs_port_spin.setValue(self._settings.obs.port)
         form.addRow("Port:", self.obs_port_spin)
@@ -150,7 +169,7 @@ class SettingsPage(QWidget):
         pw_row.addWidget(show_btn)
         form.addRow("Password:", pw_row)
 
-        self.obs_wait_after_finish_spin = QDoubleSpinBox()
+        self.obs_wait_after_finish_spin = CustomDoubleSpinBox()
         self.obs_wait_after_finish_spin.setRange(0.0, 30.0)
         self.obs_wait_after_finish_spin.setSingleStep(0.5)
         self.obs_wait_after_finish_spin.setSuffix(" sec")
@@ -193,15 +212,15 @@ class SettingsPage(QWidget):
                         f"That clip will end up shorter than requested. "
                         f"Increase the buffer length in OBS's Output settings."
                     )
-            QMessageBox.information(self, "OBS Connection", msg)
+            show_message(self, "OBS Connection", msg)
         except OBSError as e:
-            QMessageBox.critical(self, "OBS Connection Failed", str(e))
+            show_message(self, "OBS Connection Failed", str(e))
 
     # ------------------------------------------------------------ clipping group
 
-    def _build_clipping_group(self) -> QGroupBox:
-        group = QGroupBox("Clip Capture")
-        form = QFormLayout(group)
+    def _build_clipping_group(self) -> CustomGroupBox:
+        group = CustomGroupBox("Clip Capture")
+        form = group.make_layout(QFormLayout)
 
         dir_row = QHBoxLayout()
         self.clips_dir_edit = CustomLineEdit(self._settings.clips_dir)
@@ -235,9 +254,9 @@ class SettingsPage(QWidget):
 
     # ------------------------------------------------------------ appearance group
 
-    def _build_appearance_group(self) -> QGroupBox:
-        group = QGroupBox("Appearance")
-        form = QFormLayout(group)
+    def _build_appearance_group(self) -> CustomGroupBox:
+        group = CustomGroupBox("Appearance")
+        form = group.make_layout(QFormLayout)
         a = self._settings.appearance
 
         # ---- UI update (Phase 1) ----
@@ -245,7 +264,7 @@ class SettingsPage(QWidget):
         self.rounded_corners_check.setChecked(a.rounded_corners_enabled)
         form.addRow("Rounded Corners:", self.rounded_corners_check)
 
-        self.rounded_corner_radius_spin = QSpinBox()
+        self.rounded_corner_radius_spin = CustomSpinBox()
         self.rounded_corner_radius_spin.setRange(0, 100)
         self.rounded_corner_radius_spin.setSuffix(" px")
         self.rounded_corner_radius_spin.setValue(a.rounded_corner_radius)
@@ -268,7 +287,7 @@ class SettingsPage(QWidget):
         )
         form.addRow("Afterglow Theme:", self.afterglow_theme_check)
 
-        self.ui_padding_spin = QSpinBox()
+        self.ui_padding_spin = CustomSpinBox()
         self.ui_padding_spin.setRange(0, 100)
         self.ui_padding_spin.setSuffix(" px")
         self.ui_padding_spin.setValue(a.ui_padding)
@@ -294,7 +313,7 @@ class SettingsPage(QWidget):
         card_text_outline_row.addWidget(card_text_outline_pick)
         form.addRow("Card Text Outline Color:", card_text_outline_row)
 
-        self.card_text_outline_width_spin = QDoubleSpinBox()
+        self.card_text_outline_width_spin = CustomDoubleSpinBox()
         self.card_text_outline_width_spin.setRange(0.0, 10.0)
         self.card_text_outline_width_spin.setSingleStep(0.5)
         self.card_text_outline_width_spin.setValue(a.card_text_outline_width)
@@ -326,23 +345,32 @@ class SettingsPage(QWidget):
         )
         form.addRow("Resize Text to Fit:", self.resize_text_check)
 
-        self.inactive_border_width_spin = QSpinBox()
+        self.extended_dates_check = CustomCheckBox()
+        self.extended_dates_check.setChecked(a.extended_dates)
+        self.extended_dates_check.setToolTip(
+            "Shows the full date and time (down to the second, whatever's "
+            "in the video's own metadata) everywhere a video's date is "
+            "shown, instead of just the date."
+        )
+        form.addRow("Extended Dates:", self.extended_dates_check)
+
+        self.inactive_border_width_spin = CustomSpinBox()
         self.inactive_border_width_spin.setRange(0, 50)
         self.inactive_border_width_spin.setValue(a.inactive_border_width)
         form.addRow("Inactive Border Width:", self.inactive_border_width_spin)
 
-        self.inactive_border_brightness_spin = QSpinBox()
+        self.inactive_border_brightness_spin = CustomSpinBox()
         self.inactive_border_brightness_spin.setRange(0, 100)
         self.inactive_border_brightness_spin.setSuffix("%")
         self.inactive_border_brightness_spin.setValue(a.inactive_border_brightness)
         form.addRow("Inactive Border Brightness:", self.inactive_border_brightness_spin)
 
-        self.active_border_width_spin = QSpinBox()
+        self.active_border_width_spin = CustomSpinBox()
         self.active_border_width_spin.setRange(0, 50)
         self.active_border_width_spin.setValue(a.active_border_width)
         form.addRow("Active Border Width:", self.active_border_width_spin)
 
-        self.active_border_brightness_spin = QSpinBox()
+        self.active_border_brightness_spin = CustomSpinBox()
         self.active_border_brightness_spin.setRange(0, 100)
         self.active_border_brightness_spin.setSuffix("%")
         self.active_border_brightness_spin.setValue(a.active_border_brightness)
@@ -354,19 +382,19 @@ class SettingsPage(QWidget):
         # still, while values above 100% only get back toward "no
         # darkening at all" rather than actually brightening past it
         # (see _ScalingIconButton's own comment on why).
-        self.library_border_brightness_mult_spin = QSpinBox()
+        self.library_border_brightness_mult_spin = CustomSpinBox()
         self.library_border_brightness_mult_spin.setRange(0, 200)
         self.library_border_brightness_mult_spin.setSuffix("%")
         self.library_border_brightness_mult_spin.setValue(a.library_border_brightness_multiplier)
         form.addRow("Library Border Brightness Multiplier:", self.library_border_brightness_mult_spin)
 
-        self.editor_border_brightness_mult_spin = QSpinBox()
+        self.editor_border_brightness_mult_spin = CustomSpinBox()
         self.editor_border_brightness_mult_spin.setRange(0, 200)
         self.editor_border_brightness_mult_spin.setSuffix("%")
         self.editor_border_brightness_mult_spin.setValue(a.editor_border_brightness_multiplier)
         form.addRow("Editor Border Brightness Multiplier:", self.editor_border_brightness_mult_spin)
 
-        self.settings_border_brightness_mult_spin = QSpinBox()
+        self.settings_border_brightness_mult_spin = CustomSpinBox()
         self.settings_border_brightness_mult_spin.setRange(0, 200)
         self.settings_border_brightness_mult_spin.setSuffix("%")
         self.settings_border_brightness_mult_spin.setValue(a.settings_border_brightness_multiplier)
@@ -386,13 +414,14 @@ class SettingsPage(QWidget):
         sidebar_image_row.addWidget(sidebar_image_browse)
         form.addRow("Sidebar Border Image:", sidebar_image_row)
 
-        self.sidebar_border_hue_shift_spin = QSpinBox()
+        self.sidebar_border_hue_shift_spin = CustomSpinBox()
         self.sidebar_border_hue_shift_spin.setRange(0, 359)
         self.sidebar_border_hue_shift_spin.setSuffix("\u00b0")
         self.sidebar_border_hue_shift_spin.setValue(a.sidebar_border_hue_shift)
         form.addRow("Sidebar Border Hue Shift:", self.sidebar_border_hue_shift_spin)
 
         self.settings_border_combo = QComboBox()
+        self.settings_border_combo.setStyleSheet(combo_box_stylesheet(a))
         self.settings_border_combo.addItem("Disabled", "disabled")
         self.settings_border_combo.addItem("Only when on the settings page", "only_settings")
         self.settings_border_combo.addItem("Always", "always")
@@ -400,7 +429,7 @@ class SettingsPage(QWidget):
         self.settings_border_combo.setCurrentIndex(index if index >= 0 else 1)
         form.addRow("Border around Settings?", self.settings_border_combo)
 
-        self.unedited_selected_border_width_spin = QSpinBox()
+        self.unedited_selected_border_width_spin = CustomSpinBox()
         # Range max used to be 50 while the actual default (see
         # config.py) had already been doubled past that several times
         # (72, then 144) -- QSpinBox.setValue() silently CLAMPS an
@@ -418,7 +447,7 @@ class SettingsPage(QWidget):
         self.unedited_selected_border_width_spin.setValue(a.unedited_selected_border_width)
         form.addRow("Unedited/Selected Border Width:", self.unedited_selected_border_width_spin)
 
-        self.unedited_highlight_brightness_spin = QSpinBox()
+        self.unedited_highlight_brightness_spin = CustomSpinBox()
         self.unedited_highlight_brightness_spin.setRange(0, 100)
         self.unedited_highlight_brightness_spin.setSuffix("%")
         self.unedited_highlight_brightness_spin.setValue(a.unedited_highlight_brightness)
@@ -435,7 +464,7 @@ class SettingsPage(QWidget):
         unedited_image_row.addWidget(unedited_image_browse)
         form.addRow("Unedited Border Image:", unedited_image_row)
 
-        self.unedited_border_hue_shift_spin = QSpinBox()
+        self.unedited_border_hue_shift_spin = CustomSpinBox()
         self.unedited_border_hue_shift_spin.setRange(0, 359)
         self.unedited_border_hue_shift_spin.setSuffix("\u00b0")
         self.unedited_border_hue_shift_spin.setValue(a.unedited_border_hue_shift)
@@ -452,7 +481,7 @@ class SettingsPage(QWidget):
         selected_image_row.addWidget(selected_image_browse)
         form.addRow("Selected Border Image:", selected_image_row)
 
-        self.filter_icon_size_spin = QSpinBox()
+        self.filter_icon_size_spin = CustomSpinBox()
         self.filter_icon_size_spin.setRange(8, 200)
         self.filter_icon_size_spin.setSuffix(" px")
         self.filter_icon_size_spin.setValue(a.filter_icon_size)
@@ -465,31 +494,31 @@ class SettingsPage(QWidget):
         # three for the sidebar nav buttons (Library/Editor/Settings),
         # two for the Library page's own Local ("Saved Videos")/Uploaded
         # tab icons.
-        self.library_icon_size_spin = QSpinBox()
+        self.library_icon_size_spin = CustomSpinBox()
         self.library_icon_size_spin.setRange(10, 200)
         self.library_icon_size_spin.setSuffix("%")
         self.library_icon_size_spin.setValue(a.library_icon_size)
         form.addRow("Library Icon Size (sidebar):", self.library_icon_size_spin)
 
-        self.editor_icon_size_spin = QSpinBox()
+        self.editor_icon_size_spin = CustomSpinBox()
         self.editor_icon_size_spin.setRange(10, 200)
         self.editor_icon_size_spin.setSuffix("%")
         self.editor_icon_size_spin.setValue(a.editor_icon_size)
         form.addRow("Editor Icon Size (sidebar):", self.editor_icon_size_spin)
 
-        self.settings_icon_size_spin = QSpinBox()
+        self.settings_icon_size_spin = CustomSpinBox()
         self.settings_icon_size_spin.setRange(10, 200)
         self.settings_icon_size_spin.setSuffix("%")
         self.settings_icon_size_spin.setValue(a.settings_icon_size)
         form.addRow("Settings Icon Size (sidebar):", self.settings_icon_size_spin)
 
-        self.saved_videos_icon_size_spin = QSpinBox()
+        self.saved_videos_icon_size_spin = CustomSpinBox()
         self.saved_videos_icon_size_spin.setRange(10, 200)
         self.saved_videos_icon_size_spin.setSuffix("%")
         self.saved_videos_icon_size_spin.setValue(a.saved_videos_icon_size)
         form.addRow("Saved Videos Icon Size (Library tab):", self.saved_videos_icon_size_spin)
 
-        self.uploaded_videos_icon_size_spin = QSpinBox()
+        self.uploaded_videos_icon_size_spin = CustomSpinBox()
         self.uploaded_videos_icon_size_spin.setRange(10, 200)
         self.uploaded_videos_icon_size_spin.setSuffix("%")
         self.uploaded_videos_icon_size_spin.setValue(a.uploaded_videos_icon_size)
@@ -500,6 +529,7 @@ class SettingsPage(QWidget):
         # checked at once, which has no sensible meaning. Moved here from
         # Clipping since it's a startup-appearance choice.
         self.startup_window_mode_combo = QComboBox()
+        self.startup_window_mode_combo.setStyleSheet(combo_box_stylesheet(a))
         self.startup_window_mode_combo.addItem("Normal", "normal")
         self.startup_window_mode_combo.addItem("Maximized", "maximized")
         self.startup_window_mode_combo.addItem("Fullscreen", "fullscreen")
@@ -538,9 +568,9 @@ class SettingsPage(QWidget):
 
     # ------------------------------------------------------------ Afterglow Theme group
 
-    def _build_afterglow_theme_group(self) -> QGroupBox:
-        group = QGroupBox("Afterglow Theme")
-        form = QFormLayout(group)
+    def _build_afterglow_theme_group(self) -> CustomGroupBox:
+        group = CustomGroupBox("Afterglow Theme")
+        form = group.make_layout(QFormLayout)
         a = self._settings.appearance
 
         accent_row, self.afterglow_accent_edit = self._build_color_row(a.afterglow_color_accent)
@@ -567,15 +597,15 @@ class SettingsPage(QWidget):
 
         return group
 
-    def _build_reset_group(self) -> QGroupBox:
+    def _build_reset_group(self) -> CustomGroupBox:
         """Recovery tools for exactly the class of problem that's come
         up repeatedly: a color or setting default changes in a new
         build, but an already-saved config keeps showing the OLD
         value, and it can look indistinguishable from a real rendering
         bug from the outside. Added directly on Max's request --
         "before assuming there is a bug" -- as the first thing to try."""
-        group = QGroupBox("Reset")
-        layout = QVBoxLayout(group)
+        group = CustomGroupBox("Reset")
+        layout = group.make_layout(QVBoxLayout)
 
         colors_btn = CustomButton("Revert to Default Colors")
         colors_btn.clicked.connect(self._revert_default_colors)
@@ -596,7 +626,7 @@ class SettingsPage(QWidget):
         layout.addWidget(note)
         return group
 
-    def _build_import_export_group(self) -> QGroupBox:
+    def _build_import_export_group(self) -> CustomGroupBox:
         """Export the ENTIRE current config (not just appearance) to an
         arbitrary file, or replace it wholesale from one -- per Max's
         request, for handing a "new default settings" file back to a
@@ -604,8 +634,8 @@ class SettingsPage(QWidget):
         hand. Distinct from the Reset group above: Reset always goes to
         this BUILD's own code defaults; Import/Export moves a real,
         specific config file in and out of the app."""
-        group = QGroupBox("Import / Export Settings")
-        layout = QVBoxLayout(group)
+        group = CustomGroupBox("Import / Export Settings")
+        layout = group.make_layout(QVBoxLayout)
 
         export_btn = CustomButton("Export Settings...")
         export_btn.clicked.connect(self._export_settings)
@@ -624,9 +654,9 @@ class SettingsPage(QWidget):
         layout.addWidget(note)
         return group
 
-    def _build_performance_group(self) -> QGroupBox:
-        group = QGroupBox("Performance")
-        layout = QVBoxLayout(group)
+    def _build_performance_group(self) -> CustomGroupBox:
+        group = CustomGroupBox("Performance")
+        layout = group.make_layout(QVBoxLayout)
 
         self.offload_scan_checkbox = CustomCheckBox("Offload library scanning to the background daemon")
         self.offload_scan_checkbox.setChecked(self._settings.offload_library_scan_to_daemon)
@@ -643,6 +673,21 @@ class SettingsPage(QWidget):
         )
         note.setWordWrap(True)
         layout.addWidget(note)
+
+        self.auto_copy_mp4_checkbox = CustomCheckBox("Auto Copy as MP4")
+        self.auto_copy_mp4_checkbox.setChecked(self._settings.auto_copy_as_mp4)
+        self.auto_copy_mp4_checkbox.toggled.connect(self._save)
+        layout.addWidget(self.auto_copy_mp4_checkbox)
+
+        mp4_note = QLabel(
+            "When on, Copying a video whose file isn't already .mp4 puts a "
+            ".mp4-named copy on the clipboard instead of the original "
+            "extension -- a pure rename via a fresh copy, not a remux or "
+            "re-encode of any kind. The original file in the library is "
+            "never touched."
+        )
+        mp4_note.setWordWrap(True)
+        layout.addWidget(mp4_note)
         return group
 
     def _export_settings(self) -> None:
@@ -654,7 +699,7 @@ class SettingsPage(QWidget):
         try:
             config_module.export_to_file(path)
         except OSError as exc:
-            QMessageBox.warning(self, "Export Failed", f"Could not write settings to {path}:\n{exc}")
+            show_message(self, "Export Failed", f"Could not write settings to {path}:\n{exc}")
 
     def _import_settings(self) -> None:
         path, _ = QFileDialog.getOpenFileName(self, "Import Settings", "", "TOML Files (*.toml)")
@@ -663,9 +708,9 @@ class SettingsPage(QWidget):
         try:
             config_module.import_from_file(path)
         except (OSError, tomllib.TOMLDecodeError) as exc:
-            QMessageBox.warning(self, "Import Failed", f"Could not read settings from {path}:\n{exc}")
+            show_message(self, "Import Failed", f"Could not read settings from {path}:\n{exc}")
             return
-        QMessageBox.information(
+        show_message(
             self, "Settings Imported",
             "Settings were imported successfully. Reopen Settings to see the new values everywhere.",
         )
@@ -686,7 +731,7 @@ class SettingsPage(QWidget):
         settings.appearance = config_module.AppearanceSettings()
         config_module.save(settings)
         self._settings = settings
-        QMessageBox.information(
+        show_message(
             self, "Reverted",
             "All appearance settings have been reset to their defaults. "
             "Reopen Settings to see the reset values reflected in this page.",
@@ -723,11 +768,11 @@ class SettingsPage(QWidget):
 
     # ------------------------------------------------------------ clip options group
 
-    def _build_clip_options_group(self) -> QGroupBox:
-        group = QGroupBox("Clip Options")
-        outer = QVBoxLayout(group)
+    def _build_clip_options_group(self) -> CustomGroupBox:
+        group = CustomGroupBox("Clip Options")
+        outer = group.make_layout(QVBoxLayout)
 
-        scroll = QScrollArea()
+        scroll = SmoothScrollArea()
         scroll.setWidgetResizable(True)
         self.rows_container = QWidget()
         self.rows_layout = QVBoxLayout(self.rows_container)
@@ -769,11 +814,11 @@ class SettingsPage(QWidget):
         for row in self._rows:
             fields = row.to_fields()
             if not fields["name"]:
-                QMessageBox.warning(self, "Invalid Clip Option", "Every clip option needs a name.")
+                show_message(self, "Invalid Clip Option", "Every clip option needs a name.")
                 return
             key = fields["name"].lower()
             if key in seen_names:
-                QMessageBox.warning(
+                show_message(
                     self, "Duplicate Name",
                     f"Clip option name '{fields['name']}' is used more than once. "
                     f"Names must be unique.",
@@ -793,6 +838,7 @@ class SettingsPage(QWidget):
         self._settings.error_sounds = dict(self._pending_error_sounds)
         self._settings.default_error_sound_path = self._pending_default_error_sound
         self._settings.offload_library_scan_to_daemon = self.offload_scan_checkbox.isChecked()
+        self._settings.auto_copy_as_mp4 = self.auto_copy_mp4_checkbox.isChecked()
 
         a = self._settings.appearance
         a.rounded_corners_enabled = self.rounded_corners_check.isChecked()
@@ -802,6 +848,7 @@ class SettingsPage(QWidget):
         a.ui_padding = self.ui_padding_spin.value()
         a.filter_outline_enabled = self.filter_outline_check.isChecked()
         a.resize_text_to_fit = self.resize_text_check.isChecked()
+        a.extended_dates = self.extended_dates_check.isChecked()
         a.inactive_border_width = self.inactive_border_width_spin.value()
         a.inactive_border_brightness = self.inactive_border_brightness_spin.value()
         a.active_border_width = self.active_border_width_spin.value()
@@ -835,7 +882,7 @@ class SettingsPage(QWidget):
             ("Card Text Outline Color", self.card_text_outline_color_edit),
         ):
             if not QColor(edit.text().strip()).isValid():
-                QMessageBox.warning(
+                show_message(
                     self, "Invalid Color",
                     f"'{edit.text()}' isn't a valid color for {label} -- "
                     f"use a hex code like #257fff.",
@@ -866,7 +913,7 @@ class SettingsPage(QWidget):
                 else:
                     clips.update_clip_config(row.clip_config_id, **fields)
         except ClipError as e:
-            QMessageBox.critical(self, "Save Failed", str(e))
+            show_message(self, "Save Failed", str(e))
             return
 
         self.status_label.setText("Saved.")

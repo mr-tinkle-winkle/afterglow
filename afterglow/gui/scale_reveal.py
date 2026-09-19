@@ -23,7 +23,7 @@ the same kind of widget:
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, QPoint, QRect, QPropertyAnimation, QEasingCurve, QParallelAnimationGroup
-from PySide6.QtWidgets import QLabel, QWidget
+from PySide6.QtWidgets import QLabel, QWidget, QGraphicsOpacityEffect
 
 _DURATION_MS = 220
 _START_SIZE = 24
@@ -64,6 +64,52 @@ def reveal_from_point(target_widget: QWidget, origin_global_point: QPoint) -> No
     final_rect = target_widget.rect()
     origin_local = target_widget.mapFromGlobal(origin_global_point)
     ScaleRevealOverlay(target_widget, pixmap, origin_local, final_rect)
+
+
+def crossfade_to_index(stack, new_index: int, duration: int = 200) -> None:
+    """Fades the NEW page in after switching, rather than grabbing a
+    snapshot of the old one and fading that out. The first version of
+    this DID grab the old page first -- reported directly as "takes a
+    second to begin the page switch" for Library/Settings specifically
+    (Editor was fine). Root cause: QWidget.grab() forces a full
+    synchronous re-render of the ENTIRE outgoing widget subtree before
+    returning the pixmap, and it runs BEFORE setCurrentIndex() in the
+    old version -- for a big Library grid (many VideoCards) or a
+    Settings page full of custom-painted controls, that grab could
+    take long enough to be a perceptible blocking delay before ANY
+    visual change happened at all, even though each individual
+    widget's own paint is itself cheap (cached). Editor's simple
+    layout never had enough content for that cost to be noticeable.
+    Switching first and fading the already-current new page in instead
+    means the visible page change happens immediately -- the fade is
+    layered on top of an already-correct, already-switched page via
+    QGraphicsOpacityEffect, not blocking the switch itself on a
+    snapshot of something else entirely."""
+    if stack.currentIndex() == new_index:
+        return
+    stack.setCurrentIndex(new_index)
+    new_widget = stack.currentWidget()
+    if new_widget is None:
+        return
+
+    effect = QGraphicsOpacityEffect(new_widget)
+    new_widget.setGraphicsEffect(effect)
+    anim = QPropertyAnimation(effect, b"opacity", new_widget)
+    anim.setDuration(duration)
+    anim.setStartValue(0.0)
+    anim.setEndValue(1.0)
+
+    def _cleanup():
+        # Removes the effect entirely once done -- leaving a
+        # QGraphicsOpacityEffect attached (even at opacity 1.0) forces
+        # Qt to keep compositing this widget through an offscreen
+        # buffer on every future repaint instead of painting directly,
+        # which is needless ongoing cost once the fade itself is over.
+        new_widget.setGraphicsEffect(None)
+
+    anim.finished.connect(_cleanup)
+    new_widget._fade_anim = anim
+    anim.start()
 
 
 def animate_popup_from_point(popup: QWidget, origin_global_point: QPoint, final_geometry: QRect) -> None:

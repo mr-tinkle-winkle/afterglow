@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import re
 import sqlite3
+import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -95,7 +96,7 @@ def _tags_for_video(conn: sqlite3.Connection, video_id: int) -> list[str]:
 # ---------------------------------------------------------------- add/import
 
 def add_video(path: Path, title: str, description: str = "",
-              clip_config_id: int | None = None) -> Video:
+              clip_config_id: int | None = None, created_at: str | None = None) -> Video:
     if not path.exists():
         raise LibraryError(f"File does not exist: {path}")
     try:
@@ -103,7 +104,17 @@ def add_video(path: Path, title: str, description: str = "",
     except EditorError:
         duration = None
 
-    now = datetime.now(timezone.utc).isoformat()
+    # created_at defaults to "now" -- correct for the capture pipeline's
+    # own call (a video that was JUST finished by OBS), but WRONG for
+    # scan_and_ingest_new_videos() re-discovering a file well after it
+    # was actually made (moved out and back in, dropped in manually,
+    # or re-created after a prune/ingest cycle) -- that caller passes
+    # the file's own mtime instead. Reported directly: "it says all of
+    # my videos were created today," after files had been moved out of
+    # the clips folder and back in, which re-ingested them as brand
+    # new rows with no way to know their real original date other than
+    # what the filesystem itself still remembers.
+    now = created_at or datetime.now(timezone.utc).isoformat()
     with db.get_conn() as conn:
         cur = conn.execute(
             """INSERT INTO videos (filename, path, title, description, duration_sec,
@@ -236,10 +247,74 @@ def list_videos(tag_filter: list[str] | None = None, uploaded_only: bool = False
         return _sort_videos(videos, sort_by)
 
 
+MANIFEST_PATH = config.CONFIG_DIR / "library_manifest.json"
+
+
+def write_library_manifest() -> None:
+    """A plain, human-readable JSON snapshot of every video's metadata
+    (title, tags, favorite, edited status, date) written to
+    MANIFEST_PATH -- a durable backup living OUTSIDE the SQLite DB, per
+    Max's direct request after a real data-loss incident (every tag
+    association on every video was silently wiped when
+    prune_missing_videos() saw a false mass "missing" after the whole
+    clips folder was moved out and back in -- see that function's own
+    safety-net comment for the full story and the fix that stops it
+    from happening again going forward).
+
+    This is NOT itself a live source of truth the app reads back from
+    automatically -- it's a recovery reference a person could open and
+    manually cross-check or restore from by hand if the database itself
+    is ever lost or corrupted, which is a much simpler and more robust
+    thing to build correctly than either baking metadata into the video
+    files themselves (renaming would fight the app's own filename-
+    matching logic throughout scan/prune/backup handling, and most
+    video containers have no simple universal place to embed arbitrary
+    per-tag metadata without a much larger, riskier rework of the
+    editing/export pipeline) or trying to auto-restore from it, which
+    would need its own conflict-resolution rules for what to do when
+    the manifest and the DB disagree.
+
+    Called after every mutation that changes what this describes
+    (tag add/remove, rename, favorite, delete, and both scan/prune
+    passes) -- cheap enough that writing on every such change (rather
+    than batching or debouncing) isn't worth the added complexity, and
+    keeping it always current is the entire point of a backup like
+    this. Best-effort: a failure to write here (a full disk, a
+    permissions issue) is logged but never raised, since a person's
+    actual action (renaming a video, adding a tag) should never fail
+    just because this side-channel backup couldn't be written.
+    """
+    try:
+        videos = list_videos()
+        manifest = {
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "videos": [
+                {
+                    "filename": v.filename,
+                    "path": v.path,
+                    "title": v.title,
+                    "description": v.description,
+                    "created_at": v.created_at,
+                    "favorite": v.favorite,
+                    "has_edit": v.has_edit,
+                    "tags": v.tags,
+                }
+                for v in videos
+            ],
+        }
+        MANIFEST_PATH.parent.mkdir(parents=True, exist_ok=True)
+        MANIFEST_PATH.write_text(json.dumps(manifest, indent=2))
+    except OSError as e:
+        import logging
+        logging.getLogger("afterglow").error(f"write_library_manifest: failed to write {MANIFEST_PATH}: {e}")
+
+
 def set_favorite(video_id: int, favorite: bool) -> Video:
     with db.get_conn() as conn:
         conn.execute("UPDATE videos SET favorite = ? WHERE id = ?", (1 if favorite else 0, video_id))
-    return get_video(video_id)
+    result = get_video(video_id)
+    write_library_manifest()
+    return result
 
 
 def all_known_tags() -> list[str]:
@@ -377,13 +452,21 @@ def rename_video(video_id: int, title: str | None = None, description: str | Non
         # commit that its own fresh connection needed to see the change.
         updated_row = conn.execute("SELECT * FROM videos WHERE id = ?", (video_id,)).fetchone()
         tags = _tags_for_video(conn, video_id)
-        return _row_to_video(updated_row, tags)
+        result = _row_to_video(updated_row, tags)
+    # write_library_manifest() opens its OWN connection via list_videos()
+    # -- same reason as the comment just above about get_video(): it
+    # can't see this transaction's write until the `with` block above
+    # has actually exited/committed, so this has to happen after it,
+    # not inside it.
+    write_library_manifest()
+    return result
 
 
 def delete_video(video_id: int, delete_file: bool = True) -> None:
     video = get_video(video_id)
     with db.get_conn() as conn:
         conn.execute("DELETE FROM videos WHERE id = ?", (video_id,))
+    write_library_manifest()
     if delete_file:
         p = Path(video.path)
         if p.exists():
@@ -404,15 +487,54 @@ def prune_missing_videos() -> list[int]:
     Returns the ids of removed entries. Doesn't touch anything else on
     disk (a missing file has nothing to clean up) -- this only prunes the
     DB row and its tag associations (via ON DELETE CASCADE).
+
+    SAFETY NET: refuses to prune anything if that would remove more than
+    PRUNE_SAFETY_FRACTION of the whole library in one pass (and always
+    allows pruning up to PRUNE_SAFETY_MIN_ABSOLUTE regardless, so a
+    small library isn't left unable to ever prune anything at all).
+    This exists because of a real, direct data-loss report: tags on
+    every video vanished (though the video files and trim edits
+    themselves were fine) after this ran -- almost certainly because
+    Path(row["path"]).exists() returned a false "missing" for every
+    video at once (a drive transiently unmounted, a race at daemon
+    startup before a mount was ready, or some other filesystem-
+    visibility difference between the GUI and daemon processes, most
+    likely surfaced by the newer offload_library_scan_to_daemon
+    setting running this same check from a different process than
+    before). DELETE CASCADEs to video_tags, so a false-positive mass
+    prune doesn't just hide entries -- it destroys every tag
+    association on them, and re-ingesting the same files afterward
+    (which still exist) creates brand new rows with fresh ids and zero
+    tags, exactly matching what was reported. A single video going
+    missing (moved, deleted) is completely ordinary and still pruned
+    immediately; ALL or MOST of them appearing to vanish at once is
+    the actual signal something is wrong with the check itself, not
+    with the files -- correct behavior there is to do nothing and
+    leave the existing (correct) data alone rather than confidently
+    deleting most of the library on a hunch.
     """
-    removed_ids = []
+    PRUNE_SAFETY_FRACTION = 0.5
+    PRUNE_SAFETY_MIN_ABSOLUTE = 5
+
     with db.get_conn() as conn:
         rows = conn.execute("SELECT id, path FROM videos").fetchall()
-        for row in rows:
-            if not Path(row["path"]).exists():
-                conn.execute("DELETE FROM videos WHERE id = ?", (row["id"],))
-                removed_ids.append(row["id"])
-    return removed_ids
+        missing = [row["id"] for row in rows if not Path(row["path"]).exists()]
+        if not missing:
+            return []
+        if len(missing) > PRUNE_SAFETY_MIN_ABSOLUTE and len(missing) > len(rows) * PRUNE_SAFETY_FRACTION:
+            import logging
+            logging.getLogger("afterglow").error(
+                f"prune_missing_videos: refusing to prune {len(missing)} of {len(rows)} videos "
+                f"in one pass -- this looks like a false-positive mass \"missing\" detection "
+                f"(a transiently unmounted drive, a race at startup, etc.) rather than genuinely "
+                f"deleted files. Doing nothing this pass rather than risk destroying tag data on "
+                f"videos that are actually still there."
+            )
+            return []
+        for video_id in missing:
+            conn.execute("DELETE FROM videos WHERE id = ?", (video_id,))
+    write_library_manifest()
+    return missing
 
 
 def remove_stray_orig_entries() -> list[int]:
@@ -430,7 +552,76 @@ def remove_stray_orig_entries() -> list[int]:
             if Path(row["path"]).stem.endswith(".orig"):
                 conn.execute("DELETE FROM videos WHERE id = ?", (row["id"],))
                 removed_ids.append(row["id"])
+    if removed_ids:
+        write_library_manifest()
     return removed_ids
+
+
+def repair_incorrect_creation_dates() -> list[int]:
+    """One-time-per-video repair for a real data-corruption bug: before
+    prune_missing_videos() had its own safety net (see that function's
+    docstring for the full story), a mass false-positive "missing"
+    detection could delete a video's row and have it immediately
+    re-created fresh by scan_and_ingest_new_videos() -- which, before
+    THIS session's OWN fix, always stamped created_at as "now" rather
+    than reading the file's actual mtime. Videos affected that way are
+    still sitting in the DB today with a created_at of whenever the
+    bad re-ingestion happened, not their real date -- fixing the root
+    cause going forward doesn't retroactively repair data it already
+    corrupted.
+
+    Detects candidates by a simple, safe physical-impossibility check:
+    a video's content (its file's mtime) can never be NEWER than when
+    the DB claims the video was "created" for a genuine original
+    capture -- if the file's mtime is EARLIER than its stored
+    created_at, that created_at can only be an artifact of a later
+    re-ingestion, not the real date, so it's corrected to the mtime.
+    Anything where mtime >= created_at is left completely alone (the
+    normal, correct case for every video that was never affected by
+    this).
+
+    Safe to call repeatedly/on every startup -- already-correct videos
+    are no-ops, and a file that's gone missing is silently skipped
+    (prune_missing_videos, not this, is responsible for that).
+    Returns the ids of videos whose date was actually corrected.
+    """
+    repaired = []
+    with db.get_conn() as conn:
+        rows = conn.execute("SELECT id, path, created_at FROM videos").fetchall()
+        for row in rows:
+            path = Path(row["path"])
+            if not path.exists():
+                continue
+            try:
+                mtime = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
+            except OSError:
+                continue
+            try:
+                stored = datetime.fromisoformat(row["created_at"])
+            except (TypeError, ValueError):
+                continue
+            if stored.tzinfo is None:
+                stored = stored.replace(tzinfo=timezone.utc)
+            # A generous tolerance, not a strict mtime < stored check --
+            # a file's mtime is set the moment its LAST byte is written,
+            # which happens a little BEFORE add_video() gets called and
+            # stamps created_at, even for a perfectly legitimate fresh
+            # capture -- that gap is normally well under a second, but
+            # without any tolerance at all, that tiny, completely
+            # ordinary ordering difference was enough to falsely flag
+            # every single fresh, correctly-dated video as "wrong" too.
+            # An hour is far more slack than the capture pipeline could
+            # ever need, while still easily catching the actual bug
+            # pattern (created_at off by literal days or weeks).
+            if (stored - mtime).total_seconds() > 3600:
+                conn.execute(
+                    "UPDATE videos SET created_at = ? WHERE id = ?",
+                    (mtime.isoformat(), row["id"]),
+                )
+                repaired.append(row["id"])
+    if repaired:
+        write_library_manifest()
+    return repaired
 
 
 def scan_and_ingest_new_videos() -> list[Video]:
@@ -473,7 +664,20 @@ def scan_and_ingest_new_videos() -> list[Video]:
             continue  # ffmpeg's in-progress trim output, not a real clip
         if str(entry) in known_paths:
             continue
-        newly_added.append(add_video(entry, title=entry.stem))
+        # mtime, not "now" -- see add_video()'s own comment on why: this
+        # file is being ingested well after it was actually made (moved
+        # out and back in, dropped in manually, or re-created after a
+        # prune/ingest cycle), so "now" would be flatly wrong for when
+        # it was really recorded. mtime survives a same-filesystem move
+        # (an ordinary `mv`), which is the exact scenario reported --
+        # it does NOT survive a copy-then-delete or a cross-filesystem
+        # move, where the OS has no way to know the original time
+        # either, so this is the best available answer, not a
+        # guaranteed-perfect one.
+        ingested_at = datetime.fromtimestamp(entry.stat().st_mtime, tz=timezone.utc).isoformat()
+        newly_added.append(add_video(entry, title=entry.stem, created_at=ingested_at))
+    if newly_added:
+        write_library_manifest()
     return newly_added
 
 
@@ -552,6 +756,7 @@ def add_tag_to_video(video_id: int, tag_name: str) -> None:
         tag_id = conn.execute("SELECT id FROM tags WHERE name = ?", (tag_name,)).fetchone()["id"]
         conn.execute("INSERT OR IGNORE INTO video_tags (video_id, tag_id) VALUES (?, ?)",
                      (video_id, tag_id))
+    write_library_manifest()
 
 
 def remove_tag_from_video(video_id: int, tag_name: str) -> None:
@@ -561,6 +766,7 @@ def remove_tag_from_video(video_id: int, tag_name: str) -> None:
                (SELECT id FROM tags WHERE name = ?)""",
             (video_id, tag_name),
         )
+    write_library_manifest()
 
 
 # ---------------------------------------------------------------- editor integration
@@ -581,6 +787,40 @@ def apply_trim(video_id: int, start_sec: float, end_sec: float, frame_perfect: b
             (str(backup_path), new_duration, video_id),
         )
     return get_video(video_id)
+
+
+def mark_as_edited(video_id: int) -> Video:
+    """Manually flags a video as edited (has_edit=1) without an actual
+    trim/backup -- useful for a video that's already edited from
+    elsewhere before being brought in, or just to suppress the
+    unedited-highlight border on one the user doesn't consider "raw"
+    even though the app itself never touched it. Leaves backup_path
+    alone (stays None if there wasn't already one) -- undo_edit() and
+    clear_edit_backup() both already correctly refuse to act without a
+    real backup_path regardless of has_edit, so this can't leave the
+    video in a state where Undo would try to restore from nothing."""
+    with db.get_conn() as conn:
+        conn.execute("UPDATE videos SET has_edit = 1 WHERE id = ?", (video_id,))
+    result = get_video(video_id)
+    write_library_manifest()
+    return result
+
+
+def mark_as_unedited(video_id: int) -> Video:
+    """The reverse of mark_as_edited() -- manually clears has_edit,
+    for a video the app or the user marked as edited that shouldn't
+    be anymore (undoing a manual mark, or a video that turns out not
+    to actually be edited after all). Does NOT touch backup_path --
+    if a real trim backup exists, it's left completely alone; this
+    only affects the has_edit flag itself and, in turn, whether the
+    Library shows the unedited-highlight border on this video."""
+    with db.get_conn() as conn:
+        conn.execute("UPDATE videos SET has_edit = 0 WHERE id = ?", (video_id,))
+    result = get_video(video_id)
+    write_library_manifest()
+    return result
+    write_library_manifest()
+    return result
 
 
 def undo_edit(video_id: int) -> Video:

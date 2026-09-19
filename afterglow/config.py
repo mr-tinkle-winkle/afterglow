@@ -103,6 +103,11 @@ class AppearanceSettings:
     by internally (brightness/100.0).
     """
     resize_text_to_fit: bool = False
+    # When True, every place a video's date is shown (the Library card
+    # info box, the video previewer's header) uses the full timestamp
+    # (date + hours/minutes/seconds, whatever's in created_at) instead
+    # of just the date -- per Max's direct request.
+    extended_dates: bool = False
     inactive_border_width: int = 5
     inactive_border_brightness: int = 65
     active_border_width: int = 9
@@ -269,6 +274,16 @@ class AppSettings:
     # genuinely new code path he wants to be able to compare against,
     # not something to switch to blind.
     offload_library_scan_to_daemon: bool = False
+    # When True (the default), Copying a video whose file isn't
+    # already .mp4 exposes a .mp4-named copy to the clipboard instead
+    # of the original extension -- a PURE rename via a fresh copy, no
+    # remuxing or re-encoding of any kind, so it isn't guaranteed to
+    # actually be valid, standards-conformant MP4 if the underlying
+    # container/codec genuinely isn't MP4-compatible -- just renamed
+    # to look like one for whatever's receiving the paste (many chat
+    # apps and file managers only preview/embed a video reliably when
+    # its extension says .mp4, regardless of the real container).
+    auto_copy_as_mp4: bool = True
     default_sound_path: str = ""  # legacy -- specifically the "replay buffer completed" keyframe's sound (see keyframes.py)
     # "Advanced Sound": a distinct sound for each pipeline checkpoint in
     # keyframes.PIPELINE_KEYFRAMES, keyed by its keyframe id. All optional

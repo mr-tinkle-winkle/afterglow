@@ -204,8 +204,26 @@ class MpvVideoWidget(QOpenGLWidget):
             QTimer.singleShot(150, lambda p=path: self._reload_first_video(p))
 
     def _reload_first_video(self, path: str) -> None:
+        # Preserves whatever play/pause state was ACTUALLY in effect
+        # right before this fires, instead of unconditionally forcing
+        # pause=True -- the previous version did that unconditionally,
+        # which is exactly why the video previewer's autoplay-on-open
+        # "started playing for a moment and then stopped": load()
+        # itself always sets pause=True, VideoPreviewDialog then calls
+        # play() immediately afterward (synchronously, same event-loop
+        # tick), so by the time THIS 150ms-later callback ran, the
+        # real desired state was already "playing" -- but this method
+        # blindly reset it back to paused anyway, undoing that. Reading
+        # self._mpv.pause right here instead of hardcoding a value
+        # means whatever the caller's own play()/pause() calls already
+        # established (Editor's default paused-on-load, or the
+        # previewer's explicit play()) survives this reload exactly as
+        # it was, since this is only meant to work around a black-
+        # screen render bug, not to have an opinion of its own about
+        # play state.
+        was_paused = self._mpv.pause
         self._mpv.play(path)
-        self._mpv.pause = True
+        self._mpv.pause = was_paused
         self.update()
 
     def play(self) -> None:
@@ -220,6 +238,18 @@ class MpvVideoWidget(QOpenGLWidget):
 
     def seek(self, position_sec: float) -> None:
         self._mpv.seek(position_sec, reference="absolute", precision="exact")
+
+    def frame_step(self) -> None:
+        """Advances exactly one frame forward, pausing playback first if
+        it was running -- mpv's own "frame-step" command already does
+        this (steps then pauses), matching what frame-by-frame nudging
+        should do regardless of whether the video was playing when the
+        nudge happened."""
+        self._mpv.frame_step()
+
+    def frame_back_step(self) -> None:
+        """The reverse of frame_step() -- one frame backward."""
+        self._mpv.frame_back_step()
 
     def set_volume(self, value: int) -> None:
         """Client-side playback volume only (0-100) -- akin to a YouTube

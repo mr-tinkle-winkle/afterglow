@@ -33,6 +33,9 @@ from PySide6.QtWidgets import (
 # Filters dropdown (see _rebuild_editor_filters_menu).
 
 from .. import library
+from .. import config as config_module
+from .theme import Theme
+from .page_outline import paint_page_outline, BORDER_WIDTH
 from .mpv_widget import MpvVideoWidget
 from .trim_timeline import TrimTimeline
 from .volume_bar import VolumeBar
@@ -147,6 +150,7 @@ class EditorPage(QWidget):
         self._next_video_id: int | None = None
 
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(BORDER_WIDTH, BORDER_WIDTH, BORDER_WIDTH, BORDER_WIDTH)
 
         # ---- title (editable) + filters, at the very top ----
         title_row = QHBoxLayout()
@@ -317,6 +321,19 @@ class EditorPage(QWidget):
         layout.addLayout(button_row)
 
     # ------------------------------------------------------------ loading
+
+    def paintEvent(self, event) -> None:
+        # super() first, border second -- a real KDE/Plasma-integrated
+        # Qt style can paint an opaque background via the base class's
+        # own paintEvent (this sandbox's offscreen platform doesn't),
+        # which would silently erase the border if drawn beforehand.
+        super().paintEvent(event)
+        # 3px, 15%-darker-than-itself page outline -- Editor has no
+        # explicit background of its own (it inherits MainWindow's
+        # central-widget app_background()), so that's the "itself"
+        # this darkens.
+        theme = Theme(config_module.load().appearance)
+        paint_page_outline(self, theme.app_background())
 
     def load_video(self, video_id: int) -> None:
         self.current_video_id = video_id

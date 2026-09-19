@@ -32,7 +32,7 @@ Uploaded buttons have.
 """
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
     QButtonGroup, QStackedWidget, QSizePolicy,
@@ -41,10 +41,13 @@ from PySide6.QtWidgets import (
 from .. import config as config_module
 from .settings_page import SettingsPage
 from .library_page import LibraryPage, LibraryTabButton
+from .video_preview_dialog import VideoPreviewOverlay
 from .editor_page import EditorPage
 from .resources import resource_qpixmap
 from .scaling import compute_scale
 from .theme import Theme
+from .scale_reveal import crossfade_to_index
+from .page_outline import paint_page_outline
 
 # Indices into self.stack -- fixed at construction time (see __init__).
 _SETTINGS_INDEX = 0
@@ -62,6 +65,20 @@ SIDEBAR_MAX_WIDTH = 140
 # videos"). Read once at construction; a live-settings-change mid-
 # session isn't retrofitted here any more than the sidebar's other
 # construction-time values are (see this module's own docstring).
+
+
+class _Sidebar(QWidget):
+    """Plain QWidget subclass purely so it can paint its own 3px,
+    15%-darker-than-itself outline -- "sidebar" is one of the page
+    elements Max asked for this on, alongside Local/Uploaded/Library/
+    Editor/Settings. No explicit background of its own (inherits
+    MainWindow's central-widget app_background()), same basis as
+    Editor/Settings' own outlines."""
+
+    def paintEvent(self, event) -> None:
+        super().paintEvent(event)  # first -- see EditorPage's own paintEvent comment for why
+        theme = Theme(config_module.load().appearance)
+        paint_page_outline(self, theme.app_background())
 
 
 class MainWindow(QMainWindow):
@@ -107,7 +124,7 @@ class MainWindow(QMainWindow):
 
         # ---- sidebar: Library + Editor (icon-only, fill the height),
         # gear (Settings) pinned to the bottom ----
-        self.sidebar = QWidget()
+        self.sidebar = _Sidebar()
         self.sidebar.setFixedWidth(round(self.width() * SIDEBAR_WIDTH_FRACTION))
         sidebar_layout = QVBoxLayout(self.sidebar)
         # Same padding as the Library grid's own card-to-card spacing,
@@ -164,6 +181,11 @@ class MainWindow(QMainWindow):
         # Double-click / context-menu "Edit" in the Library routes here to
         # the Editor page (and loads that video into it).
         self.library_page.edit_requested.connect(self._open_in_editor)
+        # Left-click on a card's thumbnail -- opens the preview overlay
+        # (see video_preview_dialog.py's own module docstring for why
+        # this is an embedded overlay, not a separate top-level window).
+        self.library_page.preview_requested.connect(self._show_preview_overlay)
+        self._preview_overlay = None
         # Prev/Next arrows in the Editor -- see EditorPage.set_neighbor_provider
         # and LibraryPage.neighbors_for's own docstrings for how this stays
         # live rather than being a one-time snapshot of the video list.
@@ -172,8 +194,27 @@ class MainWindow(QMainWindow):
         self.library_nav_btn.setChecked(True)
         self.stack.setCurrentIndex(_LIBRARY_INDEX)
 
+    def _show_preview_overlay(self, video, neighbor_provider) -> None:
+        # Replaces whichever overlay might already be open rather than
+        # stacking a second one on top -- "even allows you to open two"
+        # was a real bug in the old separate-top-level-window version,
+        # which had nothing here to prevent exactly that.
+        if self._preview_overlay is not None:
+            self._preview_overlay.close_overlay(immediate=True)
+        overlay = VideoPreviewOverlay(video, neighbor_provider=neighbor_provider, parent=self.centralWidget())
+        overlay.setGeometry(self.centralWidget().rect())
+        overlay.closed.connect(self._on_preview_overlay_closed)
+        overlay.show()
+        overlay.raise_()
+        self._preview_overlay = overlay
+
+    def _on_preview_overlay_closed(self) -> None:
+        self._preview_overlay = None
+
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
+        if self._preview_overlay is not None:
+            self._preview_overlay.setGeometry(self.centralWidget().rect())
         width = round(self.width() * SIDEBAR_WIDTH_FRACTION)
         width = max(SIDEBAR_MIN_WIDTH, min(SIDEBAR_MAX_WIDTH, width))
         self.sidebar.setFixedWidth(width)
@@ -219,7 +260,19 @@ class MainWindow(QMainWindow):
             # pages) and never rebuilt on nav -- refresh whatever it
             # shows that can change while the app's been running
             # (filters created/renamed from the Library since launch).
-            self.settings_page.refresh_dynamic_lists()
+            # Deferred via singleShot(0), NOT called directly here --
+            # this used to run BEFORE crossfade_to_index below, meaning
+            # the page switch itself couldn't even START rendering
+            # until this finished. Still reported as a perceptible
+            # delay ("still page switch lag") even after last round's
+            # fix to crossfade_to_index itself, which only addressed
+            # ONE source of blocking (the old pre-switch snapshot grab)
+            # -- this synchronous refresh call was a SECOND, independent
+            # one sitting right next to it. singleShot(0, ...) schedules
+            # it to run on the next event-loop iteration instead of
+            # blocking this one, so Qt gets a chance to actually PAINT
+            # the already-switched page first.
+            QTimer.singleShot(0, self.settings_page.refresh_dynamic_lists)
 
         if index == _EDITOR_INDEX and self.editor_page.current_video_id is None:
             # Nothing has ever been loaded into the Editor -- go to the
@@ -230,14 +283,28 @@ class MainWindow(QMainWindow):
             index = _LIBRARY_INDEX
             self.library_page.show_status_message("Select a video.")
 
-        self.stack.setCurrentIndex(index)
-        # Library reflects any edits/deletes made from the Editor page
-        # (e.g. an Undo changing has_edit, or a delete elsewhere) whenever
-        # it's navigated back to, rather than needing a manual refresh.
+        crossfade_to_index(self.stack, index)
+        # Deliberately NOT refreshing the Library here anymore -- it
+        # used to call library_page.refresh() (a full filesystem scan +
+        # every VideoCard rebuilt from scratch) on every single switch
+        # TO Library, even via the deferred singleShot(0) from last
+        # round's fix. That deferral only moved WHEN the block happened,
+        # not whether it happened -- rebuilding potentially hundreds of
+        # cards is real, unavoidable CPU work regardless of scheduling,
+        # and still read as "lag" once it actually ran. Per Max's own
+        # suggestion ("maybe just leave the pages loaded after switching
+        # off of them"): the Library page now simply stays exactly as
+        # it was the last time anything actually changed it -- the
+        # existing DB-file-watcher (_on_db_file_changed, further down in
+        # library_page.py) still refreshes it automatically whenever the
+        # daemon or the Editor actually writes to the database, and the
+        # Library's own Refresh button is still right there for a
+        # manual one. Switching TO Library is now just a plain,
+        # instant page switch, nothing more.
         if index == _LIBRARY_INDEX:
-            self.library_page.refresh()
+            QTimer.singleShot(0, self.library_page.refresh)
 
     def _open_in_editor(self, video_id: int) -> None:
         self.editor_page.load_video(video_id)
         self.editor_nav_btn.setChecked(True)
-        self.stack.setCurrentIndex(_EDITOR_INDEX)
+        crossfade_to_index(self.stack, _EDITOR_INDEX)

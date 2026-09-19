@@ -9,12 +9,14 @@ from __future__ import annotations
 
 from pathlib import Path
 from datetime import datetime
+import tempfile
+import shutil
 
-from PySide6.QtCore import Qt, Signal, QSize, QRectF
+from PySide6.QtCore import Qt, Signal, QSize, QRectF, QTimer, QVariantAnimation, QEvent
 from PySide6.QtGui import QPixmap, QPainter, QColor, QIcon, QFontMetrics, QPen
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QMenu, QMessageBox, QLineEdit,
-    QHBoxLayout, QInputDialog, QWidgetAction,
+    QHBoxLayout, QInputDialog, QWidgetAction, QDialog, QApplication,
 )
 
 from .. import library, thumbnails, config as config_module
@@ -25,6 +27,7 @@ from .theme import Theme
 from .outlined_label import OutlinedLabel
 from .custom_button import CustomButton
 from .custom_checkbox import CustomCheckBox
+from .custom_line_edit import CustomLineEdit
 
 THUMB_SIZE = QSize(400, 224)  # 16:9, doubled from the original 200x112
 FAVORITE_STAR = "\u2605"  # "★"
@@ -86,6 +89,13 @@ def _format_date(created_at: str) -> str | None:
         dt = datetime.fromisoformat(created_at)
     except ValueError:
         return None
+    # Reads the setting fresh each call (same pattern as every other
+    # appearance-driven paint/format helper in this codebase) rather
+    # than threading a parameter through every call site -- this is
+    # called from both VideoCard's own info box and the video
+    # previewer's header, and both should reflect the setting equally.
+    if config_module.load().appearance.extended_dates:
+        return dt.strftime("%b %d, %Y %I:%M:%S %p")
     return dt.strftime("%b %d, %Y")
 
 
@@ -173,6 +183,111 @@ class _InfoBox(QWidget):
         super().paintEvent(event)
 
 
+def _menu_stylesheet(appearance) -> str:
+    """QSS reskin for QMenu -- background/text/hover colors matching the
+    app's own theme, plus rounded corners and an accent border, instead
+    of native/KDE menu chrome. Applied to every QMenu (and each nested
+    submenu, since Qt does NOT cascade a parent QMenu's stylesheet down
+    into its child QMenus automatically) used for the right-click
+    context menu and the Filters submenu -- both reported directly as
+    "not custom". QSS is the standard, supported way to reskin QMenu's
+    look without losing its own submenu/keyboard-navigation/hover
+    machinery, which would be substantial to rebuild from scratch."""
+    return f"""
+        QMenu {{
+            background-color: {appearance.afterglow_color_card_background};
+            color: {appearance.card_text_color};
+            border: 1px solid {appearance.afterglow_color_accent};
+            border-radius: 8px;
+            padding: 4px;
+        }}
+        QMenu::item {{
+            padding: 6px 24px 6px 12px;
+            border-radius: 6px;
+        }}
+        QMenu::item:selected {{
+            background-color: {appearance.afterglow_color_accent};
+        }}
+        QMenu::separator {{
+            height: 1px;
+            background: {appearance.afterglow_color_accent};
+            margin: 4px 8px;
+        }}
+    """
+
+
+class _NonClosingMenu(QMenu):
+    """A QMenu that doesn't close itself when the click landed on a
+    QWidgetAction's own embedded widget (a CustomCheckBox, here) --
+    used for the right-click context menu itself, the Filters
+    submenu, and its category sub-menus, so toggling several
+    checkboxes (filters, or the "Edited" checkbox) in one visit
+    doesn't require reopening the menu after each one. The checkbox
+    itself already receives and handles the click perfectly normally
+    (Qt delivers mouse events directly to whichever real widget is
+    under the cursor, completely independent of QMenu's own mouse
+    handling) -- this only skips QMenu's OWN reaction of closing
+    itself afterward for that case, leaving every other kind of click
+    (a plain QAction, clicking outside any item) to close the menu
+    exactly as before.
+
+    Checks BOTH self.activeAction() (Qt's own hover-tracked "current"
+    action) AND self.actionAt(event.pos()) (a plain position lookup,
+    independent of hover-tracking state entirely) -- reported directly
+    that checking activeAction() alone still wasn't reliably catching
+    this, so actionAt() is a second, hover-independent way to reach
+    the same conclusion. Overrides mousePressEvent too, not just
+    mouseReleaseEvent, in case whatever was still causing the close
+    was reacting to the press half of the click rather than (or in
+    addition to) the release."""
+
+    def _is_widget_action_click(self, pos) -> bool:
+        action = self.activeAction() or self.actionAt(pos)
+        return isinstance(action, QWidgetAction)
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._suppress_next_hide = False
+
+    def hideEvent(self, event) -> None:
+        # A SECOND, independent layer on top of the mousePressEvent/
+        # mouseReleaseEvent overrides below -- reported directly, a
+        # THIRD time, that the menu still closes on a checkbox click
+        # despite those. QMenu almost certainly has some internal
+        # closing mechanism that doesn't route through a Python
+        # subclass's mousePressEvent/mouseReleaseEvent overrides at
+        # all (the same category of PySide6 limitation already
+        # confirmed for CustomGroupBox's setLayout() override -- an
+        # internal C++-side call not dispatching to the Python
+        # override). Rather than keep guessing WHICH internal call is
+        # responsible, this reacts to the OUTCOME instead: whatever
+        # triggered it, if the menu is trying to hide right after a
+        # widget-action click, un-hide it immediately by re-showing at
+        # its own current position. _suppress_next_hide is set the
+        # moment a press lands on a widget action and cleared right
+        # after being consumed here, so this never blocks a REAL close
+        # (clicking outside, pressing Escape, choosing a plain action).
+        if self._suppress_next_hide:
+            self._suppress_next_hide = False
+            event.ignore()
+            pos = self.pos()
+            self.show()
+            self.move(pos)
+            return
+        super().hideEvent(event)
+
+    def mousePressEvent(self, event) -> None:
+        if self._is_widget_action_click(event.pos()):
+            self._suppress_next_hide = True
+            return
+        super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:
+        if self._is_widget_action_click(event.pos()):
+            return
+        super().mouseReleaseEvent(event)
+
+
 class VideoCard(QWidget):
     edit_requested = Signal(int)      # video_id
     deleted = Signal(int)             # video_id
@@ -182,12 +297,18 @@ class VideoCard(QWidget):
     filter_left_clicked = Signal(str)   # tag_name, from clicking an icon on the card itself
     filter_right_clicked = Signal(str)  # tag_name, ditto (block)
     clicked = Signal(int, object)       # video_id, Qt.KeyboardModifiers -- parent handles selection
+    preview_requested = Signal(object, object)  # video, neighbor_provider -- bubbles up to MainWindow
+    context_menu_opened = Signal()  # a menu.exec() is about to block -- parent should pause any grid rebuild
+    context_menu_closed = Signal()  # that exec() returned -- safe to rebuild again
 
     def __init__(self, video: "library.Video", parent=None, highlight_enabled: bool = True,
-                 font_scale: float = 1.0, get_selected_ids=None, ensure_selected=None):
+                 font_scale: float = 1.0, get_selected_ids=None, ensure_selected=None,
+                 neighbor_provider=None):
         super().__init__(parent)
         self.video_id = video.id
         self._video = video
+        self._preview_pending = False
+        self._title_edit = None
         self._highlight_enabled = highlight_enabled
         settings = config_module.load()
         self._appearance = settings.appearance
@@ -217,6 +338,13 @@ class VideoCard(QWidget):
         )
         self._selected = False
         self._bg_cache: QPixmap | None = None
+        # Fade state for set_selected()'s transition -- see its own
+        # comment. _fade_from holds the pre-change cached pixmap while
+        # a transition is in progress (None once settled); progress is
+        # the 0->1 blend amount toward whatever _bg_cache currently is.
+        self._fade_from: QPixmap | None = None
+        self._selection_fade_progress = 1.0
+        self._selection_fade_anim: QVariantAnimation | None = None
         # Both optional and both supplied together by _VideoGridTab (see
         # its refresh()) -- let the right-click context menu act on the
         # WHOLE current multi-selection instead of just this one card.
@@ -228,6 +356,12 @@ class VideoCard(QWidget):
         # other selection in place while acting on the newly-clicked one.
         self._get_selected_ids = get_selected_ids
         self._ensure_selected = ensure_selected
+        # (int) -> (Video | None, Video | None) -- passed straight
+        # through to VideoPreviewDialog for its own prev/next arrows,
+        # same callable shape as MainWindow's Editor neighbor_provider
+        # (see LibraryPage.neighbors_for), just reused here for the
+        # preview dialog instead of the Editor.
+        self._neighbor_provider = neighbor_provider
         self._theme = Theme(self._appearance)
 
         outer_layout = QVBoxLayout(self)
@@ -570,13 +704,50 @@ class VideoCard(QWidget):
 
     def set_selected(self, selected: bool) -> None:
         """Called by the grid's selection handling (_VideoGridTab) --
-        a selected card's border always wins over the unedited-highlight
-        one (see paintEvent), regardless of the video's edited state or
-        the "Highlight Unedited" toggle, since selection is a separate,
-        higher-priority concept from either."""
+        a selected card's outer ring is layered on top of whatever the
+        thumbnail's own border already shows (see _render_background),
+        not a replacement for it. Fades the outer-ring change in over
+        the previous render rather than snapping straight to it --
+        reported directly as looking better ("fade... instead of
+        snapping"). Captures whatever's CURRENTLY cached as the fade's
+        starting frame before flipping state, so this works the same
+        whether toggling into OR out of selection."""
         if selected != self._selected:
+            self._fade_from = self._bg_cache
             self._selected = selected
+            self._bg_cache = None  # forces a fresh render at the new state on next paint
+            # Set synchronously, not left to the animation's own first
+            # tick -- QVariantAnimation doesn't guarantee delivering
+            # valueChanged(0.0) synchronously within start() itself (it
+            # can defer to the next timer tick), so without this, a
+            # paintEvent that happens to run before that first tick
+            # would still see the OLD progress value (1.0, fully
+            # settled) left over from whatever the last completed fade
+            # was, and skip the blend entirely for that one frame.
+            self._selection_fade_progress = 0.0
+            self._start_selection_fade()
             self.update()
+
+    def _start_selection_fade(self) -> None:
+        if self._selection_fade_anim is not None:
+            self._selection_fade_anim.stop()
+        anim = QVariantAnimation(self)
+        anim.setDuration(200)
+        anim.setStartValue(0.0)
+        anim.setEndValue(1.0)
+        anim.valueChanged.connect(self._on_selection_fade_value)
+        anim.finished.connect(self._on_selection_fade_finished)
+        self._selection_fade_anim = anim
+        anim.start()
+
+    def _on_selection_fade_value(self, value) -> None:
+        self._selection_fade_progress = float(value)
+        self.update()
+
+    def _on_selection_fade_finished(self) -> None:
+        self._fade_from = None
+        self._selection_fade_progress = 1.0
+        self.update()
 
     def _should_show_highlight(self) -> bool:
         # video.has_edit already IS a per-video "has this been trimmed
@@ -605,7 +776,18 @@ class VideoCard(QWidget):
             self._bg_cache = self._render_background(cache_key)
             self._bg_cache_key = cache_key
         painter = QPainter(self)
-        painter.drawPixmap(0, 0, self._bg_cache)
+        if self._fade_from is not None and self._selection_fade_progress < 1.0:
+            # Cross-fades the OLD (pre-selection-change) rendering into
+            # the new one over set_selected()'s own animation, rather
+            # than snapping straight to the new state -- both are
+            # already-cached pixmaps, so this is just two cheap blits
+            # per frame (one at partial opacity), not a re-render.
+            painter.drawPixmap(0, 0, self._fade_from)
+            painter.setOpacity(self._selection_fade_progress)
+            painter.drawPixmap(0, 0, self._bg_cache)
+            painter.setOpacity(1.0)
+        else:
+            painter.drawPixmap(0, 0, self._bg_cache)
         painter.end()
         super().paintEvent(event)
 
@@ -681,7 +863,20 @@ class VideoCard(QWidget):
             # of the rect's own width/height is smaller, which is the
             # only clamp actually needed to keep the shape valid.
             video_radius = radius
-            if not selected and show_highlight:
+            if show_highlight:
+                # Was `if not selected and show_highlight:` -- selection
+                # used to unconditionally override the highlight border
+                # with the plain accent() fill, even for an UNEDITED
+                # video, which is exactly the reported bug ("selecting
+                # a video replaces the thumbnail outline with the
+                # default one, even if it's unedited"). Selection is
+                # meant to be a separate, ADDITIONAL indicator (the
+                # outer ring, built above -- unchanged) layered on TOP
+                # of whatever the thumbnail's own border already is,
+                # not something that overrides what that border means.
+                # Whether THIS specific border shows the highlight
+                # gradient now depends purely on the video's own edited
+                # state, exactly like it does when nothing is selected.
                 if video_radius:
                     painter.setClipPath(rounded_rect_path(video_rect, video_radius))
                 painter.drawPixmap(video_rect, self._highlight_pixmap, QRectF(self._highlight_pixmap.rect()))
@@ -735,19 +930,61 @@ class VideoCard(QWidget):
         return round_pixmap_corners(pixmap, radius)
 
     def mousePressEvent(self, event) -> None:
+        # If a title edit is in progress AND this click isn't on the
+        # edit box itself, commit it explicitly before anything else --
+        # a click elsewhere ON THIS SAME CARD (the thumbnail, an action
+        # button) is handled entirely by this card's own click logic
+        # below/elsewhere, which doesn't naturally shift Qt's own
+        # focus away from the still-focused title edit the way clicking
+        # some COMPLETELY unrelated widget would. Without this, "click
+        # off to save" only worked for clicks that happened to land on
+        # something that takes real Qt focus -- reported directly as
+        # not working reliably. Mapped via GLOBAL coordinates (not a
+        # direct geometry comparison) since self._title_edit's parent
+        # isn't necessarily `self` itself -- there can be intermediate
+        # layout container widgets -- so its geometry() alone isn't in
+        # the same coordinate space as this event's own pos().
+        if self._title_edit is not None:
+            global_pos = self.mapToGlobal(event.pos())
+            local_to_edit = self._title_edit.mapFromGlobal(global_pos)
+            if not self._title_edit.rect().contains(local_to_edit):
+                self._commit_title_edit()
+
         if event.button() == Qt.LeftButton:
             self.clicked.emit(self.video_id, event.modifiers())
-            # Explicitly accept (rather than falling through to
-            # QWidget's default, which ignores it) -- an ignored event
-            # bubbles up to the parent's own mousePressEvent, which
-            # would otherwise immediately clear the selection this
-            # just set via the grid container's own background-click
-            # handling (see _SelectionClearingContainer).
+            # A plain (unmodified) left-click directly on the thumbnail
+            # opens the preview player, "like Medal" -- but Ctrl/Shift
+            # clicks (multi-select) never do, and this is delayed
+            # rather than immediate so a DOUBLE-click (which still
+            # opens the Editor, unchanged -- see mouseDoubleClickEvent)
+            # doesn't ALSO flash the preview open first. Qt has no
+            # single "click vs double-click" event of its own; this
+            # delay-then-cancel-if-a-second-click-arrives approach is
+            # the standard way to disambiguate the two.
+            no_modifiers = event.modifiers() == Qt.NoModifier
+            on_thumbnail = self.thumb_label.geometry().contains(event.pos())
+            if no_modifiers and on_thumbnail:
+                self._preview_pending = True
+                QTimer.singleShot(250, self._open_preview_if_still_pending)
             event.accept()
             return
         super().mousePressEvent(event)
 
+    def _open_preview_if_still_pending(self) -> None:
+        if self._preview_pending:
+            self._preview_pending = False
+            self._open_preview_dialog(self._video)
+
+    def _open_preview_dialog(self, video: "library.Video") -> None:
+        # Bubbles up rather than constructing anything here directly --
+        # the actual overlay needs to be a child of MainWindow's central
+        # widget (see video_preview_dialog.py's own module docstring for
+        # why a separate top-level window was the wrong approach), which
+        # this card has no direct reference to.
+        self.preview_requested.emit(video, self._neighbor_provider)
+
     def mouseDoubleClickEvent(self, event) -> None:
+        self._preview_pending = False  # cancel the pending single-click preview -- see mousePressEvent
         self.edit_requested.emit(self.video_id)
 
     def _show_context_menu(self, pos) -> None:
@@ -765,6 +1002,7 @@ class VideoCard(QWidget):
         count_suffix = f" ({len(target_ids)})" if multi else ""
 
         menu = QMenu(self)
+        menu.setStyleSheet(_menu_stylesheet(self._appearance))
         # Edit/Rename only make sense for exactly one video at a time --
         # hidden rather than shown-but-disabled for a multi-selection.
         edit_action = None
@@ -778,13 +1016,33 @@ class VideoCard(QWidget):
         favorite_action = menu.addAction("Unfavorite" if all_favorited else "Favorite")
         upload_action = menu.addAction(f"Upload{count_suffix}")
 
-        filters_menu = self._build_filters_menu(menu, target_ids, target_videos)
-        menu.addMenu(filters_menu)
+        # A plain QAction now, not a QMenu submenu -- see filters_popup.py's
+        # own module docstring for why: four separate QMenu-level fixes for
+        # "stays open while toggling several checkboxes" didn't hold up, so
+        # this now opens a genuine Qt.Popup widget (FiltersPopup) instead,
+        # positioned where the submenu used to appear, right after this
+        # main menu closes normally (which is fine -- the interactive part
+        # that needed to stay open moves to that separate popup, not this
+        # one-shot "open Filters" click).
+        filters_action = menu.addAction("Filters...")
+
+        # A plain checkable action, not a custom checkbox -- unlike
+        # Filters (where staying open to toggle several tags in one visit
+        # genuinely matters), "Edited" is a single one-shot toggle, and
+        # the menu closing right after it -- completely normal QAction
+        # behavior -- is exactly as expected, the same as Favorite just
+        # above.
+        all_edited = all(v.has_edit for v in target_videos)
+        edited_action = menu.addAction(f"Edited{count_suffix}")
+        edited_action.setCheckable(True)
+        edited_action.setChecked(all_edited)
 
         copy_action = menu.addAction(f"Copy{count_suffix}")
         delete_action = menu.addAction(f"Delete{count_suffix}")
 
+        self.context_menu_opened.emit()
         chosen = menu.exec(self.mapToGlobal(pos))
+        self.context_menu_closed.emit()
         if edit_action is not None and chosen == edit_action:
             self.edit_requested.emit(self.video_id)
         elif rename_action is not None and chosen == rename_action:
@@ -794,6 +1052,15 @@ class VideoCard(QWidget):
         elif chosen == upload_action:
             for vid in target_ids:
                 self.upload_requested.emit(vid)
+        elif chosen == filters_action:
+            self._open_filters_popup(target_ids, target_videos, self.mapToGlobal(pos))
+        elif chosen == edited_action:
+            for vid in target_ids:
+                if edited_action.isChecked():
+                    library.mark_as_edited(vid)
+                else:
+                    library.mark_as_unedited(vid)
+            self.tags_changed.emit()  # reuses this signal purely to trigger a refresh -- nothing tag-related actually changed
         elif chosen == copy_action:
             self._bulk_copy_to_clipboard(target_ids)
         elif chosen == delete_action:
@@ -801,34 +1068,49 @@ class VideoCard(QWidget):
 
     def _build_action_buttons_row(self) -> QWidget:
         """Edit/Copy/Filters/Delete, in that order, as real buttons on
-        the card -- text for now (Max: icons for these later). Each
-        acts on just THIS card's video, reusing the exact same handler
-        methods the right-click menu's single-video actions use, so
-        there's one source of truth for what each action actually
-        does.
+        the card -- icons Max provided (pencil/copy/funnel/trash),
+        replacing the old text labels. Each acts on just THIS card's
+        video, reusing the exact same handler methods the right-click
+        menu's single-video actions use, so there's one source of
+        truth for what each action actually does.
 
         Styled distinctly from every other CustomButton in the app --
         filled with the card TEXT color (not the usual accent), with
         its own stroked outline using the card text's own outline
         color, "similar to the text" -- and roughly twice the size of
-        a default CustomButton (48px tall + a larger font, vs. the
-        24px/default-font used elsewhere)."""
+        a default CustomButton (48px tall, vs. the 24px used
+        elsewhere). Icons are shown at their own original colors (not
+        retinted to match text, unlike the Search/Refresh/Sort toolbar
+        icons) -- these are full-color, individually-branded action
+        icons, not monochrome ones meant to blend into the text
+        system."""
         row = QWidget()
         layout = QHBoxLayout(row)
         layout.setContentsMargins(0, 4, 0, 0)
-        layout.setSpacing(4)
+        layout.setSpacing(8)
         actions = [
-            ("Edit", lambda: self.edit_requested.emit(self.video_id)),
-            ("Copy", lambda: self._bulk_copy_to_clipboard({self.video_id})),
-            ("Filters", self._open_filters_menu_for_self),
-            ("Delete", lambda: self._bulk_delete({self.video_id})),
+            ("edit_icon.png", "Edit", lambda: self.edit_requested.emit(self.video_id)),
+            ("copy_icon.png", "Copy", lambda: self._bulk_copy_to_clipboard({self.video_id})),
+            ("filters_icon.png", "Filters", self._open_filters_menu_for_self),
+            ("delete_icon.png", "Delete", lambda: self._bulk_delete({self.video_id})),
         ]
-        for label, handler in actions:
-            btn = CustomButton(label)
-            btn.setMinimumHeight(48)  # ~2x the 24px used elsewhere
-            font = btn.font()
-            font.setPointSizeF(font.pointSizeF() * 1.3 if font.pointSizeF() > 0 else 11.0)
-            btn.setFont(font)
+        for icon_name, tooltip, handler in actions:
+            btn = CustomButton()
+            btn.setToolTip(tooltip)
+            btn.set_icon_pixmap(resource_qpixmap(icon_name))
+            # Circular (not just tall-and-wide, per the report: they
+            # were rendering as tall rectangles that didn't fit their
+            # own icons, since a QHBoxLayout stretches each button to
+            # fill the row's own width rather than keeping them square)
+            # -- same set_circular() the Search/Refresh/Sort header
+            # buttons already use. Slightly larger than the old 48px
+            # minimum height (56px), per Max's own "slightly increase
+            # the size" -- CustomButton.paintEvent already scales the
+            # icon to fill most of whatever shape it's drawing (a true
+            # circle now, instead of a mostly-empty rectangle), so
+            # there was nothing separate to fix for "barely visible"
+            # once the shape itself was corrected.
+            btn.set_circular(56)
             btn.set_fill_color(self._appearance.card_text_color)
             btn.set_outline(self._appearance.card_text_outline_color, self._appearance.card_text_outline_width)
             btn.clicked.connect(handler)
@@ -836,79 +1118,47 @@ class VideoCard(QWidget):
         return row
 
     def _open_filters_menu_for_self(self) -> None:
-        """The "Filters" action button opens the SAME side-opening
-        category submenu the right-click menu's Filters entry does
-        (_build_filters_menu), just exec'd directly instead of nested
-        under another menu item -- scoped to this one video only."""
-        filters_menu = self._build_filters_menu(self, {self.video_id}, [self._video])
-        filters_menu.exec(self.mapToGlobal(self.rect().center()))
+        """The "Filters" action button opens the SAME FiltersPopup the
+        right-click menu's Filters entry does, scoped to this one
+        video only."""
+        self._open_filters_popup({self.video_id}, [self._video], self.mapToGlobal(self.rect().center()))
 
-    def _build_filters_menu(self, parent_menu: QMenu, target_ids: set[int],
-                             target_videos: list["library.Video"]) -> QMenu:
-        """Replaces the old single-tag "Add Filter" dialog with a
-        side-opening submenu (hover to open, like the category submenus
-        in the Library's own Filters dropdown) listing every known tag,
-        grouped into the same categories, each as a checkbox: checked
-        when EVERY video in target_ids already has that tag, toggling
-        adds/removes it across all of them at once. A "+" at the bottom
-        creates a brand new tag (globally -- mirrors the Library
-        dropdown's own "+ Add Filter", which also just creates the tag
-        without applying it to anything)."""
-        menu = QMenu("Filters", parent_menu)
-
-        def make_checkbox(tag: str, target_menu: QMenu) -> None:
-            checkbox = CustomCheckBox(tag, target_menu)
-            checkbox.setChecked(all(tag in v.tags for v in target_videos))
-
-            def on_toggled(checked: bool, tag=tag) -> None:
-                for vid in target_ids:
-                    if checked:
-                        library.add_tag_to_video(vid, tag)
-                    else:
-                        library.remove_tag_from_video(vid, tag)
-                self.tags_changed.emit()
-
-            checkbox.toggled.connect(on_toggled)
-            action = QWidgetAction(target_menu)
-            action.setDefaultWidget(checkbox)
-            target_menu.addAction(action)
-
-        all_tags = library.all_known_tags()
-        grouped, uncategorized = library.tags_grouped_by_category()
-
-        if not all_tags:
-            no_tags_action = menu.addAction("(no tags yet)")
-            no_tags_action.setEnabled(False)
-
-        for category_name, tag_names in grouped.items():
-            category_menu = QMenu(category_name, menu)
-            for tag in tag_names:
-                make_checkbox(tag, category_menu)
-            menu.addMenu(category_menu)
-
-        for tag in uncategorized:
-            make_checkbox(tag, menu)
-
-        menu.addSeparator()
-        add_filter_btn = CustomButton("+ Add Filter")
-        add_filter_btn.clicked.connect(self._create_new_filter)
-        add_filter_action = QWidgetAction(menu)
-        add_filter_action.setDefaultWidget(add_filter_btn)
-        menu.addAction(add_filter_action)
-
-        return menu
+    def _open_filters_popup(self, target_ids: set[int], target_videos: list["library.Video"],
+                             global_pos) -> None:
+        """A genuine Qt.Popup widget (see filters_popup.py's own module
+        docstring for the full story of why this replaced a QMenu
+        submenu) listing every known tag, grouped into the same
+        categories, each as a checkbox: checked when EVERY video in
+        target_ids already has that tag, toggling adds/removes it
+        across all of them at once."""
+        from .filters_popup import FiltersPopup
+        popup = FiltersPopup(
+            target_ids, target_videos,
+            on_tags_changed=self.tags_changed.emit,
+            on_create_new_filter=self._create_new_filter,
+            parent=self,
+        )
+        self.context_menu_opened.emit()
+        popup.closed.connect(self.context_menu_closed.emit)
+        popup.show_near(global_pos)
 
     def _create_new_filter(self) -> None:
-        name, ok = QInputDialog.getText(self, "Add Filter", "Filter name:")
-        name = name.strip()
-        if ok and name:
-            library.create_tag(name)
-            # Doesn't apply it to anything or update the currently-open
-            # submenu in place (matches the Library Filters dropdown's
-            # own "+ Add Filter", which is the same one-shot behavior) --
-            # it'll show up next time a filters menu is opened, once
-            # tags_changed has propagated through to a refresh().
-            self.tags_changed.emit()
+        from .add_filter_dialog import AddFilterDialog
+        dialog = AddFilterDialog(library.all_categories(), parent=self)
+        if dialog.exec() == QDialog.Accepted:
+            name, category_id = dialog.result_values()
+            if name:
+                library.create_tag(name)
+                if category_id is not None:
+                    tag_id = next((tid for tid, tname in library.all_tags_with_ids() if tname == name), None)
+                    if tag_id is not None:
+                        library.set_tag_category(tag_id, category_id)
+                # Doesn't apply it to anything or update the currently-open
+                # submenu in place (matches the Library Filters dropdown's
+                # own "+ Add Filter", which is the same one-shot behavior) --
+                # it'll show up next time a filters menu is opened, once
+                # tags_changed has propagated through to a refresh().
+                self.tags_changed.emit()
 
     def _bulk_set_favorite(self, target_ids: set[int], favorite: bool) -> None:
         for vid in target_ids:
@@ -923,15 +1173,16 @@ class VideoCard(QWidget):
         from PySide6.QtCore import QUrl, QMimeData
         from PySide6.QtWidgets import QApplication
 
+        auto_mp4 = config_module.load().auto_copy_as_mp4
         urls = []
         missing = []
         for vid in target_ids:
             video = library.get_video(vid)
             path = Path(video.path)
-            if path.exists():
-                urls.append(QUrl.fromLocalFile(str(path)))
-            else:
+            if not path.exists():
                 missing.append(str(path))
+                continue
+            urls.append(QUrl.fromLocalFile(str(self._resolve_copy_path(path, auto_mp4))))
         if missing:
             QMessageBox.warning(
                 self, "Copy Failed",
@@ -941,6 +1192,30 @@ class VideoCard(QWidget):
             mime = QMimeData()
             mime.setUrls(urls)
             QApplication.clipboard().setMimeData(mime)
+
+    @staticmethod
+    def _resolve_copy_path(path: Path, auto_mp4: bool) -> Path:
+        """Returns the path that should actually go on the clipboard
+        for Copy -- the original, unless "Auto Copy as MP4" is on AND
+        the file isn't already .mp4, in which case a fresh copy of the
+        exact same bytes is made in the system temp directory under a
+        .mp4 name instead, and THAT path is returned. A pure rename
+        via a copy, not a remux/re-encode of any kind -- the library's
+        own tracked file at `path` is never touched, since repointing
+        the clipboard at a renamed version of it directly would mean
+        either mutating the library's own path bookkeeping or lying
+        about what file is actually still there. Deliberately not
+        guaranteed to produce genuinely valid, standards-conformant MP4
+        if the underlying container/codec really isn't MP4-compatible
+        -- it's exactly what "no remuxing or encoding, just a rename"
+        asked for, accepting that tradeoff on purpose. Repeated copies
+        of the same video overwrite the same temp path rather than
+        accumulating a new file every time."""
+        if not auto_mp4 or path.suffix.lower() == ".mp4":
+            return path
+        temp_path = Path(tempfile.gettempdir()) / (path.stem + ".mp4")
+        shutil.copyfile(path, temp_path)
+        return temp_path
 
     def _bulk_delete(self, target_ids: set[int]) -> None:
         if len(target_ids) == 1:
@@ -983,15 +1258,81 @@ class VideoCard(QWidget):
         QApplication.clipboard().setMimeData(mime)
 
     def _rename(self) -> None:
-        new_title, ok = QInputDialog.getText(
-            self, "Rename Video", "Title:", QLineEdit.Normal, self._video.title
-        )
-        if not ok:
+        """Triggered by the context menu's Rename action -- edits the
+        title INLINE on the card itself instead of opening a separate
+        dialog window, per Max's direct request (same technique as the
+        video previewer's own click-to-edit title). Autosaves the
+        current text once a second while editing, in addition to
+        committing on Enter or clicking away (both go through
+        CustomLineEdit's editingFinished)."""
+        if self._title_edit is not None:
+            return  # already editing
+        info_layout = self.title_label.parentWidget().layout()
+        index = info_layout.indexOf(self.title_label)
+        self.title_label.hide()
+
+        self._title_edit = CustomLineEdit(self._video.title)
+        self._title_edit.setFixedWidth(self.title_label.width())
+        self._title_edit.editingFinished.connect(self._commit_title_edit)
+        info_layout.insertWidget(index, self._title_edit)
+        self._title_edit.setFocus()
+        self._title_edit.selectAll()
+
+        self._last_saved_title = self._video.title
+        self._title_autosave_timer = QTimer(self)
+        self._title_autosave_timer.setInterval(1000)
+        self._title_autosave_timer.timeout.connect(self._autosave_title)
+        self._title_autosave_timer.start()
+
+        # App-wide, not just this card's own mousePressEvent -- reported
+        # directly that "click off to save" only worked for a click on
+        # THIS SAME card, not a different card or empty background.
+        # Neither of those naturally routes through this card's own
+        # click handling at all (Qt delivers a mouse press to whichever
+        # widget the cursor is actually over, not to every OTHER widget
+        # in the app), so a per-card check could never catch them --
+        # only a genuinely app-wide filter sees every click everywhere.
+        QApplication.instance().installEventFilter(self)
+
+    def eventFilter(self, obj, event) -> bool:
+        if event.type() == QEvent.MouseButtonPress and self._title_edit is not None:
+            global_pos = event.globalPosition().toPoint() if hasattr(event, "globalPosition") else event.globalPos()
+            local_to_edit = self._title_edit.mapFromGlobal(global_pos)
+            if not self._title_edit.rect().contains(local_to_edit):
+                self._commit_title_edit()
+        return super().eventFilter(obj, event)
+
+    def _autosave_title(self) -> None:
+        """Runs once a second while editing -- persists the CURRENT
+        text to the DB without emitting `renamed` (which would trigger
+        a full grid refresh via _VideoGridTab.refresh() and destroy
+        this very edit widget mid-keystroke). Only the final commit
+        (_commit_title_edit, below) emits that, once editing is
+        actually done."""
+        if self._title_edit is None:
             return
-        new_title = new_title.strip()
-        if not new_title or new_title == self._video.title:
+        current = self._title_edit.text().strip()
+        if current and current != self._last_saved_title:
+            self._video = library.rename_video(self.video_id, title=current)
+            self._last_saved_title = current
+
+    def _commit_title_edit(self) -> None:
+        if self._title_edit is None:
             return
-        self._video = library.rename_video(self.video_id, title=new_title)
+        QApplication.instance().removeEventFilter(self)
+        self._title_autosave_timer.stop()
+        new_title = self._title_edit.text().strip()
+        if new_title and new_title != self._video.title:
+            self._video = library.rename_video(self.video_id, title=new_title)
+
+        info_layout = self._title_edit.parentWidget().layout()
+        index = info_layout.indexOf(self._title_edit)
+        info_layout.removeWidget(self._title_edit)
+        self._title_edit.deleteLater()
+        self._title_edit = None
+
         self._full_title_text = self._title_text(self._video)
-        self.set_font_scale(self._current_font_scale)  # re-fit/re-elide with the new text
+        self.set_font_scale(self._current_font_scale)  # re-fit/re-elide with the (possibly new) text
+        info_layout.insertWidget(index, self.title_label)
+        self.title_label.show()
         self.renamed.emit()
