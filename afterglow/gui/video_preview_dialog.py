@@ -25,11 +25,11 @@ whatever window it's embedded in, rather than a fixed pixel size.
 """
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, QRectF, Signal, QTimer, QPropertyAnimation, QEvent
+from PySide6.QtCore import Qt, QRectF, QRect, Signal, QTimer, QPropertyAnimation, QEvent
 from PySide6.QtGui import QPainter, QColor, QPainterPath, QPen, QRegion
 from PySide6.QtWidgets import (
     QVBoxLayout, QHBoxLayout, QLabel, QSlider, QAbstractButton,
-    QSizePolicy, QWidget, QGraphicsOpacityEffect,
+    QSizePolicy, QWidget, QGraphicsOpacityEffect, QStyle,
 )
 
 from .. import config as config_module
@@ -212,6 +212,50 @@ class _FullscreenButton(QAbstractButton):
         super().leaveEvent(event)
 
 
+class _ClickToSeekSlider(QSlider):
+    """A QSlider that jumps DIRECTLY to wherever you click on its track,
+    instead of QSlider's own default of moving one page-step toward the
+    click -- used for both the scrubber and the volume slider, per
+    Max's direct request ("clicking on spots on the playback line and
+    volume line... teleports the player to that part"). Dragging the
+    handle itself is completely unaffected -- this only changes what a
+    plain click somewhere else on the track does."""
+
+    def mousePressEvent(self, event) -> None:
+        if event.button() == Qt.LeftButton:
+            handle_rect = self.style().subControlRect(
+                QStyle.CC_Slider, self._style_option(), QStyle.SC_SliderHandle, self
+            )
+            pos = event.position().toPoint() if hasattr(event, "position") else event.pos()
+            if not handle_rect.contains(pos):
+                # A click somewhere else on the track -- jump directly
+                # there. NOT calling super() for this specific case:
+                # QSlider's own default mousePressEvent, for a click
+                # that didn't land on the handle, does its own separate
+                # page-step-based jump, which would silently override
+                # the direct jump just made here. A click ON the handle
+                # itself (the branch below) still goes through super()
+                # completely normally, which is what actually emits
+                # sliderPressed/sliderMoved/sliderReleased and sets up
+                # proper drag tracking -- skipping THAT unconditionally
+                # would have broken ordinary handle-dragging entirely,
+                # not just changed what a track click does.
+                fraction = pos.x() / max(1, self.width())
+                fraction = min(1.0, max(0.0, fraction))
+                value = round(self.minimum() + fraction * (self.maximum() - self.minimum()))
+                self.setValue(value)
+                self.sliderMoved.emit(value)
+                event.accept()
+                return
+        super().mousePressEvent(event)
+
+    def _style_option(self):
+        from PySide6.QtWidgets import QStyleOptionSlider
+        opt = QStyleOptionSlider()
+        self.initStyleOption(opt)
+        return opt
+
+
 class _VolumeButton(QAbstractButton):
     """A speaker cone + up to two sound-wave arcs. Click toggles mute
     (handled by the dialog, not this button itself)."""
@@ -278,6 +322,8 @@ class VideoPreviewContent(QWidget):
         self.setAttribute(Qt.WA_TranslucentBackground, True)  # lets this widget's own rounded corners show the scrim behind it
 
         outer = QVBoxLayout(self)
+        self._outer_layout = outer
+        self._overlay_visible = True
         outer.setContentsMargins(16, 16, 16, 16)
 
         # ---- title + info, centered, in one card_background box ----
@@ -350,7 +396,7 @@ class VideoPreviewContent(QWidget):
         self.time_label = QLabel("0:00 / 0:00")
         transport.addWidget(self.time_label)
 
-        self.scrubber = QSlider(Qt.Horizontal)
+        self.scrubber = _ClickToSeekSlider(Qt.Horizontal)
         self.scrubber.setRange(0, 1000)
         self.scrubber.sliderPressed.connect(self._on_scrub_start)
         self.scrubber.sliderMoved.connect(self._on_scrub_moved)
@@ -361,6 +407,16 @@ class VideoPreviewContent(QWidget):
             "QSlider::handle:horizontal { background: " + self._theme.accent().name()
             + "; width: 14px; margin: -5px 0; border-radius: 7px; }"
             "QSlider::sub-page:horizontal { background: " + self._theme.accent().name() + "; border-radius: 3px; }"
+            # The "ghost" unplayed portion -- ADD-page is everything
+            # AFTER the handle, i.e. what's left to play. Left
+            # unstyled before, it just showed the plain groove color
+            # (nearly indistinguishable from the general dark UI
+            # around it), which read as "the playback line just ends
+            # wherever you are" rather than visibly continuing as the
+            # rest of the timeline. A lighter, semi-transparent
+            # overlay makes the remaining duration clearly visible as
+            # its own distinct thing.
+            "QSlider::add-page:horizontal { background: rgba(255, 255, 255, 70); border-radius: 3px; }"
         )
         self.scrubber.setStyleSheet(slider_style)
         transport.addWidget(self.scrubber, stretch=1)
@@ -369,7 +425,7 @@ class VideoPreviewContent(QWidget):
         self.volume_btn.clicked.connect(self._toggle_mute)
         transport.addWidget(self.volume_btn)
 
-        self.volume_slider = QSlider(Qt.Horizontal)
+        self.volume_slider = _ClickToSeekSlider(Qt.Horizontal)
         self.volume_slider.setRange(0, 100)
         self.volume_slider.setValue(80)
         self.volume_slider.setFixedWidth(90)
@@ -542,7 +598,144 @@ class VideoPreviewContent(QWidget):
     def _toggle_fullscreen(self) -> None:
         self._is_expanded = not self._is_expanded
         self.fullscreen_btn.setChecked(self._is_expanded)
+        # ACTUAL OS-level fullscreen now, not just filling most of the
+        # overlay -- reported directly that it wasn't genuinely
+        # fullscreen before. self.window() is MainWindow itself (this
+        # widget is embedded inside it, not a separate top-level
+        # window), so this fullscreens the whole app window (hiding
+        # its own title bar/taskbar presence), with the video content
+        # then filling essentially all of that.
+        window = self.window()
+        if self._is_expanded:
+            window.showFullScreen()
+            self._enter_overlay_controls_mode()
+        else:
+            window.showNormal()
+            self._exit_overlay_controls_mode()
         self.fullscreen_toggled.emit(self._is_expanded)
+
+    def _enter_overlay_controls_mode(self) -> None:
+        """While actually fullscreen, the header/transport boxes float
+        ON TOP of the video (not in their own separate layout slots
+        above/below it) and auto-hide after inactivity -- per Max's
+        direct request. Reparents them out of the normal QVBoxLayout
+        into plain floating children of `self`, positioned via manual
+        geometry instead of layout management, since a layout can't
+        make two widgets occupy the same screen space the video itself
+        already fills."""
+        self._outer_layout.removeWidget(self._header_box)
+        self._outer_layout.removeWidget(self._transport_box)
+        self._header_box.setParent(self)
+        self._transport_box.setParent(self)
+        self._position_overlay_controls()
+        self._header_box.show()
+        self._transport_box.show()
+        self._header_box.raise_()
+        self._transport_box.raise_()
+
+        self.setMouseTracking(True)
+        self._overlay_visible = True
+        self._inactivity_timer = QTimer(self)
+        self._inactivity_timer.setInterval(2000)
+        self._inactivity_timer.setSingleShot(True)
+        self._inactivity_timer.timeout.connect(self._hide_overlay_controls)
+        self._inactivity_timer.start()
+
+    def _exit_overlay_controls_mode(self) -> None:
+        if hasattr(self, "_inactivity_timer") and self._inactivity_timer is not None:
+            self._inactivity_timer.stop()
+            self._inactivity_timer = None
+        self.setMouseTracking(False)
+        self._header_box.setParent(None)
+        self._transport_box.setParent(None)
+        self._outer_layout.insertWidget(0, self._header_box)
+        self._outer_layout.addWidget(self._transport_box)
+        self._header_box.show()
+        self._transport_box.show()
+        self._overlay_visible = True
+
+    def _position_overlay_controls(self) -> None:
+        header_h = self._header_box.sizeHint().height()
+        transport_h = self._transport_box.sizeHint().height()
+        self._header_box.setGeometry(0, 0, self.width(), header_h)
+        self._transport_box.setGeometry(0, self.height() - transport_h, self.width(), transport_h)
+
+    def _hide_overlay_controls(self) -> None:
+        if not self._is_expanded or not self._overlay_visible:
+            return
+        self._overlay_visible = False
+        self._animate_overlay_slide(showing=False)
+
+    def _show_overlay_controls(self) -> None:
+        if not self._is_expanded:
+            return
+        if hasattr(self, "_inactivity_timer") and self._inactivity_timer is not None:
+            self._inactivity_timer.start()  # (re)starts the 2s countdown
+        if self._overlay_visible:
+            return
+        self._overlay_visible = True
+        self._animate_overlay_slide(showing=True)
+
+    def _animate_overlay_slide(self, showing: bool) -> None:
+        """Slides the header UP off the top edge / down into place, and
+        the transport DOWN off the bottom edge / up into place -- per
+        Max's direct request for a slide, not a fade or a teleport."""
+        header_h = self._header_box.height()
+        transport_h = self._transport_box.height()
+        header_shown = QRect(0, 0, self.width(), header_h)
+        header_hidden = QRect(0, -header_h, self.width(), header_h)
+        transport_shown = QRect(0, self.height() - transport_h, self.width(), transport_h)
+        transport_hidden = QRect(0, self.height(), self.width(), transport_h)
+
+        self._header_anim = QPropertyAnimation(self._header_box, b"geometry", self)
+        self._header_anim.setDuration(220)
+        if showing:
+            self._header_anim.setStartValue(header_hidden)
+            self._header_anim.setEndValue(header_shown)
+        else:
+            self._header_anim.setStartValue(header_shown)
+            self._header_anim.setEndValue(header_hidden)
+        # Safety net: explicitly snaps to the exact target geometry once
+        # the animation finishes, regardless of whatever the animation's
+        # own final tick landed on -- a resize/reposition happening
+        # mid-animation (this box's own sizeHint changing, or the
+        # window itself resizing) could otherwise leave it slightly off
+        # from where it's actually supposed to end up.
+        header_target = header_shown if showing else header_hidden
+        self._header_anim.finished.connect(lambda: self._header_box.setGeometry(header_target))
+
+        self._transport_anim = QPropertyAnimation(self._transport_box, b"geometry", self)
+        self._transport_anim.setDuration(220)
+        if showing:
+            self._transport_anim.setStartValue(transport_hidden)
+            self._transport_anim.setEndValue(transport_shown)
+        else:
+            self._transport_anim.setStartValue(transport_shown)
+            self._transport_anim.setEndValue(transport_hidden)
+        transport_target = transport_shown if showing else transport_hidden
+        self._transport_anim.finished.connect(lambda: self._transport_box.setGeometry(transport_target))
+
+        self._header_anim.start()
+        self._transport_anim.start()
+
+    def mouseMoveEvent(self, event) -> None:
+        if self._is_expanded:
+            self._show_overlay_controls()
+        super().mouseMoveEvent(event)
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        if self._is_expanded and self._overlay_visible:
+            self._position_overlay_controls()
+
+    def changeEvent(self, event) -> None:
+        # Hides the controls immediately on losing window focus (not
+        # waiting out the 2s inactivity timer) -- per Max's direct
+        # "when the window loses focus."
+        if event.type() == QEvent.ActivationChange and self._is_expanded:
+            if not self.window().isActiveWindow():
+                self._hide_overlay_controls()
+        super().changeEvent(event)
 
     def paintEvent(self, event) -> None:
         painter = QPainter(self)
@@ -562,8 +755,28 @@ class VideoPreviewContent(QWidget):
         # exiting the "expanded" state first if that's active).
         if event.key() == Qt.Key_Space:
             self._toggle_play_pause()
+        elif event.key() in (Qt.Key_Comma, Qt.Key_Less):
+            # Holding the key "nudges many frames in quick succession
+            # until let go" comes entirely for free here -- the OS/Qt's
+            # own key-repeat mechanism re-delivers keyPressEvent
+            # repeatedly (event.isAutoRepeat() is True for those) for
+            # as long as a key stays held, so just acting on every
+            # delivery (repeat or not) already gives exactly that
+            # behavior without needing a separate timer to drive it.
+            self.video_widget.frame_back_step()
+            self._update_play_pause_button_from_widget()
+        elif event.key() in (Qt.Key_Period, Qt.Key_Greater):
+            self.video_widget.frame_step()
+            self._update_play_pause_button_from_widget()
         else:
             super().keyPressEvent(event)
+
+    def _update_play_pause_button_from_widget(self) -> None:
+        # frame_step()/frame_back_step() both pause playback as part of
+        # what mpv's own frame-step/frame-back-step commands do -- keep
+        # the button's own state in sync with that rather than leaving
+        # it showing "playing" while the video is actually now paused.
+        self.play_pause_btn.setChecked(not self.video_widget.is_paused)
 
     def shutdown(self) -> None:
         """Called by VideoPreviewOverlay right before it closes --
@@ -734,7 +947,17 @@ class VideoPreviewOverlay(QWidget):
             else:
                 self.close_overlay()
         else:
-            super().keyPressEvent(event)
+            # Forwards to the content widget's OWN keyPressEvent
+            # explicitly -- VideoPreviewOverlay is what actually holds
+            # keyboard focus (showEvent calls self.setFocus() on
+            # itself, not on self.content), so without this, every key
+            # binding VideoPreviewContent handles (Space for play/
+            # pause, frame-step nudging) would never actually be
+            # reachable at all -- calling super().keyPressEvent()
+            # here only reaches QWidget's own default (which does
+            # nothing useful with an unhandled key), not the content
+            # widget sitting right below this one.
+            self.content.keyPressEvent(event)
 
     def close_overlay(self, immediate: bool = False) -> None:
         """immediate=True skips the fade-out entirely -- used when

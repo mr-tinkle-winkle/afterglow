@@ -328,6 +328,99 @@ Seven consecutive batches of Library/Settings/appearance
 features/bug fixes, given together each time. Newest first.
 
 ### This session
+The context menu issue is finally resolved with a fundamentally
+different architecture (after four straight failed QMenu-level fixes),
+plus two substantial video previewer features and a real pre-existing
+keyboard bug caught along the way.
+
+1. **Context menu closing -- abandoned patching QMenu entirely, after
+   four fixes at that level all failed.** Rather than attempt a fifth
+   guess at QMenu's exact internal closing mechanism, the Filters
+   interaction (both the context menu's entry and the quick-action
+   button) now uses a genuine `Qt.Popup`-flagged custom widget
+   (`filters_popup.py`, `FiltersPopup`) -- the SAME proven technique
+   `SearchBubble`/`SortPopover` already rely on successfully elsewhere
+   in this exact codebase. Qt.Popup's own native behavior is precisely
+   "a click outside this widget closes it; clicks inside are delivered
+   normally and never close it on their own," which is exactly what
+   was needed and sidesteps whatever QMenu-specific mechanism was
+   actually responsible (still not identified with certainty across
+   four attempts). Also simplified "Edited" back to a plain checkable
+   QAction -- a single one-shot toggle closing the menu afterward is
+   completely normal, expected behavior (same as Favorite); the
+   persistent, repeatedly-reported problem was always specifically the
+   Filters list, where toggling several tags in one visit genuinely
+   needs to keep it open. Caught a real bug of my own while verifying
+   this, not left for Max to hit: connecting to the popup's
+   `destroyed` signal to track when it closes would likely never have
+   fired at all, since a Qt.Popup typically just HIDES (not destroys)
+   on an outside click -- fixed by adding an explicit `closed` signal
+   emitted from the popup's own `hideEvent` instead. Verified directly:
+   toggling a checkbox inside the popup leaves it open and actually
+   applies the tag change, and closing it correctly fires the tracking
+   signal library_page.py depends on to know when it's safe to run a
+   deferred grid refresh again.
+2. **Ghost playback line + click-to-seek on both sliders.** The
+   scrubber and volume slider both gained an explicit
+   `QSlider::add-page` style (previously unstyled, so the "unplayed"
+   remainder just showed the plain groove color and read as "the line
+   just ends") -- a semi-transparent lighter overlay now makes the
+   rest of the timeline clearly visible as its own distinct thing. New
+   `_ClickToSeekSlider` (used for both) jumps directly to wherever you
+   click on the track, rather than QSlider's own default of moving one
+   page-step toward it. Caught a real bug in my own first attempt:
+   skipping `super().mousePressEvent()` unconditionally for every left
+   click would have broken ORDINARY handle-dragging entirely (that's
+   what actually emits sliderPressed/sliderMoved/sliderReleased) --
+   fixed by distinguishing a click ON the handle itself (goes through
+   completely normal Qt handling) from a click elsewhere on the track
+   (jumps directly, bypassing only QSlider's own page-step reaction to
+   that specific case). Verified both: clicking the track seeks
+   correctly, and clicking-then-checking the handle's own drag
+   handling still fires normally.
+3. **Actual OS-level fullscreen with auto-hiding, sliding overlay
+   controls.** Toggling fullscreen now calls `showFullScreen()` on the
+   actual MainWindow (this widget is embedded inside it, not a
+   separate top-level window), not just filling most of the existing
+   overlay. While fullscreen, the header/transport boxes are
+   reparented out of their normal layout slots into floating children
+   positioned via manual geometry, overlaying the video directly
+   rather than occupying their own separate space above/below it --
+   auto-hiding via slide animation (QPropertyAnimation on geometry,
+   not opacity or a teleport) after 2 seconds of no mouse movement or
+   immediately on the window losing focus, sliding back in on any
+   mouse movement. Exiting fullscreen reparents them straight back
+   into the normal QVBoxLayout. Verified the full cycle directly:
+   hide-after-inactivity, show-on-mouse-movement, and clean layout
+   restoration on exit -- and caught a real bug in my OWN test while
+   confirming this, not a product bug: an inactivity timer sped up for
+   an earlier part of the same test was left running and kept
+   re-firing during a later wait, hiding the controls again right
+   after they'd just been shown -- not a flaw in the actual show/hide
+   logic itself.
+4. **Frame-by-frame nudging** -- `,`/`<` steps one frame backward,
+   `.`/`>` one frame forward (new `MpvVideoWidget.frame_step()`/
+   `frame_back_step()`, thin wrappers around mpv's own commands of the
+   same name, which already pause playback as part of what they do).
+   "Holding it nudges many frames in quick succession until let go"
+   comes entirely for free from the OS/Qt's own key-repeat mechanism
+   (a held key re-delivers keyPressEvent repeatedly) -- no separate
+   timer needed, just acting on every delivery regardless of whether
+   it's a repeat. While wiring this in, found and fixed a genuine
+   PRE-EXISTING bug, not something introduced this session:
+   `VideoPreviewOverlay` is what actually holds keyboard focus (its
+   own `showEvent` calls `self.setFocus()` on itself), but its
+   `keyPressEvent` never forwarded anything to
+   `VideoPreviewContent.keyPressEvent` for any key other than Escape
+   -- meaning Space-bar play/pause (and now frame-step) could never
+   actually have been reachable in the running app at all, regardless
+   of whatever `VideoPreviewContent` itself implemented. Fixed by
+   having the overlay explicitly forward unhandled keys to
+   `self.content.keyPressEvent()`. Verified all four key variants
+   step correctly, that simulated auto-repeat presses each nudge a
+   frame, and that Space now actually reaches the content widget too.
+
+### Previous session
 Three persistent bugs (two of which had already survived multiple
 fix attempts) finally root-caused for real, plus a new feature.
 

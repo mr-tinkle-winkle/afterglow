@@ -239,6 +239,18 @@ class MpvVideoWidget(QOpenGLWidget):
     def seek(self, position_sec: float) -> None:
         self._mpv.seek(position_sec, reference="absolute", precision="exact")
 
+    def frame_step(self) -> None:
+        """Advances exactly one frame forward, pausing playback first if
+        it was running -- mpv's own "frame-step" command already does
+        this (steps then pauses), matching what frame-by-frame nudging
+        should do regardless of whether the video was playing when the
+        nudge happened."""
+        self._mpv.frame_step()
+
+    def frame_back_step(self) -> None:
+        """The reverse of frame_step() -- one frame backward."""
+        self._mpv.frame_back_step()
+
     def set_volume(self, value: int) -> None:
         """Client-side playback volume only (0-100) -- akin to a YouTube
         player's volume control, this affects nothing about the saved
