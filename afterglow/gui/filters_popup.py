@@ -50,8 +50,18 @@ class FiltersPopup(QWidget):
 
     def __init__(self, target_ids: set[int], target_videos: list["library.Video"],
                  on_tags_changed, on_create_new_filter, parent=None):
-        super().__init__(parent)
-        self.setWindowFlags(Qt.Popup)
+        # Flags passed DIRECTLY to the constructor, not via a separate
+        # setWindowFlags() call afterward -- both proven-working
+        # references (SearchBubble, SortPopover) do it this way, and
+        # setWindowFlags() on an already-constructed widget requires
+        # Qt to re-create the underlying platform window to fully take
+        # effect, which doesn't reliably happen in every case. This,
+        # combined with using Qt.Popup ALONE (missing
+        # Qt.FramelessWindowHint, which both references always pair
+        # it with), are the two concrete differences found between
+        # this and the two working references after "it still closes"
+        # was reported a fifth time.
+        super().__init__(parent, Qt.Popup | Qt.FramelessWindowHint)
         self.setAttribute(Qt.WA_TranslucentBackground, True)
         appearance = config_module.load().appearance
         self._appearance = appearance

@@ -328,6 +328,122 @@ Seven consecutive batches of Library/Settings/appearance
 features/bug fixes, given together each time. Newest first.
 
 ### This session
+1. **Context menu reverted to the pre-`FiltersPopup` QMenu-based
+   version**, after a `Qt.Popup`-based rebuild (`filters_popup.py`,
+   `FiltersPopup`) still didn't reliably stay open while toggling
+   checkboxes and looked worse visually than the version before it.
+   `_build_filters_menu`, `_open_filters_menu_for_self`, the "Edited"
+   `CustomCheckBox`-via-`QWidgetAction`, and the nested
+   `_NonClosingMenu` category submenus in `video_card.py` are all back
+   to their pre-rebuild form. `filters_popup.py` is left in the tree,
+   unused, in case a future session revisits the underlying "menu
+   doesn't reliably stay open while toggling several checkboxes in a
+   row" problem, which remains unsolved after five separate attempts
+   at the QMenu/Qt.Popup level -- see the git history / prior session
+   entries below for what was already tried and ruled out.
+2. **Scrubber pause-during-drag + drag-to-seek from anywhere on the
+   track, with a live preview frame.** `_ClickToSeekSlider`
+   (`video_preview_dialog.py`) tracks its own `_track_drag_active`
+   state and manually emits sliderPressed/sliderMoved/sliderReleased
+   to mirror a real handle drag, rather than a one-shot "jump on
+   press" that couldn't support continuing to drag afterward.
+   `VideoPreviewContent._on_scrub_start`/`_on_scrub_end` pause
+   playback for the duration of any scrub (remembering whether it was
+   actually playing beforehand, so scrubbing an already-paused video
+   stays paused afterward) and resume only if it was playing when the
+   drag started. `_on_scrub_moved` now also issues a live seek on
+   every drag step (not just once on release), so the displayed frame
+   tracks the current scrub position continuously instead of staying
+   frozen on the frame from wherever the drag began.
+3. **Previewer fullscreen now removes all remaining chrome.** In
+   addition to the content box filling 100% of the window (from an
+   earlier pass), entering fullscreen now also hides the Prev/Next
+   arrows (previously still occupying horizontal space in `video_row`,
+   squeezing the video's own width) and zeroes both the outer 16px
+   margin and the video frame's own border margin -- all restored to
+   their normal values on exit.
+4. **Single-clip card sizing bug fixed.** `grid_layout.addWidget(card,
+   row, col, ...)` in `library_page.py` had no horizontal alignment
+   constraint (`Qt.AlignTop` only) -- with more than one card sharing
+   a row, neighboring cards effectively pinned each column's width,
+   but a library with exactly one video (a single cell, nothing else
+   to constrain its column) could let that lone card stretch to fill
+   the available column width instead of its normal size. Fixed by
+   adding `Qt.AlignLeft` alongside `Qt.AlignTop`.
+5. **A reported vertical-resize limitation on the main window remains
+   unresolved.** The usual causes were checked (fixed/minimum/maximum
+   size constraints on the main window or its direct children,
+   anything in its resize handler that could compute a height-based
+   constraint) with nothing conclusive found. One untested hypothesis:
+   the OS-level fullscreen previewer feature added this session --
+   fullscreen/normal window-state transitions can sometimes leave a
+   window's resize behavior in an altered state depending on the
+   window manager -- but this was not verified against a real
+   compositor and should not be assumed correct without testing.
+
+### Previous session
+Three direct follow-up reports on the previous round, all three
+genuine bugs, all three found and fixed.
+
+1. **Context menu STILL closing, and "looks worse than before" -- found
+   two concrete, real differences from the proven-working reference
+   implementations this was modeled on.** Compared `FiltersPopup`
+   directly against `SortPopover`/`SearchBubble` (both confirmed
+   working) line-by-line rather than guessing again, and found:
+   (a) `FiltersPopup` only set `Qt.Popup` alone, while BOTH working
+   references always pair it with `Qt.FramelessWindowHint` -- without
+   that, the popup could still pick up a native window-manager frame/
+   title bar despite Qt.Popup being set, which would explain "looks
+   worse" (a native frame around otherwise-rounded custom content)
+   AND is a plausible source of premature closing through an entirely
+   different mechanism than any of the four earlier QMenu-level
+   attempts were even looking at; (b) the flags were being set via a
+   separate `setWindowFlags()` call AFTER construction, not passed
+   directly to `super().__init__(parent, flags)` the way both
+   references do it -- setting window flags on an already-constructed
+   widget requires Qt to re-create the underlying platform window to
+   fully take effect, which doesn't reliably happen in every case.
+   Fixed both: flags now passed directly to the constructor, exactly
+   matching the proven pattern. Re-verified the popup still stays open
+   while toggling and still correctly reports closing.
+2. **Click-to-seek "flicks to it but immediately comes back" -- a real
+   bug in the fix itself, traced precisely.** `_ClickToSeekSlider`
+   correctly updated the slider's VISUAL value for a track click, but
+   skipping `super().mousePressEvent()` for that case (needed to stop
+   QSlider's own page-step reaction from overriding the jump) also
+   meant Qt's internal "am I mid-drag" state was never initialized --
+   so the mouse release that naturally follows a click was never
+   recognized as completing anything, and `sliderReleased` (which is
+   what actually triggers the real seek, via `_on_scrub_end`) never
+   fired at all. The slider's position visibly jumped, but nothing
+   ever actually sought, so the very next routine position update from
+   mpv -- still playing from the old, un-sought position -- snapped the
+   handle right back, exactly as reported. Fixed by explicitly
+   emitting `sliderReleased` immediately after the manual `setValue()`
+   for a track click, synthesizing the same "press-and-release
+   completed" signal a real drag-then-release would have produced.
+   Verified directly against the actual mpv `seek()` call this time
+   (not just the slider's own visual value): a click at 60% of a 10s
+   video now genuinely issues a seek to ~6.0s, and a subsequent
+   position update consistent with that seeked position doesn't snap
+   anything back.
+3. **"Auto hide/slide is good, but it should be ACTUALLY fullscreen" --
+   two remaining sources of padding/rounding found and removed.** The
+   WINDOW itself was already genuinely fullscreen (from last round's
+   fix), but the CONTENT box inside it was still sized to 97% of that
+   (leaving a visible ~3% margin all around) and its own `paintEvent`
+   still rounded its corners unconditionally regardless of fullscreen
+   state. Fixed both: content now fills 100% of the window with zero
+   margin while expanded, and corner rounding is skipped entirely in
+   that state (a rounded rect for something that's supposed to BE the
+   whole screen just clips its own corners against the scrim behind
+   it, which is what was actually being seen). Verified directly: the
+   content's geometry exactly matches the full window with no padding,
+   and a corner pixel is (within antialiasing noise) identical to a
+   pixel just inside it -- no real rounding -- while expanded; exiting
+   correctly restores the smaller, rounded, non-fullscreen size.
+
+### Previous session
 The context menu issue is finally resolved with a fundamentally
 different architecture (after four straight failed QMenu-level fixes),
 plus two substantial video previewer features and a real pre-existing
