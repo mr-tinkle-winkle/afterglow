@@ -30,7 +30,7 @@ class AdvancedSoundDialog(QDialog):
                  default_error_sound: str, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Advanced Sound")
-        appearance = config_module.load().appearance
+        appearance = config_module.load_readonly().appearance
         self._appearance = appearance
         self._theme = Theme(appearance)
         self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)

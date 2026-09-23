@@ -25,7 +25,7 @@ from .theme import Theme
 class CustomScrollBar(QScrollBar):
     def __init__(self, orientation=Qt.Vertical, parent=None):
         super().__init__(orientation, parent)
-        appearance = config_module.load().appearance
+        appearance = config_module.load_readonly().appearance
         self._appearance = appearance
         self._theme = Theme(appearance)
         default_extent = QApplication.style().pixelMetric(QStyle.PM_ScrollBarExtent)

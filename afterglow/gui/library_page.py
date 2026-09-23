@@ -12,6 +12,9 @@ grid/search/filter wiring twice.
 """
 from __future__ import annotations
 
+import time
+import traceback
+
 from pathlib import Path
 from PySide6.QtCore import Qt, Signal, QSize, QFileSystemWatcher, QTimer, QRectF
 from PySide6.QtGui import QPainter, QPixmap, QColor
@@ -22,6 +25,7 @@ from PySide6.QtWidgets import (
     QButtonGroup, QAbstractButton, QApplication,
 )
 
+from .press_pulse import PressPulse, scaled_cached
 from .. import library
 from .. import config as config_module
 from .. import db as db_module
@@ -73,13 +77,14 @@ class LibraryTabButton(QAbstractButton):
 
     def __init__(self, icon_pixmap: QPixmap, position: str = "full", parent=None):
         super().__init__(parent)
+        self._pulse = PressPulse(self)  # shared hover/press pulse, see press_pulse.py
         self.setCheckable(True)
         self.setCursor(Qt.PointingHandCursor)
         self._icon_pixmap = icon_pixmap
         self._position = position  # 'left' | 'right' | 'full'
         self._icon_target_size = 32
         self._loading = False
-        appearance = config_module.load().appearance
+        appearance = config_module.load_readonly().appearance
         self._appearance = appearance
         self._theme = Theme(appearance)
 
@@ -104,6 +109,7 @@ class LibraryTabButton(QAbstractButton):
 
     def paintEvent(self, event) -> None:
         painter = QPainter(self)
+        self._pulse.apply(painter)
         painter.setRenderHint(QPainter.Antialiasing)
         painter.setRenderHint(QPainter.SmoothPixmapTransform)
 
@@ -134,9 +140,7 @@ class LibraryTabButton(QAbstractButton):
         else:
             painter.fillRect(self.rect(), bg)
 
-        scaled = self._icon_pixmap.scaled(
-            self._icon_target_size, self._icon_target_size, Qt.KeepAspectRatio, Qt.SmoothTransformation
-        )
+        scaled = scaled_cached(self._icon_pixmap, self._icon_target_size, self._icon_target_size)
         x = (self.width() - scaled.width()) // 2
         y = (self.height() - scaled.height()) // 2
         painter.drawPixmap(x, y, scaled)
@@ -323,7 +327,7 @@ class _VideoGridTab(QWidget):
         # stretch-absorption trick in _relayout() below, which handles
         # a completely different problem (leftover scroll-area slack),
         # so changing this doesn't risk reintroducing that.
-        appearance = config_module.load().appearance
+        appearance = config_module.load_readonly().appearance
         self.grid_layout.setVerticalSpacing(appearance.ui_padding)
         self.grid_layout.setHorizontalSpacing(appearance.ui_padding)
         # Same padding value on the grid's own OUTER edges too, not just
@@ -420,7 +424,7 @@ class _VideoGridTab(QWidget):
         # buttons) with no gap, so a full outline would visibly
         # double up or bleed into that seam -- "make sure this
         # doesn't bleed into the middle where they combine."
-        theme = Theme(config_module.load().appearance)
+        theme = Theme(config_module.load_readonly().appearance)
         paint_page_outline(self, theme.library_background(), skip_top=True)
 
     def rebuild_sort_popover_pages(self, popover: SortPopover) -> None:
@@ -530,7 +534,7 @@ class _VideoGridTab(QWidget):
         layout = QVBoxLayout(page)
         layout.setContentsMargins(8, 8, 8, 8)
 
-        card_info = config_module.load().card_info
+        card_info = config_module.load_readonly().card_info
         info_options = [
             ("Show Filters", "show_filters", card_info.show_filters),
             ("Show Video Length", "show_length", card_info.show_length),
@@ -657,83 +661,93 @@ class _VideoGridTab(QWidget):
             return
         self.refresh()
 
+    # Per-event-loop-tick time budget for building cards. Keeps each
+    # slice short enough that input/paint events get processed between
+    # slices (the UI never freezes), while still finishing a normal
+    # library in a handful of ticks.
+    _BUILD_SLICE_SECONDS = 0.012
+
     def refresh(self) -> None:
-        # Leading-edge guard: the FIRST call while nothing is already
-        # running acts immediately (a Refresh click should feel
-        # instant, not laggy). Any call that arrives WHILE a refresh is
-        # still in flight is coalesced into a single pending flag rather
-        # than run back-to-back or silently dropped -- this replaced an
-        # earlier fixed 750ms cooldown timer, which had it backwards in
-        # both directions: on a large library it could expire before
-        # the actual rebuild finished (letting an overlapping second
-        # rebuild start and stack up exactly the "multiplying/messed-up
-        # scaling" symptom this exists to prevent), and on a small one
-        # it kept blocking clicks for however much of the 750ms was
-        # left over after the rebuild had already long since finished.
-        # Tying the guard to the operation's own actual lifetime (start
-        # in the try, clear in the finally -- so a raised exception
-        # still releases it) fixes both. This is a second, independent
-        # layer on top of the hide()-before-deleteLater() fix in
-        # _do_refresh: that fix makes a stale card disappear immediately
-        # once a refresh DOES run; this stops overlapping runs in the
-        # first place.
+        """Rebuild this tab's cards from a fresh DB query.
+
+        Asynchronous and coalescing:
+        - The first call while idle starts a rebuild immediately.
+        - The rebuild is TIME-SLICED across event-loop ticks (see
+          _build_step), so the app stays responsive while it runs.
+          That's what actually fixes spam-click freezing: the previous
+          version rebuilt synchronously, which blocked the event loop,
+          so spam clicks couldn't arrive DURING a rebuild at all -- they
+          piled up in the OS queue and were each delivered AFTER the
+          previous rebuild finished, each starting a whole new rebuild
+          (N clicks = N back-to-back rebuilds = frozen app). The "is one
+          in flight" flag never got a chance to see them.
+        - Any call while a rebuild is in flight just sets a pending flag
+          (coalesced -- 20 clicks become ONE follow-up rebuild), which
+          runs once the current one finishes or fails.
+        - New cards are built off-screen and swapped in all at once at
+          the end, so the old grid stays visible (no half-built flash).
+        loading_changed(True/False) brackets the whole thing, driving the
+        sidebar Library icon's darkening."""
         if self._refresh_in_progress:
             self._refresh_pending = True
             return
         self._refresh_in_progress = True
+        self._build_generation = getattr(self, "_build_generation", 0) + 1
         self.loading_changed.emit(True)
         try:
-            self._do_refresh()
-        finally:
-            self._refresh_in_progress = False
-            self.loading_changed.emit(False)
-            if self._refresh_pending:
-                self._refresh_pending = False
-                # Run the one most-recent pending refresh now that the
-                # in-flight one is done, rather than immediately -- lets
-                # the loading_changed(False) above actually reach
-                # listeners (e.g. the sidebar icon un-darkening) for at
-                # least one event-loop tick before the next run's
-                # loading_changed(True) fires, so a rapid-fire burst
-                # still reads as "loading" rather than a flicker.
-                QTimer.singleShot(0, self.refresh)
+            videos = library.list_videos(
+                tag_filter=list(self._active_tags) or None,
+                tag_exclude=list(self._excluded_tags) or None,
+                favorite_only=self._favorite_only,
+                uploaded_only=self._uploaded_only,
+                local_only=self._local_only,
+                search=self.search_edit.text().strip() or None,
+                sort_by=self._sort_by,
+            )
+        except Exception:
+            traceback.print_exc()
+            self._finish_refresh()
+            return
+        self._build_queue = list(videos)
+        self._build_cards: list[VideoCard] = []
+        self._build_step(self._build_generation)
+
+    def _build_step(self, generation: int) -> None:
+        if generation != getattr(self, "_build_generation", 0) or not self._refresh_in_progress:
+            return  # superseded (shouldn't normally happen, but never double-build)
+        try:
+            deadline = time.perf_counter() + self._BUILD_SLICE_SECONDS
+            while self._build_queue:
+                self._build_cards.append(self._make_card(self._build_queue.pop(0)))
+                if time.perf_counter() >= deadline:
+                    break
+            if self._build_queue:
+                QTimer.singleShot(0, lambda: self._build_step(generation))
+                return
+            self._swap_in_cards(self._build_cards)
+        except Exception:
+            # Don't leave the tab wedged in "loading" forever if one card
+            # blows up -- discard the partial build, keep the old grid.
+            traceback.print_exc()
+            for card in getattr(self, "_build_cards", []):
+                card.deleteLater()
+        self._build_cards = []
+        self._build_queue = []
+        self._finish_refresh()
+
+    def _finish_refresh(self) -> None:
+        self._refresh_in_progress = False
+        self.loading_changed.emit(False)
+        if self._refresh_pending:
+            self._refresh_pending = False
+            # Next tick rather than immediately, so listeners (e.g. the
+            # sidebar icon) actually see the False before the next True.
+            QTimer.singleShot(0, self.refresh)
 
     def _do_refresh(self) -> None:
-        # Clear existing cards -- data may have changed (new/deleted
-        # video, rename, tag change), so these are rebuilt from scratch
-        # rather than reused. Resizing (_relayout below) is the cheaper
-        # path that doesn't hit this.
-        #
-        # hide() before deleteLater(): removing a widget from a layout
-        # via takeAt() stops the LAYOUT from managing it, but doesn't
-        # hide it -- it stays visible, at wherever its last on-screen
-        # position was, until the deferred deletion actually runs.
-        # deleteLater()'s deletion is a low-priority event that Qt only
-        # processes once the event queue is otherwise idle, so a burst
-        # of refresh() calls arriving faster than that (e.g. spam-
-        # clicking Refresh or the sidebar Library button) can stack up
-        # several still-visible "orphaned" generations of old cards,
-        # all overlapping the newest one -- this is confirmed to be
-        # exactly what was reported as "spam-clicking the library
-        # duplicates/messes up clip sizing": the stale cards were real,
-        # still-alive, still-VISIBLE widgets sitting at old geometry,
-        # not a duplicate library entry or a sizing calculation bug.
-        # refresh()'s own debounce guard above is the OTHER half of
-        # actually fixing this -- see its comment.
-        while self.grid_layout.count():
-            item = self.grid_layout.takeAt(0)
-            widget = item.widget()
-            if widget:
-                widget.hide()
-                widget.deleteLater()
-        self._cards = []
-        # The video list is about to be requeried (new order, possibly
-        # missing/added ids from filters or a search) -- last session's
-        # selection has no reliable meaning against it, so start clean
-        # rather than risk selected_ids referencing ids no longer shown.
-        self._selected_ids = set()
-        self._selection_anchor_index = None
-
+        """Synchronous full rebuild (query + build + swap in one go).
+        Kept for any caller/test that needs the grid populated before it
+        returns; normal UI paths use the time-sliced refresh() above."""
         videos = library.list_videos(
             tag_filter=list(self._active_tags) or None,
             tag_exclude=list(self._excluded_tags) or None,
@@ -743,31 +757,53 @@ class _VideoGridTab(QWidget):
             search=self.search_edit.text().strip() or None,
             sort_by=self._sort_by,
         )
+        self._swap_in_cards([self._make_card(v) for v in videos])
 
-        self.empty_label.setVisible(len(videos) == 0)
-        self.scroll.setVisible(len(videos) > 0)
+    def _swap_in_cards(self, cards: "list[VideoCard]") -> None:
+        # hide() before deleteLater(): removing a widget from a layout
+        # via takeAt() stops the LAYOUT from managing it, but doesn't
+        # hide it -- it stays visible at its last position until the
+        # deferred deletion actually runs, which is what used to leave
+        # stale "duplicate" cards on screen during spam-clicking.
+        self.grid_container.setUpdatesEnabled(False)
+        try:
+            while self.grid_layout.count():
+                item = self.grid_layout.takeAt(0)
+                widget = item.widget()
+                if widget:
+                    widget.hide()
+                    widget.deleteLater()
+            self._cards = list(cards)
+            # The list was requeried (new order, possibly different ids),
+            # so the old selection has no reliable meaning -- start clean.
+            self._selected_ids = set()
+            self._selection_anchor_index = None
 
-        for video in videos:
-            card = VideoCard(
-                video, highlight_enabled=self._highlight_unedited, font_scale=self._font_scale,
-                get_selected_ids=lambda: self._selected_ids,
-                ensure_selected=self._ensure_selected_for_context_menu,
-                neighbor_provider=self.neighbors,
-            )
-            card.edit_requested.connect(self.edit_requested.emit)
-            card.preview_requested.connect(self.preview_requested.emit)
-            card.deleted.connect(lambda _vid: self.refresh())
-            card.tags_changed.connect(self._card_signal_debounce.start)
-            card.renamed.connect(self._card_signal_debounce.start)
-            card.context_menu_opened.connect(self._on_context_menu_opened)
-            card.context_menu_closed.connect(self._on_context_menu_closed)
-            card.upload_requested.connect(self._handle_upload_request)
-            card.filter_left_clicked.connect(self._on_icon_left_clicked)
-            card.filter_right_clicked.connect(self._on_icon_right_clicked)
-            card.clicked.connect(self._on_card_clicked)
-            self._cards.append(card)
+            self.empty_label.setVisible(len(cards) == 0)
+            self.scroll.setVisible(len(cards) > 0)
+            self._relayout(self._columns_for_width(self.scroll.viewport().width()))
+        finally:
+            self.grid_container.setUpdatesEnabled(True)
 
-        self._relayout(self._columns_for_width(self.scroll.viewport().width()))
+    def _make_card(self, video) -> "VideoCard":
+        card = VideoCard(
+            video, highlight_enabled=self._highlight_unedited, font_scale=self._font_scale,
+            get_selected_ids=lambda: self._selected_ids,
+            ensure_selected=self._ensure_selected_for_context_menu,
+            neighbor_provider=self.neighbors,
+        )
+        card.edit_requested.connect(self.edit_requested.emit)
+        card.preview_requested.connect(self.preview_requested.emit)
+        card.deleted.connect(lambda _vid: self.refresh())
+        card.tags_changed.connect(self._card_signal_debounce.start)
+        card.renamed.connect(self._card_signal_debounce.start)
+        card.context_menu_opened.connect(self._on_context_menu_opened)
+        card.context_menu_closed.connect(self._on_context_menu_closed)
+        card.upload_requested.connect(self._handle_upload_request)
+        card.filter_left_clicked.connect(self._on_icon_left_clicked)
+        card.filter_right_clicked.connect(self._on_icon_right_clicked)
+        card.clicked.connect(self._on_card_clicked)
+        return card
 
     # ------------------------------------------------------------ selection
 
@@ -908,7 +944,7 @@ class LibraryPage(QWidget):
         # background instead (see daemon.py), and the DB already
         # reflects reality by the time this GUI queries it, without
         # this process ALSO walking the filesystem redundantly.
-        if not config_module.load().offload_library_scan_to_daemon:
+        if not config_module.load_readonly().offload_library_scan_to_daemon:
             library.scan_and_ingest_new_videos()
             library.prune_missing_videos()
             library.remove_stray_orig_entries()
@@ -948,12 +984,13 @@ class LibraryPage(QWidget):
         # at) and the icon should stay darkened until BOTH are done, not
         # un-darken the moment whichever one finishes first.
         self._loading_tabs: set[object] = set()
+        self._page_refresh_pending = False
 
         self._stack = QStackedWidget()
         self._stack.addWidget(self.local_tab)
         self._stack.addWidget(self.uploaded_tab)
 
-        appearance = config_module.load().appearance
+        appearance = config_module.load_readonly().appearance
 
         # ---- header row: Local/Uploaded's own custom page buttons, the
         # empty space next to them, then the shared Search/Refresh/Sort
@@ -1108,7 +1145,7 @@ class LibraryPage(QWidget):
         # super() first, border second -- see _VideoGridTab's own
         # paintEvent comment for why this order matters.
         super().paintEvent(event)
-        theme = Theme(config_module.load().appearance)
+        theme = Theme(config_module.load_readonly().appearance)
         paint_page_outline(self, theme.library_background())
 
     def _active_tab(self) -> "_VideoGridTab":
@@ -1203,6 +1240,9 @@ class LibraryPage(QWidget):
         # Only reports "not loading" once every tab that was loading has
         # actually finished (or failed) -- see __init__'s comment.
         self.loading_changed.emit(bool(self._loading_tabs))
+        if not self._loading_tabs and self._page_refresh_pending:
+            self._page_refresh_pending = False
+            QTimer.singleShot(0, self.refresh)
 
     def neighbors_for(self, video_id: int) -> tuple["library.Video | None", "library.Video | None"]:
         """(previous, next) video relative to video_id, according to
@@ -1225,7 +1265,14 @@ class LibraryPage(QWidget):
         refresh() below still runs either way, since that's just a DB
         re-query (cheap, no filesystem walk) that needs to happen
         regardless of who's doing the scanning."""
-        if not config_module.load().offload_library_scan_to_daemon:
+        # Coalesce with any tab rebuild still in flight -- a sidebar
+        # Library click (or 20 of them) while loading just queues ONE
+        # follow-up refresh, rather than re-running the filesystem scan
+        # and restarting both tabs each time.
+        if self._loading_tabs:
+            self._page_refresh_pending = True
+            return
+        if not config_module.load_readonly().offload_library_scan_to_daemon:
             newly_added = library.scan_and_ingest_new_videos()
             if newly_added:
                 print(f"Picked up {len(newly_added)} video{'s' if len(newly_added) != 1 else ''} "
@@ -1249,7 +1296,7 @@ class LibraryPage(QWidget):
         apply_scale() whenever the baseline changes. No more shared-
         iconSize limitation to work around (see LibraryTabButton) --
         each button just gets its own target size directly."""
-        appearance = config_module.load().appearance
+        appearance = config_module.load_readonly().appearance
         base = self._current_tab_icon_size
         local_target = max(1, round(base * appearance.saved_videos_icon_size / 100))
         uploaded_target = max(1, round(base * appearance.uploaded_videos_icon_size / 100))

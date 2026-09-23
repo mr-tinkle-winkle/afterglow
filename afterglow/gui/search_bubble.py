@@ -63,7 +63,7 @@ class SearchBubble(QWidget):
         super().__init__(parent, Qt.Popup | Qt.FramelessWindowHint)
         self.setAttribute(Qt.WA_TranslucentBackground, True)
 
-        appearance = config_module.load().appearance
+        appearance = config_module.load_readonly().appearance
         self._theme = Theme(appearance)
         self._radius = appearance.rounded_corner_radius if appearance.rounded_corners_enabled else 12
         self._tail_x = _WIDTH // 2  # bubble is always centered under its anchor -- see show_below()

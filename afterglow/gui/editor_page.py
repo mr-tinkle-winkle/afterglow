@@ -332,7 +332,7 @@ class EditorPage(QWidget):
         # explicit background of its own (it inherits MainWindow's
         # central-widget app_background()), so that's the "itself"
         # this darkens.
-        theme = Theme(config_module.load().appearance)
+        theme = Theme(config_module.load_readonly().appearance)
         paint_page_outline(self, theme.app_background())
 
     def load_video(self, video_id: int) -> None:

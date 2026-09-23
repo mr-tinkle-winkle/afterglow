@@ -77,7 +77,7 @@ class _Sidebar(QWidget):
 
     def paintEvent(self, event) -> None:
         super().paintEvent(event)  # first -- see EditorPage's own paintEvent comment for why
-        theme = Theme(config_module.load().appearance)
+        theme = Theme(config_module.load_readonly().appearance)
         paint_page_outline(self, theme.app_background())
 
 
@@ -94,7 +94,7 @@ class MainWindow(QMainWindow):
         # taskbar/monitor.
         self.resize(1600, 900)
 
-        appearance = config_module.load().appearance
+        appearance = config_module.load_readonly().appearance
         theme = Theme(appearance)
 
         central = QWidget()
@@ -227,7 +227,7 @@ class MainWindow(QMainWindow):
         # own width, same "just enough padding" idea the old
         # icon_size_for_width() used -- width is always the limiting
         # dimension here since the sidebar is tall and narrow.
-        appearance = config_module.load().appearance
+        appearance = config_module.load_readonly().appearance
         icon_padding = 14
         base_icon_size = max(width - icon_padding, 8)
         self.library_nav_btn.set_icon_target_size(round(base_icon_size * appearance.library_icon_size / 100))

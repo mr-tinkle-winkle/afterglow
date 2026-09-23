@@ -63,7 +63,7 @@ class _TagIconRow(QFrame):
         row.addWidget(self.name_label, stretch=1)
 
         self.category_combo = QComboBox()
-        self.category_combo.setStyleSheet(combo_box_stylesheet(config_module.load().appearance))
+        self.category_combo.setStyleSheet(combo_box_stylesheet(config_module.load_readonly().appearance))
         self._populate_category_combo(categories, category_id)
         self.category_combo.currentIndexChanged.connect(self._on_category_changed)
         row.addWidget(self.category_combo)
@@ -241,7 +241,7 @@ class _AutoFilterRow(QFrame):
         # a normal typable box, since the app you want to match might
         # not be running yet when this row is being set up.
         self.app_combo = QComboBox()
-        self.app_combo.setStyleSheet(combo_box_stylesheet(config_module.load().appearance))
+        self.app_combo.setStyleSheet(combo_box_stylesheet(config_module.load_readonly().appearance))
         self.app_combo.setEditable(True)
         self.app_combo.setPlaceholderText("App/process name match")
         self._refresh_running_apps(keep_text=app_match)
@@ -254,7 +254,7 @@ class _AutoFilterRow(QFrame):
         row.addWidget(refresh_apps_btn)
 
         self.mode_combo = QComboBox()
-        self.mode_combo.setStyleSheet(combo_box_stylesheet(config_module.load().appearance))
+        self.mode_combo.setStyleSheet(combo_box_stylesheet(config_module.load_readonly().appearance))
         self.mode_combo.addItem("While app is open", "open")
         self.mode_combo.addItem("Only while app is focused", "focused")
         index = self.mode_combo.findData(mode)
@@ -339,7 +339,7 @@ class FiltersSettingsPage(QWidget):
         form.addRow("Show Filter Icons:", self.show_icons_check)
 
         self.icon_location_combo = QComboBox()
-        self.icon_location_combo.setStyleSheet(combo_box_stylesheet(config_module.load().appearance))
+        self.icon_location_combo.setStyleSheet(combo_box_stylesheet(config_module.load_readonly().appearance))
         for label, value in _ICON_LOCATIONS:
             self.icon_location_combo.addItem(label, value)
         index = self.icon_location_combo.findData(self._settings.filter_display.filter_icon_location)

@@ -56,7 +56,10 @@ class MpvVideoWidget(QOpenGLWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setMinimumHeight(300)
+        # 120, not 300 -- this floor propagates up through EditorPage into
+        # MainWindow's own minimum height, and 300 was the single largest
+        # remaining contributor once Settings became scrollable.
+        self.setMinimumHeight(120)
         # StrongFocus (not the QOpenGLWidget default of NoFocus) so this
         # widget can actually receive the Space key and so a click can
         # grab focus for it -- both needed for the click/Space-to-play

@@ -24,7 +24,7 @@ class AddFilterDialog(QDialog):
     def __init__(self, categories: list[tuple[int, str]], parent=None):
         super().__init__(parent)
         self.setWindowTitle("Add Filter")
-        appearance = config_module.load().appearance
+        appearance = config_module.load_readonly().appearance
         self._appearance = appearance
         self._theme = Theme(appearance)
         # Frameless + translucent + a custom-painted rounded fill,

@@ -63,7 +63,7 @@ class FiltersPopup(QWidget):
         # was reported a fifth time.
         super().__init__(parent, Qt.Popup | Qt.FramelessWindowHint)
         self.setAttribute(Qt.WA_TranslucentBackground, True)
-        appearance = config_module.load().appearance
+        appearance = config_module.load_readonly().appearance
         self._appearance = appearance
         self._theme = Theme(appearance)
         self._target_ids = target_ids

@@ -32,6 +32,7 @@ from PySide6.QtWidgets import (
     QSizePolicy, QWidget, QGraphicsOpacityEffect, QStyle,
 )
 
+from .press_pulse import PressPulse
 from .. import config as config_module
 from .. import library
 from .theme import Theme, contrast_text
@@ -60,7 +61,7 @@ class _CardBox(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        appearance = config_module.load().appearance
+        appearance = config_module.load_readonly().appearance
         self._appearance = appearance
         self._theme = Theme(appearance)
 
@@ -87,7 +88,7 @@ class _VideoFrame(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        appearance = config_module.load().appearance
+        appearance = config_module.load_readonly().appearance
         self._appearance = appearance
         self._theme = Theme(appearance)
         border = appearance.unedited_selected_border_width
@@ -113,14 +114,16 @@ class _PlayPauseButton(QAbstractButton):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self._pulse = PressPulse(self)  # shared hover/press pulse, see press_pulse.py
         self.setCheckable(True)
         self.setCursor(Qt.PointingHandCursor)
         self.setFixedSize(_TRANSPORT_BTN_SIZE, _TRANSPORT_BTN_SIZE)
-        appearance = config_module.load().appearance
+        appearance = config_module.load_readonly().appearance
         self._theme = Theme(appearance)
 
     def paintEvent(self, event) -> None:
         painter = QPainter(self)
+        self._pulse.apply(painter)
         painter.setRenderHint(QPainter.Antialiasing)
         rect = QRectF(self.rect())
         bg = self._theme.accent()
@@ -161,14 +164,16 @@ class _FullscreenButton(QAbstractButton):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self._pulse = PressPulse(self)  # shared hover/press pulse, see press_pulse.py
         self.setCheckable(True)
         self.setCursor(Qt.PointingHandCursor)
         self.setFixedSize(_TRANSPORT_BTN_SIZE, _TRANSPORT_BTN_SIZE)
-        appearance = config_module.load().appearance
+        appearance = config_module.load_readonly().appearance
         self._theme = Theme(appearance)
 
     def paintEvent(self, event) -> None:
         painter = QPainter(self)
+        self._pulse.apply(painter)
         painter.setRenderHint(QPainter.Antialiasing)
         rect = QRectF(self.rect())
         bg = self._theme.accent()
@@ -294,6 +299,7 @@ class _VolumeButton(QAbstractButton):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self._pulse = PressPulse(self)  # shared hover/press pulse, see press_pulse.py
         self.setCursor(Qt.PointingHandCursor)
         self.setFixedSize(28, 28)
         self._muted = False
@@ -304,8 +310,9 @@ class _VolumeButton(QAbstractButton):
 
     def paintEvent(self, event) -> None:
         painter = QPainter(self)
+        self._pulse.apply(painter)
         painter.setRenderHint(QPainter.Antialiasing)
-        color = QColor(config_module.load().appearance.card_text_color)
+        color = QColor(config_module.load_readonly().appearance.card_text_color)
         painter.setPen(Qt.NoPen)
         painter.setBrush(color)
 
@@ -343,7 +350,7 @@ class VideoPreviewContent(QWidget):
 
     def __init__(self, video: "library.Video", neighbor_provider=None, parent=None):
         super().__init__(parent)
-        appearance = config_module.load().appearance
+        appearance = config_module.load_readonly().appearance
         self._theme = Theme(appearance)
         self._neighbor_provider = neighbor_provider
         self._duration = 0.0
@@ -488,7 +495,7 @@ class VideoPreviewContent(QWidget):
 
     def _load_video(self, video: "library.Video") -> None:
         self._video = video
-        appearance = config_module.load().appearance
+        appearance = config_module.load_readonly().appearance
         self.setWindowTitle(video.title or "Preview")
 
         display_title = f"{FAVORITE_STAR} {video.title}" if video.favorite else (video.title or "(untitled)")
@@ -659,34 +666,10 @@ class VideoPreviewContent(QWidget):
         # then filling essentially all of that.
         window = self.window()
         if self._is_expanded:
-            # Remember the exact pre-fullscreen geometry ourselves rather
-            # than trusting Qt/the window manager to hand it back later --
-            # on at least some window managers, a showFullScreen() ->
-            # showNormal() cycle leaves the window's own notion of its
-            # "normal" geometry stuck at whatever it was, which is what
-            # was behind both "can't vertically resize the app anymore"
-            # and "resizing then going back to fullscreen messes up the
-            # sidebar" (the sidebar/icon math in MainWindow.resizeEvent
-            # is fine -- it was firing against a geometry the WM never
-            # actually finished settling back to). Recording it here and
-            # explicitly reapplying it below sidesteps relying on
-            # showNormal() alone to restore anything correctly.
-            self._pre_fullscreen_geometry = window.geometry()
             window.showFullScreen()
             self._enter_overlay_controls_mode()
         else:
             window.showNormal()
-            # Explicitly force the window state back to plain windowed
-            # (clearing any lingering fullscreen bit some WMs leave set
-            # internally even after showNormal() returns) and reassert
-            # the exact geometry from before we went fullscreen, so the
-            # window is left in a genuinely fresh, freely-resizable
-            # state rather than one the WM still half-remembers as
-            # fullscreen-derived.
-            window.setWindowState(window.windowState() & ~Qt.WindowFullScreen)
-            saved_geometry = getattr(self, "_pre_fullscreen_geometry", None)
-            if saved_geometry is not None:
-                window.setGeometry(saved_geometry)
             self._exit_overlay_controls_mode()
         self.fullscreen_toggled.emit(self._is_expanded)
 
@@ -750,7 +733,7 @@ class VideoPreviewContent(QWidget):
         self.prev_btn.show()
         self.next_btn.show()
         self._outer_layout.setContentsMargins(16, 16, 16, 16)
-        border = config_module.load().appearance.unedited_selected_border_width
+        border = config_module.load_readonly().appearance.unedited_selected_border_width
         self._video_frame._layout.setContentsMargins(border, border, border, border)
 
     def _position_overlay_controls(self) -> None:
@@ -840,7 +823,7 @@ class VideoPreviewContent(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
         rect = QRectF(self.rect())
-        appearance = config_module.load().appearance
+        appearance = config_module.load_readonly().appearance
         # No rounding at all while genuinely fullscreen -- a rounded
         # rect for a shape that now fills the ENTIRE screen edge-to-edge
         # would just clip its own corner pixels to the scrim color
@@ -954,7 +937,7 @@ class VideoPreviewContent(QWidget):
         w, h = self.video_widget.width(), self.video_widget.height()
         if w <= 0 or h <= 0:
             return
-        appearance = config_module.load().appearance
+        appearance = config_module.load_readonly().appearance
         radius = appearance.rounded_corner_radius if appearance.rounded_corners_enabled else 12
         radius = min(radius, w / 2, h / 2) if radius else 0
         if radius <= 0:

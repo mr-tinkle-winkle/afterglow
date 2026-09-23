@@ -328,6 +328,87 @@ Seven consecutive batches of Library/Settings/appearance
 features/bug fixes, given together each time. Newest first.
 
 ### This session
+Follow-up to the previous session's five items, after Max tested them on
+his real machine. Two of last session's fixes were WRONG (right symptom,
+wrong cause) -- both now re-diagnosed by direct measurement and fixed
+properly. Plus an app-wide optimization pass.
+
+1. **Can't resize vertically + Settings slightly off screen -- REAL
+   cause found (last session's fix was wrong).** Measured
+   `MainWindow.minimumSizeHint()` directly: **1128px tall**. Cause:
+   Settings' pages live in a QStackedWidget, whose minimum height is the
+   LARGEST minimum of ALL its pages (hidden ones too), and the General
+   page's Appearance group alone needs ~1035px with nothing scrollable.
+   So the whole window had a hard ~1128px floor -- taller than a 1080p
+   screen. The WM can't shrink below that (no vertical resize), and
+   maximized/fullscreen clips the bottom (Settings off screen). Fixed by
+   wrapping every Settings page in its own SmoothScrollArea
+   (`_add_settings_tab` in settings_page.py; autoFillBackground turned
+   back off since QScrollArea.setWidget() force-enables it -- verified
+   the background pixel still matches app_background). Also lowered
+   MpvVideoWidget's hardcoded min height 300 -> 120 (next-largest
+   contributor). Min window height now **385px**. REVERTED last
+   session's save/restore-geometry hack in
+   `VideoPreviewContent._toggle_fullscreen` -- it targeted the wrong
+   cause and setGeometry() after showNormal() can fight the WM.
+   **Lesson worth keeping:** for any "window won't resize / is too
+   big" report, check minimumSizeHint() down the widget tree first.
+2. **Spam-refresh freeze -- REAL cause found (last session's guard
+   couldn't work).** The rebuild was synchronous, so the event loop was
+   blocked while it ran; spam clicks couldn't arrive DURING a rebuild,
+   they queued in the OS and were delivered one by one AFTER it
+   finished -- each starting another full rebuild. The in-progress flag
+   never saw them. Fixed in `_VideoGridTab.refresh()`: card building is
+   now time-sliced (`_build_step`, ~12ms per event-loop tick), so the UI
+   stays live and clicks arriving mid-load are coalesced into ONE
+   pending follow-up. New cards are built off-screen and swapped in all
+   at once (`_swap_in_cards`) so the old grid stays visible -- no half-
+   built flash. `LibraryPage.refresh()` (sidebar click: filesystem scan
+   + both tabs) coalesces the same way while any tab is loading.
+   `_do_refresh()` kept as a synchronous path for anything needing it.
+   Sidebar Library icon darkens for the whole load. Tested with real
+   QTest clicks on 80 real ffmpeg clips: 60 rapid clicks (Refresh +
+   sidebar Library) -> 5-6 rebuilds (was 60 blocking ones), worst UI
+   stall ~80-95ms, icon darkens then clears, all 80 cards visible after.
+3. **Pulse animation on EVERY custom button.** Extracted into a shared
+   `gui/press_pulse.py` (`PressPulse(widget)`: an event filter +
+   QVariantAnimation; one line in __init__, one `self._pulse.apply(
+   painter)` in paintEvent -- no per-class event overrides needed).
+   Wired into: CustomButton (refactored onto it; also covers the
+   previewer's prev/next arrows), LibraryTabButton (sidebar Library/
+   Editor/Settings + Local/Uploaded), CustomCheckBox/FilterCheckBox and
+   CustomRadioButton (INDICATOR BOX ONLY, scaled around its own center
+   inside save/restore so the label text doesn't slide -- pixel-verified),
+   CollapseToggleButton, _PopoverTabButton (Filters/Sort By/Info tabs),
+   _SpinArrowButton (spinbox +/-), and the previewer's _PlayPauseButton,
+   _VolumeButton, _FullscreenButton. All 12 verified with real QTest
+   press/release: hover 0.96, held 0.90, release bounce ~1.04, settle
+   back to 0.96 (still hovering), rendered pixels actually change.
+   Resets on hide/disable so nothing gets stuck shrunk.
+   NOT covered: `_MultiFilterSelectButton` (Settings > Filters > Auto
+   Add Filter "Choose filter(s)..."), which is still a NATIVE-painted
+   QToolButton -- would need converting to custom paint first.
+4. **Optimization pass (measured, 80 real clips):**
+   - `config.load()` re-read + re-parsed config.toml on EVERY call --
+     401 calls per Library refresh, >half of all refresh time, and it's
+     called from paintEvents too. Now cached, re-parsed only when the
+     file's mtime/size changes (daemon writes, Settings saves, imports,
+     hand edits still picked up immediately; save()/import invalidate
+     explicitly). load() returns a deepcopy (safe to mutate + save);
+     new `load_readonly()` returns the shared instance with no copy --
+     all 48 `config_module.load().<attr>` read-only call sites switched
+     to it. Rule: never mutate what load_readonly() returns.
+   - Thumbnails were decoded + smooth-scaled + corner-rounded again for
+     every card on every refresh. Now an LRU cache in video_card.py
+     (`_THUMB_PIXMAP_CACHE`) keyed on path + mtime + radius + size.
+   - Button icons were smooth-scaled inside paintEvent -- which the
+     pulse animation now triggers every frame -- so added
+     `press_pulse.scaled_cached()` and used it in LibraryTabButton,
+     CustomButton, CustomCheckBox, CustomRadioButton.
+   - Net: full Library rebuild ~0.55s -> ~0.17s (80 clips), and it no
+     longer blocks the UI at all since it's time-sliced.
+
+### Previous session
 Five direct requests, all in the Editor and the app's overall window/
 button behavior rather than Library/appearance this time.
 

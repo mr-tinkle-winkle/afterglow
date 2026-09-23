@@ -23,7 +23,7 @@ from .theme import Theme, contrast_text
 class CustomLineEdit(QLineEdit):
     def __init__(self, text: str = "", parent=None):
         super().__init__(text, parent)
-        appearance = config_module.load().appearance
+        appearance = config_module.load_readonly().appearance
         self._appearance = appearance
         self._theme = Theme(appearance)
         text_color = contrast_text(self._theme.card_background()).name()

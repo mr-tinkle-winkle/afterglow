@@ -7,6 +7,8 @@ just the one that was clicked.
 """
 from __future__ import annotations
 
+from collections import OrderedDict
+
 from pathlib import Path
 from datetime import datetime
 import tempfile
@@ -30,6 +32,10 @@ from .custom_checkbox import CustomCheckBox
 from .custom_line_edit import CustomLineEdit
 
 THUMB_SIZE = QSize(400, 224)  # 16:9, doubled from the original 200x112
+
+# Rendered-thumbnail LRU cache -- see VideoCard._load_pixmap.
+_THUMB_PIXMAP_CACHE: "OrderedDict" = OrderedDict()
+_THUMB_PIXMAP_CACHE_MAX = 1024
 FAVORITE_STAR = "\u2605"  # "★"
 
 # UI Update Phase 2 (card restructure): the outer card is a "background"
@@ -94,7 +100,7 @@ def _format_date(created_at: str) -> str | None:
     # than threading a parameter through every call site -- this is
     # called from both VideoCard's own info box and the video
     # previewer's header, and both should reflect the setting equally.
-    if config_module.load().appearance.extended_dates:
+    if config_module.load_readonly().appearance.extended_dates:
         return dt.strftime("%b %d, %Y %I:%M:%S %p")
     return dt.strftime("%b %d, %Y")
 
@@ -310,7 +316,7 @@ class VideoCard(QWidget):
         self._preview_pending = False
         self._title_edit = None
         self._highlight_enabled = highlight_enabled
-        settings = config_module.load()
+        settings = config_module.load_readonly()
         self._appearance = settings.appearance
         # A custom image (Settings > General) takes the place of the
         # built-in gradient for the unedited-clip highlight -- one
@@ -918,6 +924,32 @@ class VideoCard(QWidget):
 
     def _load_pixmap(self, video: "library.Video") -> QPixmap:
         thumb_path = thumbnails.get_thumbnail(video.id, Path(video.path))
+        radius = self._appearance.rounded_corner_radius if self._appearance.rounded_corners_enabled else 0
+        # Decode + smooth-scale + corner-round used to be redone for every
+        # card on EVERY refresh (~40% of a whole Library rebuild, measured)
+        # even though the thumbnail file itself hadn't changed. Cached by
+        # file path + mtime + the parameters that affect the result, so a
+        # regenerated thumbnail or a changed radius still re-renders.
+        cache_key = None
+        if thumb_path is not None:
+            try:
+                mtime = Path(thumb_path).stat().st_mtime_ns
+            except OSError:
+                mtime = None
+            if mtime is not None:
+                cache_key = (str(thumb_path), mtime, radius, THUMB_SIZE.width(), THUMB_SIZE.height())
+                cached = _THUMB_PIXMAP_CACHE.get(cache_key)
+                if cached is not None:
+                    _THUMB_PIXMAP_CACHE.move_to_end(cache_key)
+                    return cached
+        result = self._render_thumb_pixmap(thumb_path, radius)
+        if cache_key is not None:
+            _THUMB_PIXMAP_CACHE[cache_key] = result
+            while len(_THUMB_PIXMAP_CACHE) > _THUMB_PIXMAP_CACHE_MAX:
+                _THUMB_PIXMAP_CACHE.popitem(last=False)
+        return result
+
+    def _render_thumb_pixmap(self, thumb_path, radius) -> QPixmap:
         if thumb_path is None:
             pixmap = _placeholder_pixmap()
         else:
@@ -926,7 +958,6 @@ class VideoCard(QWidget):
                 pixmap = _placeholder_pixmap()
             else:
                 pixmap = pixmap.scaled(THUMB_SIZE, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
-        radius = self._appearance.rounded_corner_radius if self._appearance.rounded_corners_enabled else 0
         return round_pixmap_corners(pixmap, radius)
 
     def mousePressEvent(self, event) -> None:
@@ -1230,7 +1261,7 @@ class VideoCard(QWidget):
         from PySide6.QtCore import QUrl, QMimeData
         from PySide6.QtWidgets import QApplication
 
-        auto_mp4 = config_module.load().auto_copy_as_mp4
+        auto_mp4 = config_module.load_readonly().auto_copy_as_mp4
         urls = []
         missing = []
         for vid in target_ids:

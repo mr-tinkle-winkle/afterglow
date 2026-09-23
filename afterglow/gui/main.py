@@ -82,7 +82,7 @@ def main() -> None:
         window.setScreen(screen)
         window.move(screen.availableGeometry().topLeft())
 
-    startup_mode = config_module.load().appearance.startup_window_mode
+    startup_mode = config_module.load_readonly().appearance.startup_window_mode
     if startup_mode == "fullscreen":
         window.showFullScreen()
     elif startup_mode == "maximized":

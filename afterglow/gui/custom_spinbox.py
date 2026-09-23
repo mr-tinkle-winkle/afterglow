@@ -16,6 +16,7 @@ from PySide6.QtCore import Qt, QRectF
 from PySide6.QtGui import QPainter, QPainterPath
 from PySide6.QtWidgets import QAbstractSpinBox, QDoubleSpinBox, QSpinBox, QAbstractButton
 
+from .press_pulse import PressPulse
 from .. import config as config_module
 from .rounded_rect import rounded_rect_path
 from .theme import Theme, contrast_text
@@ -26,16 +27,18 @@ _ARROW_WIDTH = 20
 class _SpinArrowButton(QAbstractButton):
     def __init__(self, up: bool, parent=None):
         super().__init__(parent)
+        self._pulse = PressPulse(self)  # shared hover/press pulse, see press_pulse.py
         self._up = up
         self.setCursor(Qt.PointingHandCursor)
         self.setAutoRepeat(True)
         self.setAutoRepeatDelay(400)
         self.setAutoRepeatInterval(80)
-        appearance = config_module.load().appearance
+        appearance = config_module.load_readonly().appearance
         self._theme = Theme(appearance)
 
     def paintEvent(self, event) -> None:
         painter = QPainter(self)
+        self._pulse.apply(painter)
         painter.setRenderHint(QPainter.Antialiasing)
         rect = QRectF(self.rect())
         bg = self._theme.accent()
@@ -82,7 +85,7 @@ class _CustomSpinBoxMixin:
     logic per variant."""
 
     def _setup_custom_chrome(self) -> None:
-        appearance = config_module.load().appearance
+        appearance = config_module.load_readonly().appearance
         self._appearance = appearance
         self._theme = Theme(appearance)
         self.setButtonSymbols(QAbstractSpinBox.NoButtons)  # hide the native up/down arrows entirely

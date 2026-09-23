@@ -13,6 +13,7 @@ from PySide6.QtCore import Qt, QRectF, QSize
 from PySide6.QtGui import QPainter, QColor
 from PySide6.QtWidgets import QAbstractButton
 
+from .press_pulse import PressPulse, scaled_cached
 from .. import config as config_module
 from .rounded_rect import rounded_rect_path
 from .resources import resource_qpixmap
@@ -25,10 +26,11 @@ _TEXT_GAP = 8
 class CustomCheckBox(QAbstractButton):
     def __init__(self, text: str = "", parent=None, leading_icon=None):
         super().__init__(parent)
+        self._pulse = PressPulse(self)  # indicator-only pulse, see paintEvent
         self.setText(text)
         self.setCheckable(True)
         self.setCursor(Qt.PointingHandCursor)
-        appearance = config_module.load().appearance
+        appearance = config_module.load_readonly().appearance
         self._appearance = appearance
         self._theme = Theme(appearance)
         self._checkmark = resource_qpixmap("checkmark_icon.png")
@@ -65,6 +67,10 @@ class CustomCheckBox(QAbstractButton):
         painter.setRenderHint(QPainter.SmoothPixmapTransform)
 
         box_rect = QRectF(0, (self.height() - _BOX_SIZE) / 2, _BOX_SIZE, _BOX_SIZE)
+        # Pulse only the indicator box (restored before the label is
+        # drawn) so the text doesn't slide around as the box scales.
+        painter.save()
+        self._pulse.apply(painter, box_rect.center())
         radius = self._appearance.rounded_corner_radius if self._appearance.rounded_corners_enabled else 0
         radius = min(radius, _BOX_SIZE / 2) if radius else 0
 
@@ -91,19 +97,17 @@ class CustomCheckBox(QAbstractButton):
         if icon is not None and not icon.isNull():
             margin = 3
             target = box_rect.adjusted(margin, margin, -margin, -margin)
-            scaled = icon.scaled(
-                round(target.width()), round(target.height()), Qt.KeepAspectRatio, Qt.SmoothTransformation
-            )
+            scaled = scaled_cached(icon, round(target.width()), round(target.height()))
             x = target.x() + (target.width() - scaled.width()) / 2
             y = target.y() + (target.height() - scaled.height()) / 2
             painter.drawPixmap(round(x), round(y), scaled)
 
+        painter.restore()
+
         text_x_offset = _BOX_SIZE + _TEXT_GAP
         if self._has_leading_icon():
             leading_rect = QRectF(_BOX_SIZE + _TEXT_GAP, (self.height() - _BOX_SIZE) / 2, _BOX_SIZE, _BOX_SIZE)
-            scaled_leading = self._leading_icon.scaled(
-                round(leading_rect.width()), round(leading_rect.height()), Qt.KeepAspectRatio, Qt.SmoothTransformation
-            )
+            scaled_leading = scaled_cached(self._leading_icon, round(leading_rect.width()), round(leading_rect.height()))
             lx = leading_rect.x() + (leading_rect.width() - scaled_leading.width()) / 2
             ly = leading_rect.y() + (leading_rect.height() - scaled_leading.height()) / 2
             painter.drawPixmap(round(lx), round(ly), scaled_leading)

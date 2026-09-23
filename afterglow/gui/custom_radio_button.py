@@ -14,6 +14,7 @@ from PySide6.QtCore import Qt, QRectF, QSize
 from PySide6.QtGui import QPainter, QColor, QPen
 from PySide6.QtWidgets import QAbstractButton
 
+from .press_pulse import PressPulse, scaled_cached
 from .. import config as config_module
 from .resources import resource_qpixmap
 from .theme import Theme
@@ -25,10 +26,11 @@ _TEXT_GAP = 8
 class CustomRadioButton(QAbstractButton):
     def __init__(self, text: str = "", parent=None):
         super().__init__(parent)
+        self._pulse = PressPulse(self)  # indicator-only pulse, see paintEvent
         self.setText(text)
         self.setCheckable(True)
         self.setCursor(Qt.PointingHandCursor)
-        appearance = config_module.load().appearance
+        appearance = config_module.load_readonly().appearance
         self._appearance = appearance
         self._theme = Theme(appearance)
         self._checkmark = resource_qpixmap("checkmark_icon.png")
@@ -46,6 +48,10 @@ class CustomRadioButton(QAbstractButton):
         painter.setRenderHint(QPainter.SmoothPixmapTransform)
 
         box_rect = QRectF(0, (self.height() - _BOX_SIZE) / 2, _BOX_SIZE, _BOX_SIZE)
+        # Pulse only the indicator box (restored before the label is
+        # drawn) so the text doesn't slide around as the box scales.
+        painter.save()
+        self._pulse.apply(painter, box_rect.center())
         bg = self._theme.card_background()
         if self.underMouse():
             bg = bg.lighter(115)
@@ -71,12 +77,12 @@ class CustomRadioButton(QAbstractButton):
         if self.isChecked() and not self._checkmark.isNull():
             margin = 3
             target = box_rect.adjusted(margin, margin, -margin, -margin)
-            scaled = self._checkmark.scaled(
-                round(target.width()), round(target.height()), Qt.KeepAspectRatio, Qt.SmoothTransformation
-            )
+            scaled = scaled_cached(self._checkmark, round(target.width()), round(target.height()))
             x = target.x() + (target.width() - scaled.width()) / 2
             y = target.y() + (target.height() - scaled.height()) / 2
             painter.drawPixmap(round(x), round(y), scaled)
+
+        painter.restore()
 
         if self.text():
             painter.setPen(QColor(self._appearance.card_text_color))

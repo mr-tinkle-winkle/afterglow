@@ -26,6 +26,7 @@ from PySide6.QtCore import Qt, QRectF, QPoint, QRect
 from PySide6.QtGui import QPainter, QColor
 from PySide6.QtWidgets import QWidget, QHBoxLayout, QVBoxLayout, QStackedWidget, QAbstractButton, QLayout
 
+from .press_pulse import PressPulse
 from .. import config as config_module
 from .rounded_rect import rounded_rect_path
 from .theme import Theme, contrast_text
@@ -37,6 +38,7 @@ class _PopoverTabButton(QAbstractButton):
         """position: 'left' | 'middle' | 'right' -- decides which single
         corner (if any) this tab is allowed to round."""
         super().__init__(parent)
+        self._pulse = PressPulse(self)  # shared hover/press pulse, see press_pulse.py
         self.setText(text)
         self.setCheckable(True)
         self.setCursor(Qt.PointingHandCursor)
@@ -47,6 +49,7 @@ class _PopoverTabButton(QAbstractButton):
 
     def paintEvent(self, event) -> None:
         painter = QPainter(self)
+        self._pulse.apply(painter)
         painter.setRenderHint(QPainter.Antialiasing)
         rect = QRectF(self.rect())
 
@@ -136,7 +139,7 @@ class SortPopover(QWidget):
         super().__init__(parent, Qt.Popup | Qt.FramelessWindowHint)
         self.setAttribute(Qt.WA_TranslucentBackground, True)
 
-        appearance = config_module.load().appearance
+        appearance = config_module.load_readonly().appearance
         theme = Theme(appearance)
         radius = appearance.rounded_corner_radius if appearance.rounded_corners_enabled else 0
 

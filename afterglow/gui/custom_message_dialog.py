@@ -21,7 +21,7 @@ class CustomMessageDialog(QDialog):
     def __init__(self, title: str, text: str, parent=None):
         super().__init__(parent)
         self.setWindowTitle(title)
-        appearance = config_module.load().appearance
+        appearance = config_module.load_readonly().appearance
         self._appearance = appearance
         self._theme = Theme(appearance)
         self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)

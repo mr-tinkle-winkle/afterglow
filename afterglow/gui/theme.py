@@ -42,7 +42,7 @@ class Theme:
     without needing an explicit invalidation/refresh call anywhere."""
 
     def __init__(self, appearance: "config_module.AppearanceSettings | None" = None):
-        self._appearance = appearance or config_module.load().appearance
+        self._appearance = appearance or config_module.load_readonly().appearance
 
     @property
     def custom_buttons_enabled(self) -> bool:

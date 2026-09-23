@@ -20,8 +20,9 @@ import tomllib
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QLineEdit,
     QFileDialog, QLabel, QScrollArea,
-    QComboBox, QColorDialog, QStackedWidget, QButtonGroup,
+    QComboBox, QColorDialog, QStackedWidget, QButtonGroup, QFrame,
 )
+from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
 
 from .. import config as config_module
@@ -70,7 +71,29 @@ class SettingsPage(QWidget):
 
         def _add_settings_tab(label: str, page: QWidget) -> None:
             index = self._settings_stack.count()
-            self._settings_stack.addWidget(page)
+            # Every page goes inside its own scroll area. A QStackedWidget's
+            # minimum height is the LARGEST minimum of any of its pages
+            # (hidden ones included), and the General page's Appearance
+            # group alone needs ~1035px -- with nothing scrollable, that
+            # propagated all the way up to MainWindow as a hard ~1128px
+            # minimum window height. That was the real cause of BOTH "can't
+            # vertically resize the app" (the WM can't shrink the window
+            # below its minimum) and "Settings goes slightly off screen"
+            # (on a 1080px-tall display the window is taller than the
+            # screen itself, so fullscreen/maximized clips the bottom).
+            # Measured directly via minimumSizeHint(), not guessed.
+            scroll = SmoothScrollArea()
+            scroll.setWidgetResizable(True)
+            scroll.setFrameShape(QFrame.NoFrame)
+            scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+            scroll.setWidget(page)
+            # QScrollArea.setWidget() force-enables autoFillBackground on
+            # the page; turn it back off so the page stays transparent over
+            # the inherited app background like it was before wrapping.
+            page.setAutoFillBackground(False)
+            scroll.viewport().setAutoFillBackground(False)
+            scroll.setAutoFillBackground(False)
+            self._settings_stack.addWidget(scroll)
             btn = CustomButton(label)
             btn.setCheckable(True)
             btn.setMinimumHeight(36)
@@ -140,7 +163,7 @@ class SettingsPage(QWidget):
         # 3px, 15%-darker-than-itself page outline -- Settings has no
         # explicit background of its own, so this darkens the same
         # inherited app_background() Editor's outline uses too.
-        theme = Theme(config_module.load().appearance)
+        theme = Theme(config_module.load_readonly().appearance)
         paint_page_outline(self, theme.app_background())
 
     def _build_obs_group(self) -> CustomGroupBox:

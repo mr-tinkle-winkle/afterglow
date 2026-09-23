@@ -10,6 +10,8 @@ fixes on a friend's machine) and there's a stable stdlib reader in 3.11+
 """
 from __future__ import annotations
 
+import copy
+import os
 import tomllib
 import tomli_w
 from dataclasses import dataclass, field, asdict
@@ -315,7 +317,7 @@ def _ensure_dirs(settings: AppSettings) -> None:
     settings.clips_path().mkdir(parents=True, exist_ok=True)
 
 
-def load() -> AppSettings:
+def _load_uncached() -> AppSettings:
     if not CONFIG_FILE.exists():
         settings = AppSettings()
         _ensure_dirs(settings)
@@ -481,6 +483,61 @@ def load() -> AppSettings:
     return settings
 
 
+# ---------------------------------------------------------------- load cache
+#
+# load() used to re-open and re-parse config.toml from scratch on EVERY
+# call -- and it's called from constructors and even paintEvents all over
+# the GUI (a single Library refresh with 80 clips measured 401 calls,
+# ~0.39s of a ~0.55s refresh, i.e. over half the entire rebuild was TOML
+# parsing the same unchanged file over and over). Now: a cheap os.stat()
+# per call, and the file is only actually re-parsed when its mtime/size
+# changed (so edits from the daemon process, a Settings save, an import,
+# or a hand edit are all still picked up immediately). Callers get a
+# deepcopy, never the cached object itself -- several callers load(),
+# mutate fields, then save(); handing out a shared instance would let an
+# unsaved mutation leak into every other caller's view of the config.
+_cache_key: "tuple[int, int] | None" = None
+_cache_value: "AppSettings | None" = None
+
+
+def _stat_key() -> "tuple[int, int] | None":
+    try:
+        st = os.stat(CONFIG_FILE)
+    except FileNotFoundError:
+        return None
+    return (st.st_mtime_ns, st.st_size)
+
+
+def load() -> AppSettings:
+    global _cache_key, _cache_value
+    key = _stat_key()
+    if key is not None and key == _cache_key and _cache_value is not None:
+        return copy.deepcopy(_cache_value)
+    settings = _load_uncached()
+    _cache_key = _stat_key()
+    _cache_value = copy.deepcopy(settings)
+    return settings
+
+
+def load_readonly() -> AppSettings:
+    """Same as load(), but returns the SHARED cached instance with no
+    copy. For the (very common) read-only call sites -- constructors and
+    paintEvents that just read a value, e.g. `load_readonly().appearance`.
+    Never mutate the returned object; use load() for anything that edits
+    fields and save()s."""
+    global _cache_key, _cache_value
+    key = _stat_key()
+    if key is None or key != _cache_key or _cache_value is None:
+        load()
+    return _cache_value
+
+
+def invalidate_cache() -> None:
+    global _cache_key, _cache_value
+    _cache_key = None
+    _cache_value = None
+
+
 def export_to_file(path: "Path | str") -> None:
     """Write the current settings out to an arbitrary file (not the
     normal CONFIG_FILE location) -- for backing up a configuration or
@@ -504,6 +561,7 @@ def import_from_file(path: "Path | str") -> AppSettings:
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     with open(CONFIG_FILE, "wb") as f:
         tomli_w.dump(raw, f)
+    invalidate_cache()
     return load()
 
 
@@ -512,6 +570,10 @@ def save(settings: AppSettings) -> None:
     data = asdict(settings)
     with open(CONFIG_FILE, "wb") as f:
         tomli_w.dump(data, f)
+    # Belt-and-braces: the mtime/size check alone would catch this, but
+    # two saves inside one filesystem timestamp tick with an identical
+    # byte count would otherwise look unchanged.
+    invalidate_cache()
 
 
 if __name__ == "__main__":

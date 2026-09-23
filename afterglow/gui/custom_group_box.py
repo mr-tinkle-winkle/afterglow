@@ -44,7 +44,7 @@ class CustomGroupBox(QWidget):
     def __init__(self, title: str = "", parent=None):
         super().__init__(parent)
         self._title = title
-        appearance = config_module.load().appearance
+        appearance = config_module.load_readonly().appearance
         self._appearance = appearance
         self._theme = Theme(appearance)
 

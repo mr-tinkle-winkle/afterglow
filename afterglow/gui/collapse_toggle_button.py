@@ -10,6 +10,7 @@ from PySide6.QtCore import Qt, QRectF, QVariantAnimation, QEasingCurve
 from PySide6.QtGui import QPainter
 from PySide6.QtWidgets import QAbstractButton
 
+from .press_pulse import PressPulse
 from .. import config as config_module
 from .theme import Theme, contrast_text
 
@@ -20,12 +21,13 @@ _ANIM_DURATION_MS = 180
 class CollapseToggleButton(QAbstractButton):
     def __init__(self, expanded: bool = True, parent=None):
         super().__init__(parent)
+        self._pulse = PressPulse(self)  # shared hover/press pulse, see press_pulse.py
         self.setCheckable(True)
         self.setChecked(expanded)
         self.setCursor(Qt.PointingHandCursor)
         self.setFixedSize(_SIZE, _SIZE)
 
-        appearance = config_module.load().appearance
+        appearance = config_module.load_readonly().appearance
         self._theme = Theme(appearance)
         # 0 degrees = pointing right (collapsed), 90 = pointing down (expanded)
         self._rotation = 90.0 if expanded else 0.0
@@ -49,6 +51,7 @@ class CollapseToggleButton(QAbstractButton):
 
     def paintEvent(self, event) -> None:
         painter = QPainter(self)
+        self._pulse.apply(painter)
         painter.setRenderHint(QPainter.Antialiasing)
         rect = QRectF(self.rect())
 
