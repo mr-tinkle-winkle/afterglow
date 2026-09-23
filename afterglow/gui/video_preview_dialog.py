@@ -659,10 +659,34 @@ class VideoPreviewContent(QWidget):
         # then filling essentially all of that.
         window = self.window()
         if self._is_expanded:
+            # Remember the exact pre-fullscreen geometry ourselves rather
+            # than trusting Qt/the window manager to hand it back later --
+            # on at least some window managers, a showFullScreen() ->
+            # showNormal() cycle leaves the window's own notion of its
+            # "normal" geometry stuck at whatever it was, which is what
+            # was behind both "can't vertically resize the app anymore"
+            # and "resizing then going back to fullscreen messes up the
+            # sidebar" (the sidebar/icon math in MainWindow.resizeEvent
+            # is fine -- it was firing against a geometry the WM never
+            # actually finished settling back to). Recording it here and
+            # explicitly reapplying it below sidesteps relying on
+            # showNormal() alone to restore anything correctly.
+            self._pre_fullscreen_geometry = window.geometry()
             window.showFullScreen()
             self._enter_overlay_controls_mode()
         else:
             window.showNormal()
+            # Explicitly force the window state back to plain windowed
+            # (clearing any lingering fullscreen bit some WMs leave set
+            # internally even after showNormal() returns) and reassert
+            # the exact geometry from before we went fullscreen, so the
+            # window is left in a genuinely fresh, freely-resizable
+            # state rather than one the WM still half-remembers as
+            # fullscreen-derived.
+            window.setWindowState(window.windowState() & ~Qt.WindowFullScreen)
+            saved_geometry = getattr(self, "_pre_fullscreen_geometry", None)
+            if saved_geometry is not None:
+                window.setGeometry(saved_geometry)
             self._exit_overlay_controls_mode()
         self.fullscreen_toggled.emit(self._is_expanded)
 

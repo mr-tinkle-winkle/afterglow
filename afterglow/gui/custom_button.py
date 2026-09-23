@@ -12,13 +12,27 @@ unchanged; only the PAINTING is replaced, not the click/popup behavior.
 """
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, QRectF
+from PySide6.QtCore import Qt, QRectF, QPropertyAnimation, QSequentialAnimationGroup, QEasingCurve, Property
 from PySide6.QtGui import QPainter, QColor
 from PySide6.QtWidgets import QToolButton
 
 from .. import config as config_module
 from .rounded_rect import rounded_rect_path
 from .theme import Theme, contrast_text
+
+# Hover/press "pulse" scale factors -- all transitions between these are
+# eased QPropertyAnimations on the `visual_scale` property below, never a
+# hard jump. Hover alone shrinks the button slightly; holding the mouse
+# down shrinks it further ("pulse down while held"); releasing bounces
+# it back up past its resting size before smoothly settling ("pulse up,
+# then ease back to normal") -- per Max's exact spec for this effect.
+_HOVER_SCALE = 0.96
+_PRESS_SCALE = 0.90
+_RELEASE_OVERSHOOT_SCALE = 1.04
+_HOVER_ANIM_MS = 150
+_PRESS_ANIM_MS = 110
+_RELEASE_UP_MS = 90
+_RELEASE_SETTLE_MS = 180
 
 
 class CustomButton(QToolButton):
@@ -34,6 +48,57 @@ class CustomButton(QToolButton):
         self._fill_override: "QColor | None" = None
         self._outline_override: "QColor | None" = None
         self._outline_width = 0.0
+        self._scale = 1.0
+        self._scale_anim: "QPropertyAnimation | QSequentialAnimationGroup | None" = None
+
+    # ------------------------------------------------------------ hover/press pulse animation
+
+    def _get_visual_scale(self) -> float:
+        return self._scale
+
+    def _set_visual_scale(self, value: float) -> None:
+        self._scale = value
+        self.update()
+
+    visual_scale = Property(float, _get_visual_scale, _set_visual_scale)
+
+    def _animate_scale_to(self, target: float, duration: int, curve=QEasingCurve.OutCubic) -> None:
+        if self._scale_anim is not None:
+            self._scale_anim.stop()
+        anim = QPropertyAnimation(self, b"visual_scale", self)
+        anim.setDuration(duration)
+        anim.setStartValue(self._scale)
+        anim.setEndValue(target)
+        anim.setEasingCurve(curve)
+        anim.start()
+        self._scale_anim = anim
+
+    def _animate_release_pulse(self, resting: float) -> None:
+        """Bounces up past `resting` first, then eases back down to it --
+        the "pulse up ... smoothly returning back to normal" behavior on
+        release. `resting` is 1.0 if the mouse has already left the
+        button, or the hover scale if it's still hovering (so releasing
+        while still over the button settles into the hover-shrunk size,
+        not all the way back up to full size, matching the fact that
+        hovering alone is still supposed to keep it slightly smaller)."""
+        if self._scale_anim is not None:
+            self._scale_anim.stop()
+        overshoot = max(resting, _RELEASE_OVERSHOOT_SCALE)
+        group = QSequentialAnimationGroup(self)
+        up = QPropertyAnimation(self, b"visual_scale", self)
+        up.setDuration(_RELEASE_UP_MS)
+        up.setStartValue(self._scale)
+        up.setEndValue(overshoot)
+        up.setEasingCurve(QEasingCurve.OutCubic)
+        settle = QPropertyAnimation(self, b"visual_scale", self)
+        settle.setDuration(_RELEASE_SETTLE_MS)
+        settle.setStartValue(overshoot)
+        settle.setEndValue(resting)
+        settle.setEasingCurve(QEasingCurve.InOutCubic)
+        group.addAnimation(up)
+        group.addAnimation(settle)
+        group.start()
+        self._scale_anim = group
 
     def set_fill_color(self, color) -> None:
         """Override this button's fill instead of the theme's own
@@ -80,6 +145,17 @@ class CustomButton(QToolButton):
         painter.setRenderHint(QPainter.SmoothPixmapTransform)
 
         rect = QRectF(self.rect())
+
+        # Applies the current hover/press pulse scale around the
+        # button's own center, before anything else is drawn -- so the
+        # fill, outline, icon/text all shrink and grow together as one
+        # unit rather than the content moving inside a static outline.
+        if self._scale != 1.0:
+            center = rect.center()
+            painter.translate(center)
+            painter.scale(self._scale, self._scale)
+            painter.translate(-center)
+
         if self._circular:
             # A perfect circle regardless of the theme's own corner-
             # radius setting -- width == height by construction
@@ -158,16 +234,23 @@ class CustomButton(QToolButton):
 
     def enterEvent(self, event) -> None:
         self.update()
+        if not self.isDown():
+            self._animate_scale_to(_HOVER_SCALE, _HOVER_ANIM_MS)
         super().enterEvent(event)
 
     def leaveEvent(self, event) -> None:
         self.update()
+        if not self.isDown():
+            self._animate_scale_to(1.0, _HOVER_ANIM_MS)
         super().leaveEvent(event)
 
     def mousePressEvent(self, event) -> None:
         super().mousePressEvent(event)
         self.update()
+        self._animate_scale_to(_PRESS_SCALE, _PRESS_ANIM_MS)
 
     def mouseReleaseEvent(self, event) -> None:
         super().mouseReleaseEvent(event)
         self.update()
+        resting = _HOVER_SCALE if self.underMouse() else 1.0
+        self._animate_release_pulse(resting)

@@ -602,6 +602,17 @@ class EditorPage(QWidget):
 
     def _on_trim_range_changed(self, start: float, end: float) -> None:
         self._update_trim_range_label(start, end)
+        # Live-seek the preview to whichever edge is actually being
+        # dragged, so the player shows the frame under the handle as it
+        # moves rather than just the frame it started on. The handle
+        # being dragged is exactly the one whose value == the timeline's
+        # own current playhead-driving edge; TrimTimeline doesn't expose
+        # which handle is active here, but it always reports the moving
+        # edge as the one that changed, so seek to that edge directly.
+        if self.trim_timeline.dragging_handle == "start":
+            self.video_widget.seek(start)
+        elif self.trim_timeline.dragging_handle == "end":
+            self.video_widget.seek(end)
 
     def _on_trim_drag_finished(self, start: float, end: float) -> None:
         # Commit the new preview bounds only now, on release -- not on

@@ -186,6 +186,10 @@ class MainWindow(QMainWindow):
         # this is an embedded overlay, not a separate top-level window).
         self.library_page.preview_requested.connect(self._show_preview_overlay)
         self._preview_overlay = None
+        # Darkens the sidebar's Library icon while a refresh is actually
+        # in flight -- see LibraryPage/_VideoGridTab.refresh()'s own
+        # comments for why this replaced a fixed-time debounce.
+        self.library_page.loading_changed.connect(self.library_nav_btn.set_loading)
         # Prev/Next arrows in the Editor -- see EditorPage.set_neighbor_provider
         # and LibraryPage.neighbors_for's own docstrings for how this stays
         # live rather than being a one-time snapshot of the video list.

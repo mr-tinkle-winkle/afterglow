@@ -98,6 +98,16 @@ class TrimTimeline(QWidget):
     def end(self) -> float:
         return self._end
 
+    @property
+    def dragging_handle(self) -> str | None:
+        """None | "start" | "end" -- which handle a right-click drag is
+        currently moving, if any. Lets callers (e.g. the Editor page)
+        live-seek the preview to whichever edge is actually being
+        dragged rather than guessing from range_changed's two values
+        alone, since only one of them is actually moving on any given
+        drag."""
+        return self._dragging
+
     # ------------------------------------------------------------ pure coordinate math
 
     def _usable_width(self) -> float:

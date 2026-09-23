@@ -78,9 +78,20 @@ class LibraryTabButton(QAbstractButton):
         self._icon_pixmap = icon_pixmap
         self._position = position  # 'left' | 'right' | 'full'
         self._icon_target_size = 32
+        self._loading = False
         appearance = config_module.load().appearance
         self._appearance = appearance
         self._theme = Theme(appearance)
+
+    def set_loading(self, loading: bool) -> None:
+        """Darken the button while a load it represents is in progress
+        (currently only used for the sidebar's Library button, while
+        LibraryPage.refresh() is actually running -- see its own
+        comment for why this replaced a fixed-time debounce)."""
+        if self._loading == loading:
+            return
+        self._loading = loading
+        self.update()
 
     def set_icon_target_size(self, size: int) -> None:
         self._icon_target_size = max(1, size)
@@ -110,6 +121,8 @@ class LibraryTabButton(QAbstractButton):
             bg = bg.darker(125)
         elif self.underMouse():
             bg = bg.lighter(112)
+        if self._loading:
+            bg = bg.darker(150)
 
         if radius:
             path = rounded_rect_path(
@@ -214,6 +227,7 @@ class _SelectionClearingContainer(QWidget):
 class _VideoGridTab(QWidget):
     edit_requested = Signal(int)
     preview_requested = Signal(object, object)  # video, neighbor_provider
+    loading_changed = Signal(bool)  # True while refresh() is actually rebuilding this tab's grid
 
     def __init__(self, uploaded_only: bool, local_only: bool, parent=None):
         super().__init__(parent)
@@ -244,20 +258,15 @@ class _VideoGridTab(QWidget):
         self._selected_ids: set[int] = set()
         self._selection_anchor_index: int | None = None
 
-        # Leading-edge debounce for refresh() -- see refresh()'s own
-        # comment for why. A plain bool flag + a singleShot timer that
-        # just clears it, rather than reusing the trailing-edge
-        # QTimer.start()-restarts-the-countdown pattern the DB file
-        # watcher uses further down (_refresh_debounce): that pattern
-        # is right for "wait for a burst of background writes to settle
-        # before reacting once", but wrong here -- a user clicking
-        # Refresh wants the FIRST click to act immediately, not wait
-        # 0.75s to see anything happen at all.
-        self._refresh_debounce_active = False
-        self._refresh_cooldown_timer = QTimer(self)
-        self._refresh_cooldown_timer.setSingleShot(True)
-        self._refresh_cooldown_timer.setInterval(750)
-        self._refresh_cooldown_timer.timeout.connect(self._clear_refresh_cooldown)
+        # Leading-edge guard for refresh() -- see refresh()'s own comment
+        # for why this is a plain "is one actually running right now"
+        # flag rather than the fixed 750ms cooldown timer it used to be.
+        # _refresh_pending records that a further refresh was asked for
+        # while one was already in flight, so it can run exactly once
+        # more the moment the current one finishes (or raises) instead
+        # of being silently dropped.
+        self._refresh_in_progress = False
+        self._refresh_pending = False
 
         outer = QVBoxLayout(self)
 
@@ -649,28 +658,45 @@ class _VideoGridTab(QWidget):
         self.refresh()
 
     def refresh(self) -> None:
-        # Leading-edge debounce: the FIRST call in any 750ms window acts
-        # immediately (a Refresh click should feel instant, not
-        # laggy) -- every call after that, until the cooldown clears,
-        # is silently dropped. This is a second, independent layer on
-        # top of the hide()-before-deleteLater() fix below: that fix
-        # makes a stale card disappear immediately once a refresh DOES
-        # run, but doesn't stop a rapid burst of clicks from queuing up
-        # many full rebuilds back to back in the first place -- on a
-        # slow-enough machine (or a large-enough library -- rebuilding
-        # is O(number of cards)), enough queued rebuilds can still make
-        # things feel like they're "multiplying and messing up
-        # scaling" even with that fix in place, simply because there's
-        # more mid-rebuild time for it to happen in. Reported directly
-        # as still happening.
-        if self._refresh_debounce_active:
+        # Leading-edge guard: the FIRST call while nothing is already
+        # running acts immediately (a Refresh click should feel
+        # instant, not laggy). Any call that arrives WHILE a refresh is
+        # still in flight is coalesced into a single pending flag rather
+        # than run back-to-back or silently dropped -- this replaced an
+        # earlier fixed 750ms cooldown timer, which had it backwards in
+        # both directions: on a large library it could expire before
+        # the actual rebuild finished (letting an overlapping second
+        # rebuild start and stack up exactly the "multiplying/messed-up
+        # scaling" symptom this exists to prevent), and on a small one
+        # it kept blocking clicks for however much of the 750ms was
+        # left over after the rebuild had already long since finished.
+        # Tying the guard to the operation's own actual lifetime (start
+        # in the try, clear in the finally -- so a raised exception
+        # still releases it) fixes both. This is a second, independent
+        # layer on top of the hide()-before-deleteLater() fix in
+        # _do_refresh: that fix makes a stale card disappear immediately
+        # once a refresh DOES run; this stops overlapping runs in the
+        # first place.
+        if self._refresh_in_progress:
+            self._refresh_pending = True
             return
-        self._refresh_debounce_active = True
-        self._refresh_cooldown_timer.start()
-        self._do_refresh()
-
-    def _clear_refresh_cooldown(self) -> None:
-        self._refresh_debounce_active = False
+        self._refresh_in_progress = True
+        self.loading_changed.emit(True)
+        try:
+            self._do_refresh()
+        finally:
+            self._refresh_in_progress = False
+            self.loading_changed.emit(False)
+            if self._refresh_pending:
+                self._refresh_pending = False
+                # Run the one most-recent pending refresh now that the
+                # in-flight one is done, rather than immediately -- lets
+                # the loading_changed(False) above actually reach
+                # listeners (e.g. the sidebar icon un-darkening) for at
+                # least one event-loop tick before the next run's
+                # loading_changed(True) fires, so a rapid-fire burst
+                # still reads as "loading" rather than a flicker.
+                QTimer.singleShot(0, self.refresh)
 
     def _do_refresh(self) -> None:
         # Clear existing cards -- data may have changed (new/deleted
@@ -867,6 +893,7 @@ class _VideoGridTab(QWidget):
 class LibraryPage(QWidget):
     edit_requested = Signal(int)  # bubbled up from either tab, for MainWindow to route to Editor
     preview_requested = Signal(object, object)  # video, neighbor_provider -- ditto, for the preview overlay
+    loading_changed = Signal(bool)  # True while either tab is actually rebuilding its grid
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -911,6 +938,16 @@ class LibraryPage(QWidget):
         )
         self.local_tab.preview_requested.connect(self.preview_requested.emit)
         self.uploaded_tab.preview_requested.connect(self.preview_requested.emit)
+        self.local_tab.loading_changed.connect(self._on_tab_loading_changed)
+        self.uploaded_tab.loading_changed.connect(self._on_tab_loading_changed)
+        # Either tab loading counts as "the library is loading" for the
+        # sidebar icon's purposes -- tracked per-tab rather than just
+        # forwarding raw signals through, since both tabs can in
+        # principle be mid-refresh at once (e.g. the DB file watcher
+        # kicking off a refresh on the tab you're not currently looking
+        # at) and the icon should stay darkened until BOTH are done, not
+        # un-darken the moment whichever one finishes first.
+        self._loading_tabs: set[object] = set()
 
         self._stack = QStackedWidget()
         self._stack.addWidget(self.local_tab)
@@ -1156,6 +1193,16 @@ class LibraryPage(QWidget):
     def _on_tab_edit_requested(self, tab: "_VideoGridTab", video_id: int) -> None:
         self._last_edit_tab = tab
         self.edit_requested.emit(video_id)
+
+    def _on_tab_loading_changed(self, loading: bool) -> None:
+        sender = self.sender()
+        if loading:
+            self._loading_tabs.add(sender)
+        else:
+            self._loading_tabs.discard(sender)
+        # Only reports "not loading" once every tab that was loading has
+        # actually finished (or failed) -- see __init__'s comment.
+        self.loading_changed.emit(bool(self._loading_tabs))
 
     def neighbors_for(self, video_id: int) -> tuple["library.Video | None", "library.Video | None"]:
         """(previous, next) video relative to video_id, according to

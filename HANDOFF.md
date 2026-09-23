@@ -328,11 +328,111 @@ Seven consecutive batches of Library/Settings/appearance
 features/bug fixes, given together each time. Newest first.
 
 ### This session
+Five direct requests, all in the Editor and the app's overall window/
+button behavior rather than Library/appearance this time.
+
+1. **Editor previewer now follows the handle being dragged, not just
+   the frame it started on.** `TrimTimeline._on_trim_range_changed`
+   in `editor_page.py` only updated the range LABEL on every
+   intermediate `range_changed` signal -- it never actually seeked
+   `video_widget` until the drag finished, so the preview looked
+   frozen on the pre-drag frame the whole time you were dragging.
+   Added a `dragging_handle` property to `TrimTimeline` (exposes its
+   existing private `_dragging` state: `None | "start" | "end"`) and
+   now seek the video to whichever edge is actually moving on every
+   `range_changed`. Verified directly: pressing a handle, dragging it,
+   and checking both `TrimTimeline.start`/`.end` AND
+   `dragging_handle` update correctly through a press/drag/release
+   cycle.
+2. **Can't vertically resize the app, AND resizing then returning to
+   fullscreen messes up the sidebar/settings sizing -- same root
+   cause, both fixed.** This is exactly the "one untested hypothesis"
+   flagged unresolved several sessions ago in item 5 of that session's
+   notes (search this file for "vertical-resize limitation"): the
+   video previewer's fullscreen toggle
+   (`VideoPreviewContent._toggle_fullscreen` in
+   `video_preview_dialog.py`) calls `showFullScreen()`/`showNormal()`
+   directly on the actual MainWindow, and on at least some window
+   managers that cycle can leave the window's own notion of its
+   "normal" geometry/resize state stuck, rather than genuinely
+   restoring it. `MainWindow.resizeEvent`'s own sidebar/icon-size math
+   was checked and is fine -- it was firing correctly against a
+   geometry the WM had never actually finished settling back to.
+   Fixed by having `_toggle_fullscreen` record `window.geometry()`
+   itself right before calling `showFullScreen()`, and on the way back
+   out, explicitly clearing the `Qt.WindowFullScreen` state bit via
+   `setWindowState` AND reapplying that saved geometry with
+   `setGeometry`, instead of trusting `showNormal()` alone to put
+   things back the way they were. Not verified against a real window
+   manager (this sandbox's offscreen Qt platform doesn't reproduce WM-
+   level state-transition quirks any more than it reproduced the
+   stylesheet-cascade bug several sessions back) -- flagged the same
+   way that one was; please confirm both the previewer's fullscreen
+   toggle and ordinary window resizing (including vertical) still work
+   right on your machine.
+3. **Library loading debounce reworked from a fixed 750ms cooldown
+   timer to an actual "is a refresh in flight" flag**, per direct
+   request. The old timer had it backwards in both directions: on a
+   large library it could expire before the real rebuild (which is
+   synchronous and O(number of cards)) actually finished, letting an
+   overlapping second rebuild start and stack up the exact
+   "multiplying/messed-up scaling" symptom the debounce exists to
+   prevent in the first place; on a small library it kept blocking
+   clicks for however much of the 750ms was left over after the
+   rebuild had already long since finished. `_VideoGridTab.refresh()`
+   now sets a plain `_refresh_in_progress` flag right before calling
+   `_do_refresh()` inside a `try`/`finally`, so it's guaranteed to
+   clear even if `_do_refresh` raises ("finish or fail," as asked) --
+   any `refresh()` call that arrives while the flag is set is
+   coalesced into a single `_refresh_pending` flag and run exactly
+   once, immediately after the in-flight one finishes, rather than
+   being silently dropped as the old debounce did. Also added the
+   requested visual feedback: a new `loading_changed` signal on
+   `_VideoGridTab`, bubbled up through `LibraryPage` (tracking both
+   tabs independently so the icon only un-darkens once BOTH are idle,
+   not whichever finishes first), and a `LibraryTabButton.set_loading()`
+   method that darkens the sidebar's Library icon while it's true --
+   wired together in `MainWindow.__init__`. Verified directly against
+   a real `_VideoGridTab` with a real (temp, empty) SQLite DB: a
+   `refresh()` call that arrives mid-rebuild is coalesced and runs
+   exactly once more afterward (not dropped, not duplicated), and the
+   `_refresh_in_progress` flag/the `loading_changed` signal both still
+   correctly release/fire `False` when `_do_refresh` is made to raise,
+   confirmed by direct test rather than just reading the code.
+4. **Custom Buttons now have an eased hover-shrink + click-pulse
+   animation**, per Max's exact spec: slightly smaller on hover,
+   pulsing further down while the click is held, pulsing back up the
+   instant it's released and smoothly settling back to rest -- all of
+   it eased, none of it a hard jump. Added a `visual_scale` Qt
+   `Property` to `CustomButton` (`custom_button.py`) driving a
+   `QPropertyAnimation` (hover/press transitions, `OutCubic`) or a
+   `QSequentialAnimationGroup` of two chained animations for the
+   release pulse (a quick `OutCubic` bounce up past resting size, then
+   a slower `InOutCubic` ease back down to it) -- applied in
+   `paintEvent` as a `QPainter` scale transform around the button's
+   own center, so the fill/outline/icon/text all shrink and grow
+   together as one unit. Judgment call, flagging it in case it wasn't
+   what was meant: on release, "resting" is 1.0 if the mouse has
+   already left the button by then, or the hover scale if it's still
+   hovering -- so releasing while still over the button settles into
+   the hover-shrunk size rather than all the way back up to full size,
+   consistent with hovering alone still being supposed to keep it
+   smaller. Verified directly (offscreen, real `CustomButton`
+   instances): hover/press/release all start the expected animation
+   with the expected target scale, and `paintEvent` renders without
+   error at both a shrunk and an overshot scale value. This only
+   touches `CustomButton` itself -- `LibraryTabButton` (the sidebar's
+   Library/Editor/Settings buttons and the Local/Uploaded tab buttons)
+   is a separate class and wasn't touched, since the request was
+   specifically "for custom buttons."
+
+### Previous session
 1. **Context menu reverted to the pre-`FiltersPopup` QMenu-based
    version**, after a `Qt.Popup`-based rebuild (`filters_popup.py`,
    `FiltersPopup`) still didn't reliably stay open while toggling
    checkboxes and looked worse visually than the version before it.
    `_build_filters_menu`, `_open_filters_menu_for_self`, the "Edited"
+
    `CustomCheckBox`-via-`QWidgetAction`, and the nested
    `_NonClosingMenu` category submenus in `video_card.py` are all back
    to their pre-rebuild form. `filters_popup.py` is left in the tree,
