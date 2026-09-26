@@ -55,6 +55,14 @@ class _PopoverTabButton(QAbstractButton):
 
         top_left = self._position == "left"
         top_right = self._position == "right"
+        # Neighbor tabs touch side-to-side and every tab touches the page
+        # box below it: extend those sides so they stay flush at rest
+        # despite the pulse headroom (PressPulse.touching_extension).
+        ext_x, ext_y = self._pulse.touching_extension(rect)
+        rect = rect.adjusted(
+            0 if self._position == "left" else -ext_x, 0,
+            0 if self._position == "right" else ext_x, ext_y,
+        )
         radius = min(self._radius, rect.height()) if self._radius else 0
 
         bg = self._theme.accent() if self.isChecked() else self._theme.card_background()
@@ -69,7 +77,7 @@ class _PopoverTabButton(QAbstractButton):
             )
             painter.fillPath(path, bg)
         else:
-            painter.fillRect(self.rect(), bg)
+            painter.fillRect(rect, bg)
 
         painter.setPen(contrast_text(bg))
         painter.drawText(self.rect(), Qt.AlignCenter, self.text())

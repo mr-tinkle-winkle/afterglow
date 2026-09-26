@@ -30,7 +30,16 @@ from PySide6.QtGui import QPainter
 
 HOVER_SCALE = 0.96
 PRESS_SCALE = 0.90
-RELEASE_OVERSHOOT_SCALE = 1.04
+# Release-bounce peak. 1.0 = exactly the widget's own edge. It was 1.04,
+# but a widget can't paint outside its rect, so anything above 1.0 clips
+# the rounded corners off at the peak (a tall sidebar button's 24px curve
+# measured ~4px, i.e. square). apply() reserves headroom automatically if
+# this is raised above 1.0 again, at the cost of every button resting
+# 1/overshoot smaller -- ~7px per end on a 340px sidebar button at 1.04.
+# At 1.0 the release still visibly bounces: pressed 0.90 -> 1.0 -> settles
+# at the hover size 0.96 (the cursor is almost always still over the
+# button on release).
+RELEASE_OVERSHOOT_SCALE = 1.0
 HOVER_MS = 150
 PRESS_MS = 110
 RELEASE_UP_MS = 90
@@ -56,15 +65,39 @@ class PressPulse(QObject):
     # ------------------------------------------------------------ painting
 
     def apply(self, painter: QPainter, center: "QPointF | None" = None) -> None:
-        """Apply the current scale to `painter`, around `center` (default:
-        the widget's own center). Call before drawing anything that
-        should pulse."""
-        if self.scale == 1.0:
+        """Apply the current pulse scale to `painter`, around `center`
+        (default: the widget's own center). Call before drawing anything
+        that should pulse.
+
+        HEADROOM: the drawn scale is `self.scale / overshoot`, not
+        `self.scale`. A widget can't paint outside its own rect, so the
+        old version's release bounce (1.04x) pushed the shape's rounded
+        corners out past the edges, where Qt clipped them: a tall sidebar
+        button's 24px corner curve dropped to ~4px (read as square) at
+        the peak of every bounce. Now the PEAK of the bounce exactly fills
+        the rect and rest is drawn at 1/overshoot (~96%), so the full
+        rounded shape is always visible. Hover/press keep the same
+        proportions relative to rest. Edges that must stay flush against
+        a neighbor use touching_extension() -- see its docstring."""
+        s = self.scale / self._overshoot_scale
+        if s == 1.0:
             return
         c = QPointF(center) if center is not None else QRectF(self._widget.rect()).center()
         painter.translate(c)
-        painter.scale(self.scale, self.scale)
+        painter.scale(s, s)
         painter.translate(-c)
+
+    def touching_extension(self, rect: QRectF) -> "tuple[float, float]":
+        """(dx, dy): how far to extend a shape's rect on any side that
+        TOUCHES a neighbor (a square, un-rounded side, e.g. between two
+        joined tab buttons), so that side still sits exactly flush with
+        the widget edge at rest despite the headroom apply() adds. Drawn
+        at rest scale 1/overshoot around the center, an extension of
+        size * (overshoot - 1) / 2 lands exactly on the edge. At the
+        peak of the bounce that side overshoots and gets clipped, which
+        is harmless because it's square anyway."""
+        k = (self._overshoot_scale - 1.0) / 2.0
+        return rect.width() * k, rect.height() * k
 
     # ------------------------------------------------------------ animation
 

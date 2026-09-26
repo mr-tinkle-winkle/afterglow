@@ -328,6 +328,49 @@ Seven consecutive batches of Library/Settings/appearance
 features/bug fixes, given together each time. Newest first.
 
 ### This session
+**Rounding disappeared on the release bounce -- fixed.** Max reported
+that releasing a click made custom buttons bounce past their limits
+(fine) but lose their rounded corners at that moment (not fine).
+Cause: `PressPulse`'s release overshoot scaled the shape to 1.04x, and a
+widget can't paint outside its own rect, so Qt clipped the enlarged
+shape at the widget edge and the rounded corners fell outside it.
+Measured the visible corner curve on real widgets: a 100x340 sidebar
+button went from 24px to ~4px at the peak (reads as square), a 140x36
+CustomButton from 18px to 10px, the Local tab from 24px to 15px.
+
+Fix (`press_pulse.py`): `RELEASE_OVERSHOOT_SCALE` 1.04 -> **1.0** (the
+widget's own edge). Release still visibly bounces: pressed 0.90 -> 1.0
+-> settles at hover size 0.96 (cursor is almost always still over the
+button on release). Resting sizes unchanged.
+
+Tried first and REJECTED: keeping the 1.04 overshoot with headroom
+(draw everything at scale/1.04 so the peak exactly fills the rect).
+Corners were fully intact at the peak, but every button rests ~4%
+smaller: ~7px per end on a sidebar button, roughly doubling the gaps
+between Library/Editor/Settings. Sidebar sizing has been a sore spot, so
+not shipped silently. The headroom mechanism is KEPT in `apply()`
+(draws at `scale / overshoot`, a no-op at 1.0) together with a new
+`PressPulse.touching_extension(rect)`, used by `LibraryTabButton` and
+`_PopoverTabButton` on their touching (square) sides, so raising the
+overshoot later automatically keeps corners intact AND joined tabs
+flush. If Max wants the bigger bounce back, that's a one-constant
+change with the smaller-at-rest tradeoff above -- ask him first.
+
+Verified: frame-by-frame over a real QTest press/release on the sidebar
+button and a CustomButton, the drawn scale never exceeds 1.0 on any
+frame and the corner curve at the peak equals the resting one (24px /
+18px); all 12 pulsing button types still pass hover 0.96 / press 0.90 /
+peak 1.00 / settle 0.96; with headroom forced on (overshoot 1.04),
+Local's right edge, Uploaded's left edge, and the popover tab's
+left/right/bottom edges stay flush at rest. Test pitfall worth
+remembering: a "first filled row" corner measurement mid-animation lands
+a fraction of a pixel inside the shape and reads a narrower curve --
+assert "never crosses the widget edge" instead.
+
+Same fix applied to the standalone UI kit for Conduit/Puppetry
+(`qt-ui-kit.zip`, `UI_THEMING_GUIDE.md` section 4 + pitfall 13).
+
+### Previous session
 Follow-up to the previous session's five items, after Max tested them on
 his real machine. Two of last session's fixes were WRONG (right symptom,
 wrong cause) -- both now re-diagnosed by direct measurement and fixed

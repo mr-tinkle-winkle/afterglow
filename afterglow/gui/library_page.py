@@ -119,6 +119,11 @@ class LibraryTabButton(QAbstractButton):
         is_right = self._position == "right"
         round_left = is_left or self._position == "full"
         round_right = is_right or self._position == "full"
+        # Keep a TOUCHING (square) side flush with the widget edge at
+        # rest despite the pulse headroom -- see PressPulse.apply /
+        # touching_extension. Local sits flush against Uploaded.
+        ext_x, _ = self._pulse.touching_extension(rect)
+        rect = rect.adjusted(0 if round_left else -ext_x, 0, 0 if round_right else ext_x, 0)
 
         bg = self._theme.turquoise()
         if not self.isChecked():
@@ -138,7 +143,7 @@ class LibraryTabButton(QAbstractButton):
             )
             painter.fillPath(path, bg)
         else:
-            painter.fillRect(self.rect(), bg)
+            painter.fillRect(rect, bg)
 
         scaled = scaled_cached(self._icon_pixmap, self._icon_target_size, self._icon_target_size)
         x = (self.width() - scaled.width()) // 2
