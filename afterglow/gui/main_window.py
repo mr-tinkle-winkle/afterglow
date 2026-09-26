@@ -288,23 +288,14 @@ class MainWindow(QMainWindow):
             self.library_page.show_status_message("Select a video.")
 
         crossfade_to_index(self.stack, index)
-        # Deliberately NOT refreshing the Library here anymore -- it
-        # used to call library_page.refresh() (a full filesystem scan +
-        # every VideoCard rebuilt from scratch) on every single switch
-        # TO Library, even via the deferred singleShot(0) from last
-        # round's fix. That deferral only moved WHEN the block happened,
-        # not whether it happened -- rebuilding potentially hundreds of
-        # cards is real, unavoidable CPU work regardless of scheduling,
-        # and still read as "lag" once it actually ran. Per Max's own
-        # suggestion ("maybe just leave the pages loaded after switching
-        # off of them"): the Library page now simply stays exactly as
-        # it was the last time anything actually changed it -- the
-        # existing DB-file-watcher (_on_db_file_changed, further down in
-        # library_page.py) still refreshes it automatically whenever the
-        # daemon or the Editor actually writes to the database, and the
-        # Library's own Refresh button is still right there for a
-        # manual one. Switching TO Library is now just a plain,
-        # instant page switch, nothing more.
+        # Switching TO Library does refresh it (this is what picks up clips
+        # dropped into the folder by hand, which the DB file watcher can't
+        # see). It's cheap in the usual case: _VideoGridTab.refresh()
+        # compares a signature of what it would show against what's on
+        # screen and skips the rebuild entirely when nothing changed. The
+        # refresh itself is time-sliced and coalesced, so spam clicks
+        # never stack up rebuilds. (An older comment here claimed this
+        # refresh had been removed; it hadn't been.)
         if index == _LIBRARY_INDEX:
             QTimer.singleShot(0, self.library_page.refresh)
 

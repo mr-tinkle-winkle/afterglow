@@ -327,7 +327,66 @@ plain QSS rule is unavoidable.
 Seven consecutive batches of Library/Settings/appearance
 features/bug fixes, given together each time. Newest first.
 
+> **Name:** the owner of this project now goes by **mrtw**. Earlier
+> entries in this file say "Max"; that's the same person. Use "mrtw"
+> going forward.
+
 ### This session
+**Release bounce looked low-FPS (press and hover were fine) -- fixed.**
+Measured, not guessed: recorded every pulse-animation frame during press
+vs release on each real button in the full app with an 80-clip library.
+The animation itself was fine (plain button: ~12ms/frame on both press
+and release). The stutter was only on buttons whose click does work:
+sidebar Library/Editor and Refresh stalled the release animation for
+~70-80ms at a time. Cause: Qt fires `clicked` on mouse-UP, so whatever
+the click does runs on top of the release bounce -- and a sidebar
+Library click (or Refresh) was rebuilding all 80 cards every time, even
+when nothing had changed (the usual case). The time-slicing from two
+sessions ago kept the UI responsive, but each slice plus the final
+grid layout/paint still froze the bounce for several frames.
+
+Fix: `_VideoGridTab.refresh()` now computes `_display_signature()` --
+every Video field shown on a card (and their order), each video file's
+mtime, per-tag icons and outline colors (Settings > Filters, stored
+outside video rows), the highlight-unedited option, and the settings
+file's stat key -- and skips the rebuild when it matches what's on
+screen. ~1-2ms for 80 clips vs ~150ms+ for a rebuild. Font scale is
+deliberately NOT in it (resize already updates cards in place; having it
+there made the first click after every resize rebuild for nothing --
+caught by diffing signatures). Also: `apply_scale()` now updates cards
+from an in-progress sliced build too, not just the ones already swapped
+in.
+
+Results (release, worst gap between frames, median of runs): sidebar
+Library 71ms -> 25ms, Editor 69 -> 25, Refresh 81 -> 23; real page
+switches (alternating Settings <-> Library) ~30-35ms. Spam test: 60
+clicks on an unchanged library = 0 rebuilds, worst stall 9ms (was 5-6
+rebuilds). Correctness suite (10 checks, all pass): unchanged -> no
+rebuild for both sidebar and Refresh; rename, re-edited file (mtime),
+file dropped into the folder, file deleted, search, clearing search,
+settings save, and a per-tag outline color change all still rebuild.
+
+Tried and REVERTED: replacing the page-switch fade
+(`crossfade_to_index`, a QGraphicsOpacityEffect over the whole new page
+for 200ms) with a one-time snapshot faded in by a cheap overlay. It
+halved total event-loop busy time during a switch (70ms -> 30ms) but
+concentrated the page render into one block right as the bounce starts,
+and a same-session A/B (26 runs each, interleaved) showed a WORSE worst
+hitch: 42.7ms vs 35.7ms median. Original fade restored. The remaining
+~30ms on real page switches (about one missed frame at 60Hz) is that
+fade rendering the new page -- flagged, not fixed.
+
+Also fixed a stale comment in `MainWindow._on_nav_clicked` that claimed
+switching to Library no longer refreshes (the refresh call was right
+below it).
+
+Pending mrtw's all-clear before porting to the UI kit. What carries over:
+nothing in the kit code itself (the skip-rebuild is afterglow's Library),
+but the guide gets a pitfall: clicks fire on mouse-up, so heavy click
+work lands on the release animation -- skip no-op work, slice the rest.
+Also rename "Max" -> "mrtw" throughout the guide.
+
+### Previous session
 **Rounding disappeared on the release bounce -- fixed.** Max reported
 that releasing a click made custom buttons bounce past their limits
 (fine) but lose their rounded corners at that moment (not fine).

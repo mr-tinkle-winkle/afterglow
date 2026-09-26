@@ -12,6 +12,7 @@ grid/search/filter wiring twice.
 """
 from __future__ import annotations
 
+import os
 import time
 import traceback
 
@@ -276,6 +277,9 @@ class _VideoGridTab(QWidget):
         # of being silently dropped.
         self._refresh_in_progress = False
         self._refresh_pending = False
+        # Signature of what the grid currently shows -- see refresh().
+        self._last_signature = None
+        self._pending_signature = None
 
         outer = QVBoxLayout(self)
 
@@ -626,7 +630,10 @@ class _VideoGridTab(QWidget):
         # thumbnails stay a fixed size for now to avoid touching the
         # thumbnail cache's own sizing assumptions.
         self._font_scale = factor
-        for card in self._cards:
+        # Include cards from a time-sliced rebuild still in progress --
+        # they were constructed with the old scale and aren't in
+        # self._cards until the swap.
+        for card in list(self._cards) + list(getattr(self, "_build_cards", [])):
             card.set_font_scale(factor)
 
     def _set_card_info_field(self, field_name: str, checked: bool) -> None:
@@ -713,6 +720,22 @@ class _VideoGridTab(QWidget):
             traceback.print_exc()
             self._finish_refresh()
             return
+        # Skip the whole rebuild when what we'd show is identical to what's
+        # already on screen -- the usual case for a sidebar Library click
+        # or a Refresh with nothing new. Rebuilding anyway was pure waste,
+        # and it's what made every button's release animation stutter:
+        # the click fires on mouse-UP, so the rebuild's time slices (and
+        # the big layout+paint when the new grid swaps in) landed right on
+        # top of the release bounce, freezing it for ~70ms at a time.
+        try:
+            signature = self._display_signature(videos)
+        except Exception:
+            traceback.print_exc()
+            signature = None
+        if signature is not None and signature == self._last_signature and (self._cards or not videos):
+            self._finish_refresh()
+            return
+        self._pending_signature = signature
         self._build_queue = list(videos)
         self._build_cards: list[VideoCard] = []
         self._build_step(self._build_generation)
@@ -730,6 +753,7 @@ class _VideoGridTab(QWidget):
                 QTimer.singleShot(0, lambda: self._build_step(generation))
                 return
             self._swap_in_cards(self._build_cards)
+            self._last_signature = getattr(self, "_pending_signature", None)
         except Exception:
             # Don't leave the tab wedged in "loading" forever if one card
             # blows up -- discard the partial build, keep the old grid.
@@ -739,6 +763,38 @@ class _VideoGridTab(QWidget):
         self._build_cards = []
         self._build_queue = []
         self._finish_refresh()
+
+    def _display_signature(self, videos) -> tuple:
+        """Everything a rebuilt grid would depend on. If this matches the
+        grid currently on screen, a rebuild would produce identical cards.
+        Covers: every Video field shown on a card (and order), each video
+        file's mtime (a re-edit rewrites the file without necessarily
+        changing its row), per-tag icons/outline colors (Settings >
+        Filters, stored outside the video rows), this tab's own display
+        options, and the settings file itself (appearance changes). Costs
+        one stat per video plus two small queries -- ~1-2ms for 80 clips
+        vs ~150ms+ for a real rebuild. Font scale is deliberately excluded --
+        see the return value's own comment."""
+        rows = []
+        for v in videos:
+            try:
+                mtime = os.stat(v.path).st_mtime_ns
+            except OSError:
+                mtime = None
+            rows.append((v.id, v.path, mtime, v.title, v.description, v.duration_sec, v.created_at,
+                         v.has_edit, v.backup_path, v.youtube_video_id, v.youtube_privacy,
+                         tuple(v.tags), v.favorite, v.clip_config_id))
+        return (
+            tuple(rows),
+            tuple(sorted(library.tag_icons().items())),
+            tuple(sorted(library.tag_outline_colors().items())),
+            # NOT self._font_scale: apply_scale() already updates existing
+            # cards in place on resize, so it never needs a rebuild (it
+            # was here briefly and made the first click after every
+            # window resize rebuild the whole grid for nothing).
+            self._highlight_unedited,
+            config_module._stat_key(),
+        )
 
     def _finish_refresh(self) -> None:
         self._refresh_in_progress = False
@@ -763,6 +819,7 @@ class _VideoGridTab(QWidget):
             sort_by=self._sort_by,
         )
         self._swap_in_cards([self._make_card(v) for v in videos])
+        self._last_signature = None  # not computed on this path; force the next refresh() to compare fresh
 
     def _swap_in_cards(self, cards: "list[VideoCard]") -> None:
         # hide() before deleteLater(): removing a widget from a layout
