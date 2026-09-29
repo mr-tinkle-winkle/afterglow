@@ -34,7 +34,9 @@ from ..theme import Theme
 from .controller import EditorController
 from .timeline import format_time
 
-KEYFRAME_PROPS = [("x", "Position X"), ("y", "Position Y"), ("scale", "Scale"), ("rotation", "Rotation"),
+# "position" and "tail" are two-value keyframes: each key sets both X and Y.
+COMPOSITE = {"position": ("x", "y"), "tail": ("tail_x", "tail_y")}
+KEYFRAME_PROPS = [("position", "Position"), ("x", "Position X"), ("y", "Position Y"), ("scale", "Scale"), ("rotation", "Rotation"),
                   ("opacity", "Opacity"), ("volume", "Volume")]
 TRANSITION_KINDS = [("None", None), ("Crossfade", "crossfade"), ("Blur / Focus", "blur"),
                     ("Slide", "slide"), ("Fade (wipe)", "fade")]
@@ -50,7 +52,7 @@ def _spin(lo, hi, step, decimals=2, suffix=""):
     s.setDecimals(decimals)
     s.setSuffix(suffix)
     s.setKeyboardTracking(False)
-    s.setMinimumWidth(96)
+    s.setMinimumWidth(84)
     return s
 
 
@@ -90,6 +92,7 @@ class PropertiesPanel(QWidget):
         self.scroll.setAttribute(Qt.WA_TranslucentBackground, True)
         self.scroll.viewport().setAutoFillBackground(False)
         self.scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
+        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         outer.addWidget(self.scroll, stretch=1)
         self._body = None
         controller.selection_changed.connect(self._rebuild)
@@ -298,14 +301,55 @@ class PropertiesPanel(QWidget):
             row2.addWidget(bold)
             row2.addWidget(italic)
             form.addRow(self._lbl("Style"), row2)
+
+            g2, form2 = self._group(lay, "Typing")
+            tin = _spin(0, 600, 0.1, 2, " s")
+            tin.setToolTip("Type the text in over this long at the start (0 = off)")
+            tin.valueChanged.connect(lambda v: self._edit("Type in", lambda p: self._set_text(p, type_in=v)))
+            tout = _spin(0, 600, 0.1, 2, " s")
+            tout.setToolTip("Delete the text over this long at the end (0 = off)")
+            tout.valueChanged.connect(lambda v: self._edit("Type out", lambda p: self._set_text(p, type_out=v)))
+            cur = CustomCheckBox("Show typing cursor ( | )")
+            cur.clicked.connect(lambda: self._once("Typing cursor", lambda p: self._set_text(p, type_cursor=cur.isChecked())))
+            form2.addRow(self._lbl("Type in"), tin)
+            form2.addRow(self._lbl("Type out"), tout)
+            form2.addRow(self._lbl(""), cur)
+
+            g3, form3 = self._group(lay, "Bubble")
+            bub = self._combo([("None", ""), ("Speech", "speech"), ("Thought", "thought")])
+            bub.currentIndexChanged.connect(lambda *_: self._set_bubble(bub.currentData()))
+            bfill = CustomButton("Fill")
+            bfill.clicked.connect(lambda: self._pick_color("bubble_fill"))
+            bline = CustomButton("Outline")
+            bline.clicked.connect(lambda: self._pick_color("bubble_outline"))
+            bwidth = _spin(0, 40, 0.5, 1, " px")
+            bwidth.valueChanged.connect(lambda v: self._edit("Bubble outline", lambda p: self._set_text(p, bubble_outline_width=v)))
+            form3.addRow(self._lbl("Type"), bub)
+            brow = QHBoxLayout()
+            brow.addWidget(bfill)
+            brow.addWidget(bline)
+            form3.addRow(self._lbl("Colors"), brow)
+            form3.addRow(self._lbl("Outline width"), bwidth)
+            note = QLabel("Drag the orange diamond in the preview to aim the tail; it moves independently of "
+                          "the bubble and can be keyframed (Keyframes > Bubble tail tip).")
+            note.setWordWrap(True)
+            note.setStyleSheet(self._label_qss + "QLabel { font-size: 11px; }")
+            form3.addRow(note)
+            for w_ in (bfill, bline, bwidth):
+                w_.setEnabled(bool(text_part.text.bubble))
+            self._fields.update(type_in=tin, type_out=tout, type_cursor=cur, bubble=bub, bubble_fill_btn=bfill,
+                                bubble_outline_btn=bline, bubble_outline_width=bwidth)
             self._fields.update(text=edit, font=font, text_size=size, color_btn=color, outline_btn=ocolor,
                                 outline_width=owidth, bold=bold, italic=italic)
 
         # ---- keyframes
         if single:
             g, form = self._group(lay, "Keyframes")
-            prop = self._combo([(label, key) for key, label in KEYFRAME_PROPS
-                                if key != "volume" or first.has_audio])
+            is_bubble = text_part is not None and bool(text_part.text.bubble)
+            items = [(label, key) for key, label in KEYFRAME_PROPS if key != "volume" or first.has_audio]
+            if is_bubble:
+                items.insert(1, ("Bubble tail tip", "tail"))
+            prop = self._combo(items)
             prop.currentIndexChanged.connect(lambda *_: self._refresh_keyframes())
             add = CustomButton("Add at Playhead")
             add.clicked.connect(self._add_keyframe)
@@ -430,6 +474,13 @@ class PropertiesPanel(QWidget):
             self._set("bold", st.bold)
             self._set("italic", st.italic)
             self._fields["color_btn"].set_fill_color(st.color)
+            self._set("type_in", st.type_in)
+            self._set("type_out", st.type_out)
+            self._set("type_cursor", st.type_cursor)
+            self._set("bubble", st.bubble)
+            self._set("bubble_outline_width", st.bubble_outline_width)
+            self._fields["bubble_fill_btn"].set_fill_color(st.bubble_fill)
+            self._fields["bubble_outline_btn"].set_fill_color(st.bubble_outline)
             self._fields["outline_btn"].set_fill_color(st.outline_color)
         self._refresh_keyframe_values()
         self._refreshing = False
@@ -463,10 +514,12 @@ class PropertiesPanel(QWidget):
         lay = listw.layout()
         s = segs[0]
         prop = prop_c.currentData()
-        kfs = s.keyframes.get(prop, [])
+        comps = COMPOSITE.get(prop, (prop,))
+        kfs = s.keyframes.get(comps[0], [])
         # Rebuild the rows only when what they show changed (this runs on
         # every project change, including each step of a timeline drag).
-        sig = (s.id, prop, round(s.start, 6), tuple((round(k.t, 6), k.value, k.easing) for k in kfs))
+        sig = (s.id, prop, round(s.start, 6), tuple((c, round(k.t, 6), k.value, k.easing)
+                                                    for c in comps for k in s.keyframes.get(c, [])))
         if sig == getattr(self, "_kf_sig", None) and lay.count():
             return
         self._kf_sig = sig
@@ -491,16 +544,20 @@ class PropertiesPanel(QWidget):
             t_btn = CustomButton(format_time(s.start + k.t, self.ctl.project.fps, True))
             t_btn.setToolTip("Move the playhead here")
             t_btn.clicked.connect(lambda _=False, tt=s.start + k.t: self.ctl.set_playhead(tt))
-            val = QLabel(self._fmt_value(prop, k.value))
+            if len(comps) == 2:
+                other = eval_keyframes(s.keyframes.get(comps[1]), k.t, self._static_value(s, comps[1]))
+                val = QLabel(f"{k.value * 100:.0f} %, {other * 100:.0f} %")
+            else:
+                val = QLabel(self._fmt_value(prop, k.value))
             val.setStyleSheet(self._label_qss)
             ease = self._combo([("Linear", "linear"), ("Ease", "ease"), ("Hold", "hold")])
             ease.setCurrentIndex(max(0, ease.findData(k.easing)))
-            ease.currentIndexChanged.connect(lambda _i, kt=k.t, kv=k.value, c=ease: self._once(
-                "Keyframe easing", lambda p: ops.set_keyframe(p, self._ids[0], prop, kt, kv, c.currentData())))
+            ease.currentIndexChanged.connect(lambda _i, kt=k.t, c=ease: self._once(
+                "Keyframe easing", lambda p: self._set_easing(p, comps, kt, c.currentData())))
             rm = CustomButton("✕")
             rm.setToolTip("Delete keyframe")
             rm.clicked.connect(lambda _=False, kt=k.t: self._once(
-                "Delete keyframe", lambda p: ops.remove_keyframe(p, self._ids[0], prop, kt)))
+                "Delete keyframe", lambda p: [ops.remove_keyframe(p, self._ids[0], c, kt) for c in comps]))
             row.addWidget(t_btn)
             row.addWidget(val, stretch=1)
             row.addWidget(ease)
@@ -563,6 +620,30 @@ class PropertiesPanel(QWidget):
                 if "text" in values:
                     s.name = values["text"].split("\n")[0][:40] or "Text"
 
+    def _set_bubble(self, kind: str) -> None:
+        if self._refreshing or not self._ids:
+            return
+        sid = self._ids[0]
+
+        def fn(p):
+            _, s = p.find_segment(sid)
+            if s is None or s.locked:
+                return
+            for part in s.parts:
+                st = part.text
+                if part.kind != KIND_TEXT or st is None:
+                    continue
+                if kind and not st.bubble:
+                    # Turning a bubble on: aim the tail just below-left of it,
+                    # and switch to dark text on the white bubble.
+                    st.tail_x, st.tail_y = s.transform.x - 0.08, s.transform.y + 0.2
+                    if st.color.lower() in ("#ffffff", "#ffffffff"):
+                        st.color = "#111111"
+                        st.outline_width = 0.0
+                st.bubble = kind or ""
+        self._once("Bubble", fn)
+        QTimer.singleShot(0, self._rebuild)      # the keyframe list gains/loses "Bubble tail tip"
+
     def _pick_color(self, attr: str) -> None:
         segs = self._segments()
         if not segs:
@@ -576,13 +657,25 @@ class PropertiesPanel(QWidget):
             name = c.name(QColor.HexArgb) if c.alpha() < 255 else c.name()
             self._once("Text color", lambda p: self._set_text(p, **{attr: name}))
 
-    def _current_value(self, s: Segment, prop: str) -> float:
-        local = self.ctl.local_time(s)
-        kf = s.keyframes
+    @staticmethod
+    def _static_value(s: Segment, prop: str) -> float:
         tr = s.transform
+        tp = next((pt.text for pt in s.parts if pt.kind == KIND_TEXT and pt.text), None)
         defaults = {"x": tr.x, "y": tr.y, "scale": tr.scale, "rotation": tr.rotation, "opacity": 1.0,
-                    "volume": s.volume}
-        return eval_keyframes(kf.get(prop), local, defaults[prop])
+                    "volume": s.volume, "tail_x": tp.tail_x if tp else 0.0, "tail_y": tp.tail_y if tp else 0.0}
+        return defaults[prop]
+
+    def _current_value(self, s: Segment, prop: str) -> float:
+        return eval_keyframes(s.keyframes.get(prop), self.ctl.local_time(s), self._static_value(s, prop))
+
+    def _set_easing(self, p, comps, kt, easing) -> None:
+        _, s = p.find_segment(self._ids[0])
+        if s is None:
+            return
+        for c in comps:
+            for k in s.keyframes.get(c, []):
+                if abs(k.t - kt) < 1e-3:
+                    ops.set_keyframe(p, s.id, c, k.t, k.value, easing)
 
     def _add_keyframe(self) -> None:
         segs = self._segments()
@@ -594,9 +687,10 @@ class PropertiesPanel(QWidget):
             self.ctl.error.emit("Move the playhead over the segment to add a keyframe.")
             return
         prop = prop_c.currentData()
-        value = self._current_value(s, prop)
+        comps = COMPOSITE.get(prop, (prop,))
+        values = {c: self._current_value(s, c) for c in comps}
         local = self.ctl.local_time(s)
-        self._once("Add keyframe", lambda p: ops.set_keyframe(p, s.id, prop, local, value))
+        self._once("Add keyframe", lambda p: [ops.set_keyframe(p, s.id, c, local, v) for c, v in values.items()])
 
     def _jump_keyframe(self, direction: int) -> None:
         segs = self._segments()

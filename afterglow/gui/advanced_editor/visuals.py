@@ -82,7 +82,11 @@ class TimelineVisuals(QObject):
 
     def shutdown(self) -> None:
         self._stop = True
+        self.forget()
         self._q.put(None)
+        # Let an in-flight decode finish before Qt tears objects down, so
+        # the worker never signals a deleted object at exit.
+        self._thread.join(timeout=2.0)
 
     # ---- worker ------------------------------------------------------------
     def _run(self) -> None:

@@ -246,7 +246,19 @@ class Renderer:
             painter.rotate(rotation)
             painter.scale(scale, scale)
             if part.kind == KIND_TEXT:
-                self._draw_text(painter, part, ch)
+                tip = None
+                st = part.text
+                if st is not None and st.bubble:
+                    # Tail tip is a canvas position; bring it into this
+                    # segment's local (translated/rotated/scaled) space.
+                    tx = cw / 2 + eval_keyframes(kf.get("tail_x"), local, st.tail_x) * cw
+                    ty = ch / 2 + eval_keyframes(kf.get("tail_y"), local, st.tail_y) * ch
+                    dx, dy = tx - (cw / 2 + x * cw), ty - (ch / 2 + y * ch)
+                    a = -math.radians(rotation)
+                    lx = (dx * math.cos(a) - dy * math.sin(a)) / max(scale, 1e-6)
+                    ly = (dx * math.sin(a) + dy * math.cos(a)) / max(scale, 1e-6)
+                    tip = QPointF(lx, ly)
+                self._draw_text(painter, part, ch, local=local - part.offset, duration=part.duration, tip=tip)
             else:
                 self._draw_picture(painter, part, local, tr, cw, ch, scale * k)
             painter.restore()
@@ -275,27 +287,49 @@ class Renderer:
         src_rect = QRectF(cl * iw, ct * ih, (1 - cl - cr) * iw, (1 - ct - cb) * ih)
         painter.drawImage(QRectF(-bw / 2, -bh / 2, bw, bh), img, src_rect)
 
-    def _draw_text(self, painter, part, ch) -> None:
+    def _draw_text(self, painter, part, ch, local: float = 0.0, duration: float = 0.0, tip=None) -> None:
         st = part.text
         if st is None or not st.text:
             return
-        font = QFont(st.font_family)
-        font.setPixelSize(max(1, int(st.font_size * ch)))
-        font.setBold(st.bold)
-        font.setItalic(st.italic)
+        lay = text_layout(st, ch)
+        if st.bubble:
+            path = bubble_path(st.bubble, bubble_body(lay), tip)
+            painter.fillPath(path, QColor(st.bubble_fill))
+            if st.bubble_outline_width > 0:
+                pen = QPen(QColor(st.bubble_outline), st.bubble_outline_width * ch / 1080)
+                pen.setJoinStyle(Qt.RoundJoin)
+                painter.strokePath(path, pen)
+        shown, cursor = typed_state(st, local, duration)
         path = QPainterPath()
-        lines = st.text.split("\n")
-        from PySide6.QtGui import QFontMetricsF
-        fm = QFontMetricsF(font)
-        total_h = fm.lineSpacing() * len(lines)
-        for i, line in enumerate(lines):
-            w = fm.horizontalAdvance(line)
-            path.addText(QPointF(-w / 2, -total_h / 2 + fm.ascent() + i * fm.lineSpacing()), font, line)
-        if st.outline_width > 0:
+        remaining = shown
+        cursor_at = None
+        for i, line in enumerate(lay["lines"]):
+            vis = line[:max(0, remaining)]
+            x0 = -lay["widths"][i] / 2
+            baseline = -lay["total_h"] / 2 + lay["ascent"] + i * lay["spacing"]
+            if vis:
+                path.addText(QPointF(x0, baseline), lay["font"], vis)
+            if remaining >= 0:
+                cursor_at = (x0 + lay["fm"].horizontalAdvance(vis), baseline)
+            remaining -= len(line) + 1          # +1 for the newline
+            if remaining < 0:
+                break
+        if st.outline_width > 0 and not path.isEmpty():
             pen = QPen(QColor(st.outline_color), st.outline_width * ch / 1080 * 2)
             pen.setJoinStyle(Qt.RoundJoin)
             painter.strokePath(path, pen)
         painter.fillPath(path, QColor(st.color))
+        if cursor and cursor_at is not None:
+            fm = lay["fm"]
+            w = max(1.0, fm.height() * 0.07)
+            r = QRectF(cursor_at[0] + w * 0.6, cursor_at[1] - fm.ascent(), w, fm.ascent() + fm.descent())
+            if st.outline_width > 0:
+                pen = QPen(QColor(st.outline_color), st.outline_width * ch / 1080 * 2)
+                pen.setJoinStyle(Qt.RoundJoin)
+                cp = QPainterPath()
+                cp.addRect(r)
+                painter.strokePath(cp, pen)
+            painter.fillRect(r, QColor(st.color))
 
     # ---- audio -----------------------------------------------------------
     def audio(self, t0: float, n: int) -> np.ndarray:
@@ -373,6 +407,100 @@ class Renderer:
                 for c in range(2):
                     chunk[ok, c] = np.interp(idx[ok], base, data[:, c])
             out[pmask] += chunk * (env[pmask] * part.gain)[:, None]
+
+
+# ---- text layout / typing / bubbles (shared with the editor's preview) ----
+
+def text_layout(st, ch: float) -> dict:
+    """Font and line metrics for a TextStyle at canvas height ch. Text is
+    centered on (0, 0): each line centered horizontally, the block
+    centered vertically."""
+    from PySide6.QtGui import QFontMetricsF
+    font = QFont(st.font_family)
+    font.setPixelSize(max(1, int(st.font_size * ch)))
+    font.setBold(st.bold)
+    font.setItalic(st.italic)
+    fm = QFontMetricsF(font)
+    lines = st.text.split("\n")
+    widths = [fm.horizontalAdvance(line) for line in lines]
+    total_h = fm.lineSpacing() * len(lines)
+    return {"font": font, "fm": fm, "lines": lines, "widths": widths, "total_h": total_h,
+            "spacing": fm.lineSpacing(), "ascent": fm.ascent(),
+            "rect": QRectF(-max(widths or [0]) / 2, -total_h / 2, max(widths or [0]), total_h)}
+
+
+def typed_state(st, local: float, duration: float) -> "tuple[int, bool]":
+    """(characters shown, whether the "|" cursor is drawn) at part-local
+    time `local`. Newlines count as characters."""
+    total = len(st.text)
+    shown = total
+    typing = False
+    if st.type_in > EPS and local < st.type_in:
+        shown = int(total * max(0.0, local) / st.type_in)
+        typing = True
+    if st.type_out > EPS and duration > 0 and local > duration - st.type_out:
+        shown = min(shown, int(math.ceil(total * max(0.0, duration - local) / st.type_out)))
+        typing = True
+    cursor = st.type_cursor and (typing or int(local * 2) % 2 == 0)   # blinks once typed
+    return shown, cursor
+
+
+def bubble_body(lay: dict) -> QRectF:
+    """The bubble's main body (an ellipse box) around the text."""
+    r = lay["rect"]
+    pad = lay["fm"].height() * 0.35
+    w = r.width() * 1.32 + 2 * pad
+    h = r.height() * 1.5 + 2 * pad
+    return QRectF(-w / 2, -h / 2, w, h)
+
+
+def bubble_path(kind: str, body: QRectF, tip: "QPointF | None") -> QPainterPath:
+    """Comic speech bubble (ellipse + pointed tail) or thought bubble (cloud
+    + a trail of shrinking circles), pointing at `tip` (local coords)."""
+    c = body.center()
+    rx, ry = body.width() / 2, body.height() / 2
+    path = QPainterPath()
+    if kind == "thought":
+        n = 11
+        circ = 2 * math.pi * math.sqrt((rx * rx + ry * ry) / 2)
+        br = circ / n * 0.62
+        path.addEllipse(c, rx * 0.9, ry * 0.86)
+        for i in range(n):
+            a = 2 * math.pi * i / n
+            bump = QPainterPath()
+            bump.addEllipse(QPointF(c.x() + rx * 0.86 * math.cos(a), c.y() + ry * 0.8 * math.sin(a)), br, br * 0.9)
+            path = path.united(bump)
+    else:
+        path.addEllipse(c, rx, ry)
+    if tip is None:
+        return path
+    dx, dy = tip.x() - c.x(), tip.y() - c.y()
+    if (dx / max(rx, 1e-6)) ** 2 + (dy / max(ry, 1e-6)) ** 2 <= 1.0:
+        return path                                     # tip inside the bubble: no tail
+    ang = math.atan2(dy / max(ry, 1e-6), dx / max(rx, 1e-6))
+
+    def on_ellipse(a):
+        return QPointF(c.x() + rx * math.cos(a), c.y() + ry * math.sin(a))
+    if kind == "thought":
+        edge = on_ellipse(ang)
+        base_r = min(rx, ry) * 0.2
+        for f, k in ((0.28, 1.0), (0.58, 0.68), (0.88, 0.42)):
+            p = QPointF(edge.x() + (tip.x() - edge.x()) * f, edge.y() + (tip.y() - edge.y()) * f)
+            dot = QPainterPath()
+            dot.addEllipse(p, base_r * k, base_r * k)
+            path = path.united(dot)
+        return path
+    spread = 0.32
+    b1, b2 = on_ellipse(ang - spread), on_ellipse(ang + spread)
+    mid = on_ellipse(ang)
+    tail = QPainterPath()
+    tail.moveTo(QPointF(c.x() + (b1.x() - c.x()) * 0.85, c.y() + (b1.y() - c.y()) * 0.85))
+    tail.quadTo(QPointF((b1.x() + tip.x()) / 2 + (mid.x() - c.x()) * 0.05,
+                        (b1.y() + tip.y()) / 2 + (mid.y() - c.y()) * 0.05), tip)
+    tail.quadTo(QPointF((b2.x() + tip.x()) / 2, (b2.y() + tip.y()) / 2),
+                QPointF(c.x() + (b2.x() - c.x()) * 0.85, c.y() + (b2.y() - c.y()) * 0.85))
+    tail.closeSubpath()
+    return path.united(tail)
 
 
 def previous_on_track(track: Track, seg: Segment) -> "Segment | None":

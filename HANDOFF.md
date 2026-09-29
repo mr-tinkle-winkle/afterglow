@@ -423,7 +423,64 @@ plain QSS rule is unavoidable.
 Seven consecutive batches of Library/Settings/appearance
 features/bug fixes, given together each time. Newest first.
 
-### This session (newest -- Advanced Editor built, previewer fixes)
+### This session (newest -- Advanced Editor feedback round 1)
+1. **Dragging a library clip from Media scrolled the list instead of
+   dragging.** QListView's built-in drag in icon mode became a rubber-band
+   selection with auto-scroll. `_DragList` (browser.py) now starts the drag
+   itself (press on an item + 6 px move -> `QDrag` with the item payload);
+   built-in drag/auto-scroll are off.
+2. **Browser lists use `CustomScrollBar`** (vertical; horizontal off).
+3. **Playhead moves on mouse DOWN** when clicking an empty lane (it used to
+   move on release). The ruler already did.
+4. **Subtitle preset** sits just above the bottom (Transform.y 0.36;
+   Caption 0.42). Presets now set x and y (`TEXT_PRESET_POS`).
+5. **Typewriter text:** `TextStyle.type_in` / `type_out` (seconds, 0 = off)
+   type the text in at the start and delete it at the end;
+   `type_cursor` draws a "|" after the text (solid while typing, blinking
+   once typed). Line positions come from the FULL text, so nothing shifts
+   while typing. Properties > Typing. `render.typed_state()`.
+6. **Speech and thought bubbles:** `TextStyle.bubble` ("" | "speech" |
+   "thought"), `bubble_fill`, `bubble_outline`, `bubble_outline_width`,
+   and the tail tip `tail_x`/`tail_y` -- a CANVAS position (same units as
+   Transform.x/y), independent of the bubble, keyframable ("tail_x"/
+   "tail_y"; Keyframes > "Bubble tail tip" sets both). Speech = ellipse +
+   curved pointed tail (unioned into one outline); thought = cloud of
+   bumps + three shrinking circles toward the tip; no tail when the tip
+   is inside the bubble. Presets "Speech bubble" / "Thought bubble" (dark
+   text on white, bold/italic, a comic font picked from what's installed
+   -- `controller.comic_font()`, since Qt's fallback for a missing Comic
+   Sans can be a script font). Preview: orange diamond handle drags the
+   tail tip; Properties > Bubble switches type and colors.
+   `render.text_layout()/bubble_body()/bubble_path()` are shared by the
+   renderer and the preview's hit-testing.
+7. **Gaps** are a horizontal line across the gap with a break in the
+   middle; the trash can appears in that break only on hover.
+8. **Double-click text in the preview** opens an in-place editor over it
+   (Enter commits, Shift+Enter new line, Esc cancels, clicking away
+   commits; it claims all keys so page shortcuts don't fire while typing).
+9. **Save separately:** the Save dialog (library clips) offers "Replace
+   this clip" or "Save separately (as a new clip)".
+   `nle/save.save_library_separately()` renders to "<title> (edited).mp4"
+   beside the clip, adds it to the Library with the original's filters/
+   favorite, marks it edited; the original clip is untouched.
+10. **The mouse wheel never changes a combo box, app-wide**
+    (`gui/wheel_guard.py`, an application event filter installed by
+    MainWindow). The wheel is forwarded to the nearest scroll area so the
+    page still scrolls.
+11. **Position keyframe:** Keyframes > "Position" adds/removes/eases X and Y
+    together (X and Y alone are still available). Two-value keyframes are
+    `COMPOSITE` in properties.py.
+12. **Save dialog sizing:** combo boxes sized from their longest item; the
+    dialog's labels are plain text (a "<title>" in the text was being
+    parsed as HTML and cut the sentence off).
+
+Also: test teardown segfault fixed (the timeline-visuals worker is joined
+on shutdown; the previewer test closes its window before exiting).
+Tests: `tests/test_advanced_editor_2.py` (37 checks, real events; covers
+all 12 items incl. a real Save Separately render), plus every earlier
+suite still passing.
+
+### Previous session (Advanced Editor built, previewer fixes)
 1. **Esc from previewer fullscreen still shrank a maximized window --
    fixed for real.** Root cause (reproduced under a Wayland compositor,
    weston headless, not visible under X11/openbox): going fullscreen ->

@@ -10,7 +10,7 @@ import os
 from pathlib import Path
 
 from PySide6.QtCore import QMimeData, QSize, Qt, QTimer
-from PySide6.QtGui import QColor, QIcon, QPixmap
+from PySide6.QtGui import QColor, QDrag, QIcon, QPixmap
 from PySide6.QtWidgets import (
     QButtonGroup, QComboBox, QFileDialog, QFormLayout, QHBoxLayout, QLabel, QListWidget,
     QListWidgetItem, QStackedWidget, QVBoxLayout, QWidget, QAbstractItemView,
@@ -22,6 +22,7 @@ from ...nle import ops
 from ...nle.media import GIF_EXTS, IMAGE_EXTS
 from ..custom_button import CustomButton
 from ..custom_combo_style import combo_box_stylesheet
+from ..custom_scrollbar import CustomScrollBar
 from ..custom_spinbox import CustomDoubleSpinBox
 from ..segment_button import SegmentButton
 from ..theme import Theme
@@ -36,13 +37,25 @@ PICTURE_FILTER = "Pictures and GIFs (*.png *.jpg *.jpeg *.webp *.bmp *.gif)"
 
 class _DragList(QListWidget):
     """A list whose items carry a JSON payload (Qt.UserRole) that becomes
-    the drag data for the timeline."""
+    the drag data for the timeline.
+
+    Starts the drag itself (press on an item, move a few px) instead of
+    relying on QListView's built-in drag: in icon mode the built-in one
+    turned a press-and-drag into rubber-band selection with auto-scroll,
+    so dragging a library clip scrolled the list instead of dragging."""
 
     def __init__(self, icon_mode: bool = False, parent=None):
         super().__init__(parent)
-        self.setDragEnabled(True)
-        self.setDragDropMode(QAbstractItemView.DragOnly)
+        self.setDragEnabled(False)
+        self.setDragDropMode(QAbstractItemView.NoDragDrop)
         self.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.setVerticalScrollBar(CustomScrollBar(Qt.Vertical))
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
+        self.setAutoScroll(False)
+        self._press_item = None
+        self._press_pos = None
+        self.drags_enabled = True
         if icon_mode:
             self.setViewMode(QListWidget.IconMode)
             self.setResizeMode(QListWidget.Adjust)
@@ -57,18 +70,35 @@ class _DragList(QListWidget):
             f"QListWidget::item {{ border-radius: 6px; padding: 4px; }}"
             f"QListWidget::item:selected {{ background-color: {appearance.afterglow_color_accent}; }}")
 
-    def mimeData(self, items):
-        md = QMimeData()
-        if items:
-            payload = items[0].data(Qt.UserRole)
+    def mousePressEvent(self, event) -> None:
+        super().mousePressEvent(event)
+        if event.button() == Qt.LeftButton:
+            self._press_item = self.itemAt(event.position().toPoint())
+            self._press_pos = event.position().toPoint()
+
+    def mouseMoveEvent(self, event) -> None:
+        if (self.drags_enabled and self._press_item is not None and event.buttons() & Qt.LeftButton
+                and (event.position().toPoint() - self._press_pos).manhattanLength() >= 6):
+            item, self._press_item = self._press_item, None
+            payload = item.data(Qt.UserRole)
             if callable(payload):
                 payload = payload()
             if payload:
+                md = QMimeData()
                 md.setData(MIME_ITEM, json.dumps(payload).encode())
-        return md
+                drag = QDrag(self)
+                drag.setMimeData(md)
+                icon = item.icon()
+                if not icon.isNull():
+                    drag.setPixmap(icon.pixmap(96, 54))
+                drag.exec(Qt.CopyAction)
+            return
+        if self._press_item is None:
+            super().mouseMoveEvent(event)
 
-    def mimeTypes(self):
-        return [MIME_ITEM]
+    def mouseReleaseEvent(self, event) -> None:
+        self._press_item = None
+        super().mouseReleaseEvent(event)
 
 
 class BrowserPanel(QWidget):
@@ -335,7 +365,7 @@ class BrowserPanel(QWidget):
         lay.setContentsMargins(0, 0, 0, 0)
         lay.addWidget(self._note("Double-click to apply to the selected segments. Fine-tune in Properties."))
         lst = _DragList()
-        lst.setDragEnabled(False)
+        lst.drags_enabled = False
         for label, name in self.EFFECTS:
             it = QListWidgetItem(label)
             it.setData(Qt.UserRole, {"type": "effect", "name": name})

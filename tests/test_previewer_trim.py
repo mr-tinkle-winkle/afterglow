@@ -82,6 +82,7 @@ check(c._transport_box.parent() is c and c.trim_timeline.isVisible() and c.save_
       "fullscreen: trim controls float with the transport controls")
 QTest.mouseClick(c.fullscreen_btn, Qt.LeftButton); pump(1)
 check(c._transport_box.parent() is not c or c._transport_box.isVisible(), "exit fullscreen restores layout")
+w.close(); pump(0.5)
 print("\nALL PASS" if not fails else f"\n{len(fails)} FAILED")
 
 sys.exit(1 if fails else 0)

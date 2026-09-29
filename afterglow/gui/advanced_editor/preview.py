@@ -17,7 +17,7 @@ import math
 
 from PySide6.QtCore import QElapsedTimer, QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QFontMetricsF, QPainter, QPen, QPolygonF, QTransform
-from PySide6.QtWidgets import QHBoxLayout, QLabel, QSizePolicy, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QHBoxLayout, QLabel, QPlainTextEdit, QSizePolicy, QVBoxLayout, QWidget
 
 from ... import config as config_module
 from ...nle import render as nle_render
@@ -203,14 +203,9 @@ class PreviewCanvas(QWidget):
             st = part.text
             if st is None:
                 return None
-            f = QFont(st.font_family)
-            f.setPixelSize(max(1, int(st.font_size * ch)))
-            f.setBold(st.bold)
-            f.setItalic(st.italic)
-            fm = QFontMetricsF(f)
-            lines = st.text.split("\n") or [""]
-            bw = max(fm.horizontalAdvance(line) for line in lines) + 8
-            bh = fm.lineSpacing() * len(lines) + 4
+            lay = nle_render.text_layout(st, ch)
+            r = nle_render.bubble_body(lay) if st.bubble else lay["rect"].adjusted(-4, -2, 4, 2)
+            bw, bh = r.width(), r.height()
         else:
             if part.kind == KIND_IMAGE:
                 from PySide6.QtGui import QImageReader
@@ -238,7 +233,19 @@ class PreviewCanvas(QWidget):
             return None
         return s
 
-    def _handles(self, geo):
+    def tail_point(self, seg: Segment) -> "QPointF | None":
+        """Widget position of a speech/thought bubble's tail tip, or None."""
+        part = next((pt for pt in seg.parts if pt.kind == KIND_TEXT and pt.text and pt.text.bubble), None)
+        if part is None:
+            return None
+        p = self.ctl.project
+        local = self.ctl.playhead - seg.start
+        kf = seg.keyframes
+        tx = nle_render.eval_keyframes(kf.get("tail_x"), local, part.text.tail_x)
+        ty = nle_render.eval_keyframes(kf.get("tail_y"), local, part.text.tail_y)
+        return self.canvas_to_widget().map(QPointF(p.width / 2 + tx * p.width, p.height / 2 + ty * p.height))
+
+    def _handles(self, geo, seg: "Segment | None" = None):
         tr, box, kind = geo
         pts = {
             "tl": box.topLeft(), "tr": box.topRight(), "br": box.bottomRight(), "bl": box.bottomLeft(),
@@ -255,6 +262,9 @@ class PreviewCanvas(QWidget):
             d = top_mid - center
             n = math.hypot(d.x(), d.y()) or 1.0
             out["rot"] = top_mid + QPointF(d.x() / n * 26, d.y() / n * 26)
+            tip = self.tail_point(seg) if seg is not None else None
+            if tip is not None:
+                out["tail"] = tip
         return out
 
     # ---- paint -------------------------------------------------------------
@@ -282,7 +292,10 @@ class PreviewCanvas(QWidget):
                 p.setPen(QPen(QColor(255, 255, 255, 220), 1.5, Qt.DashLine if self.crop_mode else Qt.SolidLine))
                 p.setBrush(Qt.NoBrush)
                 p.drawPolygon(poly)
-                hs = self._handles(geo)
+                hs = self._handles(geo, seg)
+                if "tail" in hs:
+                    p.setPen(QPen(QColor(255, 180, 60, 200), 1.2, Qt.DashLine))
+                    p.drawLine(tr.map(box.center()), hs["tail"])
                 if "rot" in hs:
                     top_mid = tr.map(QPointF(box.center().x(), box.top()))
                     p.drawLine(top_mid, hs["rot"])
@@ -290,7 +303,11 @@ class PreviewCanvas(QWidget):
                     active = name == self._hover_handle
                     p.setPen(QPen(QColor(0, 0, 0, 200), 1))
                     p.setBrush(QColor("#ffd43b") if active else QColor("white"))
-                    if name == "rot":
+                    if name == "tail":
+                        p.setBrush(QColor("#ffd43b") if active else QColor("#ff9f1c"))
+                        p.drawPolygon(QPolygonF([QPointF(pt.x(), pt.y() - HANDLE_R - 2), QPointF(pt.x() + HANDLE_R + 2, pt.y()),
+                                                 QPointF(pt.x(), pt.y() + HANDLE_R + 2), QPointF(pt.x() - HANDLE_R - 2, pt.y())]))
+                    elif name == "rot":
                         p.drawEllipse(pt, HANDLE_R, HANDLE_R)
                     else:
                         p.drawRect(QRectF(pt.x() - HANDLE_R, pt.y() - HANDLE_R, 2 * HANDLE_R, 2 * HANDLE_R))
@@ -304,7 +321,7 @@ class PreviewCanvas(QWidget):
         geo = self.seg_geometry(seg)
         if geo is None:
             return None, None
-        for name, pt in self._handles(geo).items():
+        for name, pt in self._handles(geo, seg).items():
             if abs(pt.x() - pos.x()) <= HANDLE_R + 3 and abs(pt.y() - pos.y()) <= HANDLE_R + 3:
                 return seg, name
         tr, box, _k = geo
@@ -359,9 +376,20 @@ class PreviewCanvas(QWidget):
             "scale": nle_render.eval_keyframes(kf.get("scale"), local, t.scale),
             "rotation": nle_render.eval_keyframes(kf.get("rotation"), local, t.rotation),
             "crop": (t.crop_left, t.crop_top, t.crop_right, t.crop_bottom),
+            "tail": self._tail_values(seg, local),
             "inv": tr.inverted()[0], "box": QRectF(box),
         }
-        self.ctl.begin("Crop" if handle.startswith("c") and len(handle) == 2 else "Transform")
+        self.ctl.begin("Crop" if handle.startswith("c") and len(handle) == 2
+                       else "Move tail" if handle == "tail" else "Transform")
+
+    @staticmethod
+    def _tail_values(seg: Segment, local: float):
+        part = next((pt for pt in seg.parts if pt.kind == KIND_TEXT and pt.text), None)
+        if part is None:
+            return (0.0, 0.0)
+        kf = seg.keyframes
+        return (nle_render.eval_keyframes(kf.get("tail_x"), local, part.text.tail_x),
+                nle_render.eval_keyframes(kf.get("tail_y"), local, part.text.tail_y))
 
     def mouseMoveEvent(self, event) -> None:
         pos = event.position()
@@ -371,7 +399,8 @@ class PreviewCanvas(QWidget):
             if h != self._hover_handle:
                 self._hover_handle = h
                 self.update()
-            self.setCursor({None: Qt.ArrowCursor, "move": Qt.SizeAllCursor, "rot": Qt.CrossCursor}.get(
+            self.setCursor({None: Qt.ArrowCursor, "move": Qt.SizeAllCursor, "rot": Qt.CrossCursor,
+                            "tail": Qt.PointingHandCursor}.get(
                 h, Qt.SizeFDiagCursor if h in ("tl", "br") else Qt.SizeBDiagCursor if h in ("tr", "bl")
                 else Qt.SizeHorCursor if h in ("cl", "cr") else Qt.SizeVerCursor))
             return
@@ -390,6 +419,10 @@ class PreviewCanvas(QWidget):
                 if abs(ny) < 0.012:
                     ny = 0.0
             values = {"x": nx, "y": ny}
+        elif h == "tail":
+            dx = (pos.x() - d["press"].x()) / k / p.width
+            dy = (pos.y() - d["press"].y()) / k / p.height
+            values = {"tail_x": d["tail"][0] + dx, "tail_y": d["tail"][1] + dy}
         elif h in ("tl", "tr", "br", "bl"):
             c = d["center"]
             d0 = math.hypot(d["press"].x() - c.x(), d["press"].y() - c.y()) or 1.0
@@ -441,6 +474,111 @@ class PreviewCanvas(QWidget):
         if self._drag is not None:
             self._drag = None
             self.ctl.end()
+
+    # ---- in-place text editing (double-click a text element) --------------
+    def mouseDoubleClickEvent(self, event) -> None:
+        if self.ctl.project is None:
+            return
+        s = self._segment_at(event.position())
+        if s is None or s.locked or not any(pt.kind == KIND_TEXT and pt.text for pt in s.parts):
+            return
+        self.ctl.set_selection([s.id], anchor=s.id)
+        self.start_text_edit(s)
+
+    def start_text_edit(self, seg: Segment) -> None:
+        self.finish_text_edit(commit=True)
+        geo = self.seg_geometry(seg)
+        part = next((pt for pt in seg.parts if pt.kind == KIND_TEXT and pt.text), None)
+        if geo is None or part is None:
+            return
+        tr, box, _k = geo
+        area = tr.mapRect(box).toAlignedRect().adjusted(-6, -4, 6, 4)
+        ed = _InlineTextEdit(self, part.text, commit=lambda: self.finish_text_edit(True),
+                             cancel=lambda: self.finish_text_edit(False))
+        k = self.frame_rect().width() / max(self.ctl.project.width, 1)
+        ed.set_scale(None, self.ctl.project.height * math.hypot(tr.m11(), tr.m12()))
+        ed.setGeometry(area.intersected(self.rect()) if area.width() > 60 else area.adjusted(-40, 0, 40, 0))
+        ed.setPlainText(part.text.text)
+        ed.selectAll()
+        ed.show()
+        ed.setFocus()
+        self._editing = (seg.id, ed)
+
+    _editing = None
+
+    def finish_text_edit(self, commit: bool) -> None:
+        if self._editing is None:
+            return
+        sid, ed = self._editing
+        self._editing = None
+        text = ed.toPlainText()
+        ed.hide()
+        ed.deleteLater()
+        if not commit:
+            return
+
+        def fn(p):
+            _, s = p.find_segment(sid)
+            if s is None or s.locked:
+                return
+            for part in s.parts:
+                if part.kind == KIND_TEXT and part.text is not None:
+                    part.text.text = text
+            s.name = text.split("\n")[0][:40] or "Text"
+        self.ctl.perform("Edit text", fn)
+
+
+class _InlineTextEdit(QPlainTextEdit):
+    """Editor shown over a text element after a double-click. Enter
+    commits, Shift+Enter adds a line, Esc cancels, clicking away commits."""
+
+    def __init__(self, parent, style, commit, cancel):
+        super().__init__(parent)
+        self._commit, self._cancel = commit, cancel
+        self._style = style
+        self._done = False
+        self.setFrameShape(QPlainTextEdit.NoFrame)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setStyleSheet("QPlainTextEdit { background: rgba(0, 0, 0, 150); color: white;"
+                           " border: 2px solid #ffd43b; border-radius: 6px; }")
+        self.document().setDocumentMargin(2)
+
+    def set_scale(self, _unused, canvas_px_height: float) -> None:
+        f = QFont(self._style.font_family)
+        f.setPixelSize(max(10, int(self._style.font_size * canvas_px_height)))
+        f.setBold(self._style.bold)
+        f.setItalic(self._style.italic)
+        self.setFont(f)
+        opt = self.document().defaultTextOption()
+        opt.setAlignment(Qt.AlignHCenter)
+        self.document().setDefaultTextOption(opt)
+
+    def event(self, event) -> bool:
+        # Keep every key for the editor while typing (the page's shortcuts,
+        # e.g. Esc = deselect, would otherwise take Esc/Delete/arrows).
+        from PySide6.QtCore import QEvent
+        if event.type() == QEvent.ShortcutOverride:
+            event.accept()
+            return True
+        return super().event(event)
+
+    def keyPressEvent(self, event) -> None:
+        if event.key() in (Qt.Key_Return, Qt.Key_Enter) and not (event.modifiers() & Qt.ShiftModifier):
+            self._done = True
+            self._commit()
+            return
+        if event.key() == Qt.Key_Escape:
+            self._done = True
+            self._cancel()
+            return
+        super().keyPressEvent(event)
+
+    def focusOutEvent(self, event) -> None:
+        super().focusOutEvent(event)
+        if not self._done:
+            self._done = True
+            QTimer.singleShot(0, self._commit)
 
 
 class PreviewPanel(QWidget):

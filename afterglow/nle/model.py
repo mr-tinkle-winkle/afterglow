@@ -87,6 +87,22 @@ class TextStyle:
     outline_width: float = 0.0     # px at 1080p, scaled with canvas
     bold: bool = False
     italic: bool = False
+    # Typewriter: characters appear over type_in seconds at the start and
+    # are deleted over type_out seconds at the end (0 = off). type_cursor
+    # adds a text cursor "|" after the text (blinking once fully typed).
+    type_in: float = 0.0
+    type_out: float = 0.0
+    type_cursor: bool = False
+    # Comic bubbles: "" (plain text) | "speech" | "thought". The tail's tip
+    # (tail_x, tail_y) is a canvas position (fraction of width/height from
+    # the canvas center, like Transform.x/y), independent of where the
+    # bubble itself is -- and keyframable ("tail_x"/"tail_y").
+    bubble: str = ""
+    bubble_fill: str = "#ffffff"
+    bubble_outline: str = "#000000"
+    bubble_outline_width: float = 4.0     # px at 1080p
+    tail_x: float = -0.1
+    tail_y: float = 0.25
 
 
 @dataclass

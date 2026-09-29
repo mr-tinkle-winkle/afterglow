@@ -430,17 +430,24 @@ class TimelineView(QWidget):
             mid = (gx0 + gx1) / 2
             hovered = (self._hover is not None and self._hover["kind"] == "gap" and self._hover["track"] == i
                        and abs(self._hover["t"] - (g0 + g1) / 2) < 1e-6)
+            # A horizontal line across the gap with a break in the middle;
+            # the trash can appears in that break on hover.
+            c = QColor(text_c)
+            c.setAlpha(150 if hovered else 60)
+            p.setPen(QPen(c, 1.5))
+            y = top + h / 2
+            brk = 17 if gx1 - gx0 >= 40 else 0
+            if brk:
+                p.drawLine(QPointF(gx0 + 4, y), QPointF(mid - brk, y))
+                p.drawLine(QPointF(mid + brk, y), QPointF(gx1 - 4, y))
+            else:
+                p.drawLine(QPointF(gx0 + 3, y), QPointF(gx1 - 3, y))
             if hovered:
-                badge = QRectF(mid - 14, top + h / 2 - 14, 28, 28)
+                badge = QRectF(mid - 14, y - 14, 28, 28)
                 p.setPen(Qt.NoPen)
                 p.setBrush(QColor(200, 60, 60, 220))
                 p.drawRoundedRect(badge, 8, 8)
                 icons.draw_trash(p, badge.center(), 20, QColor("white"))
-            else:
-                c = QColor(text_c)
-                c.setAlpha(45)
-                p.setPen(QPen(c, 1))
-                p.drawLine(QPointF(mid, top + h * 0.3), QPointF(mid, top + h * 0.7))
         # segments
         for seg in track.sorted_segments():
             r = self.seg_rect(i, seg)
@@ -768,9 +775,20 @@ class TimelineView(QWidget):
         f.setBold(part.text.bold)
         f.setItalic(part.text.italic)
         p.setFont(f)
+        area = r.adjusted(8, 14, -8, 0)
+        text = part.text.text.replace("\n", " ")
+        if part.text.bubble:
+            # Bubble text is usually dark-on-white: show it on a small bubble
+            # so it stays readable on the dark lane.
+            fm = QFontMetricsF(f)
+            tw = min(fm.horizontalAdvance(text) + 16, area.width())
+            pill = QRectF(area.left() - 4, area.center().y() - fm.height() / 2 - 2, tw, fm.height() + 4)
+            p.setPen(Qt.NoPen)
+            p.setBrush(QColor(part.text.bubble_fill))
+            p.drawRoundedRect(pill, pill.height() / 2, pill.height() / 2)
+            area = pill.adjusted(8, 0, -4, 0)
         p.setPen(QColor(part.text.color))
-        p.drawText(r.adjusted(8, 14, -8, 0), Qt.AlignVCenter | Qt.AlignLeft,
-                   part.text.text.replace("\n", " "))
+        p.drawText(area, Qt.AlignVCenter | Qt.AlignLeft, text)
 
     # ---------------------------------------------------------------- headers / ruler / playhead
     def _paint_headers(self, p: QPainter) -> None:
@@ -914,6 +932,8 @@ class TimelineView(QWidget):
             self._hover = None
             return
         if kind == "lane":
+            # The playhead jumps on PRESS (not release) so a click feels instant.
+            self.ctl.set_playhead(h["t"], snap=self._snapping(event), threshold=self._snap_threshold())
             self._drag = {**base, "mode": "lane", "t": h["t"], "track": h["track"],
                           "initial_sel": list(self.ctl.selection)}
             return
@@ -1103,7 +1123,6 @@ class TimelineView(QWidget):
         mode = d["mode"]
         if mode == "lane" and not d["moved"]:
             self.ctl.set_selection([])
-            self.ctl.set_playhead(d["t"], snap=self._snapping(event), threshold=self._snap_threshold())
         elif mode == "track" and d["moved"] and d.get("to") is not None and d["to"] != d["from"]:
             a, b = d["from"], d["to"]
             self.ctl.perform("Reorder tracks", lambda p: ops.move_track(p, a, b))

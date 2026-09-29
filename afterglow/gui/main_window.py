@@ -84,6 +84,8 @@ class _Sidebar(QWidget):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
+        from . import wheel_guard
+        wheel_guard.install()   # the wheel never changes combo boxes anywhere in the app
         self.setWindowTitle("afterglow")
         # 16:9-ish and reasonably large by default, matching the
         # 1920x1080 reference-scale baseline in scaling.py -- the

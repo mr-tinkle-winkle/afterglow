@@ -95,6 +95,7 @@ class _Dialog(QDialog):
 
     def label(self, text: str) -> QLabel:
         lab = QLabel(text)
+        lab.setTextFormat(Qt.PlainText)
         lab.setWordWrap(True)
         lab.setStyleSheet(f"QLabel {{ color: {self._appearance.card_text_color}; }}")
         return lab
@@ -117,13 +118,31 @@ class _Dialog(QDialog):
 class SaveDialog(_Dialog):
     QUALITIES = [("High (larger file)", 18), ("Medium", 23), ("Small file", 28)]
 
-    def __init__(self, project: Project, target_text: str, parent=None):
+    def __init__(self, project: Project, target_text: str, parent=None, library_clip: bool = False):
         super().__init__("Save Edit", parent)
-        self.lay.addWidget(self.label(target_text))
+        self.replace_radio = self.separate_radio = None
+        if library_clip:
+            from ..custom_radio_button import CustomRadioButton
+            from PySide6.QtWidgets import QButtonGroup
+            self.replace_radio = CustomRadioButton("Replace this clip")
+            self.separate_radio = CustomRadioButton("Save separately (as a new clip)")
+            grp = QButtonGroup(self)
+            grp.addButton(self.replace_radio)
+            grp.addButton(self.separate_radio)
+            self.replace_radio.setChecked(True)
+            self.lay.addWidget(self.replace_radio)
+            self.lay.addWidget(self.label("The original is kept in Edit Backups; Undo Edits restores it."))
+            self.lay.addWidget(self.separate_radio)
+            self.lay.addWidget(self.label("Adds a new \u201c(edited)\u201d clip to the Library next to this one; "
+                                          "this clip stays exactly as it is."))
+        else:
+            self.lay.addWidget(self.label(target_text))
         form = QFormLayout()
+        form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+        form.setHorizontalSpacing(12)
+        form.setVerticalSpacing(8)
         qss = combo_box_stylesheet(self._appearance)
         self.res = QComboBox()
-        self.res.setStyleSheet(qss)
         w, h = project.width, project.height
         self.res.addItem(f"Original ({w}×{h})", (w, h))
         for ph in (2160, 1440, 1080, 720, 480):
@@ -131,9 +150,16 @@ class SaveDialog(_Dialog):
                 pw = int(round(ph * w / h / 2) * 2)
                 self.res.addItem(f"{ph}p ({pw}×{ph})", (pw, ph))
         self.quality = QComboBox()
-        self.quality.setStyleSheet(qss)
         for label, crf in self.QUALITIES:
             self.quality.addItem(label, crf)
+        for c in (self.res, self.quality):
+            c.setStyleSheet(qss)
+            # Size from the longest item (+ the stylesheet's padding), so
+            # nothing is cut off.
+            c.setSizeAdjustPolicy(QComboBox.AdjustToContents)
+            longest = max(c.fontMetrics().horizontalAdvance(c.itemText(i)) for i in range(c.count()))
+            c.setMinimumWidth(longest + 60)
+            c.setMinimumHeight(c.fontMetrics().height() + 14)
         form.addRow(self.label("Resolution"), self.res)
         form.addRow(self.label("Quality"), self.quality)
         self.lay.addLayout(form)
@@ -143,10 +169,17 @@ class SaveDialog(_Dialog):
         cancel.clicked.connect(self.reject)
         ok = CustomButton("Save")
         ok.clicked.connect(self.accept)
+        for b_ in (cancel, ok):
+            b_.setMinimumWidth(90)
+            b_.setMinimumHeight(30)
         row.addWidget(cancel)
         row.addWidget(ok)
         self.lay.addLayout(row)
-        self.setMinimumWidth(420)
+        self.setMinimumWidth(480)
+
+    @property
+    def separately(self) -> bool:
+        return self.separate_radio is not None and self.separate_radio.isChecked()
 
     def options(self) -> dict:
         w, h = self.res.currentData()
@@ -245,7 +278,7 @@ class AdvancedEditorPage(QWidget):
         top.setStretchFactor(2, 3)
         top.setSizes([330, 900, 340])
         self.browser.setMinimumWidth(220)
-        self.properties.setMinimumWidth(260)
+        self.properties.setMinimumWidth(310)
 
         bottom = QWidget()
         bl = QVBoxLayout(bottom)
@@ -451,10 +484,11 @@ class AdvancedEditorPage(QWidget):
                       "Undo Edits (Library/previewer) restores it. The edit stays editable here.")
         else:
             target = f"Writes {os.path.basename(p.output_path)} next to the original (which is not changed)."
-        dlg = SaveDialog(p, target, self)
+        dlg = SaveDialog(p, target, self, library_clip=self.ctl.mode == "library")
         if dlg.exec() != QDialog.Accepted:
             return
         opts = dlg.options()
+        separately = dlg.separately
         work = Project.from_dict(copy.deepcopy(p.to_dict()))
         cancel = threading.Event()
         bridge = _Bridge()
@@ -477,7 +511,9 @@ class AdvancedEditorPage(QWidget):
 
         def run():
             try:
-                if mode == "library":
+                if mode == "library" and separately:
+                    out = nle_save.save_library_separately(work, progress=bridge.progress.emit, cancel=cancel, **opts)
+                elif mode == "library":
                     out = nle_save.save_library_clip(work, progress=bridge.progress.emit, cancel=cancel, **opts)
                 else:
                     out = nle_save.save_import(work, source, progress=bridge.progress.emit, cancel=cancel, **opts)
@@ -508,7 +544,9 @@ class AdvancedEditorPage(QWidget):
         self.ctl.mark_rendered()
         if mode == "library" and self._video_path:
             self._video_mtime = self._file_mtime(self._video_path)
-        if mode == "library":
+        if mode == "library" and separately:
+            self._flash(f"Saved as a new clip: {getattr(result.get('ok'), 'title', '')}")
+        elif mode == "library":
             self._flash("Saved -- the clip now has your edit (Undo Edits restores the original)")
         else:
             self._flash(f"Saved {os.path.basename(str(result.get('ok')))}")

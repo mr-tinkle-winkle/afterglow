@@ -23,13 +23,36 @@ from ...nle.model import (
 )
 
 AUTOSAVE_DELAY_MS = 3000
+def comic_font() -> str:
+    """A comic-style font that's actually installed (Qt's own fallback for a
+    missing "Comic Sans MS" can land on a script font), else a plain sans."""
+    try:
+        from PySide6.QtGui import QFontDatabase
+        have = {f.lower(): f for f in QFontDatabase.families()}
+    except Exception:
+        have = {}
+    for name in ("Comic Sans MS", "Comic Neue", "Comic Relief", "Chalkboard SE", "Bangers", "Patrick Hand",
+                 "Architects Daughter", "Noto Sans", "DejaVu Sans"):
+        if name.lower() in have:
+            return have[name.lower()]
+    return "Sans Serif"
+
+
+COMIC_FONT = "Comic Sans MS"     # replaced with comic_font() when a bubble is created
 TEXT_PRESETS = {
     "Title": TextStyle(text="Title", font_size=0.12, bold=True, outline_width=3.0),
     "Subtitle": TextStyle(text="Subtitle", font_size=0.06, outline_width=2.0),
     "Caption": TextStyle(text="Caption", font_size=0.045, outline_width=2.0),
     "Plain text": TextStyle(text="Text", font_size=0.08),
+    "Speech bubble": TextStyle(text="Speech!", font_family=COMIC_FONT, font_size=0.055, bold=True,
+                               color="#111111", bubble="speech", tail_x=0.02, tail_y=0.05),
+    "Thought bubble": TextStyle(text="Hmm...", font_family=COMIC_FONT, font_size=0.055, italic=True,
+                                color="#111111", bubble="thought", tail_x=0.02, tail_y=0.05),
 }
-TEXT_PRESET_Y = {"Title": 0.0, "Subtitle": 0.12, "Caption": 0.4, "Plain text": 0.0}
+# Where each preset sits (Transform.x, Transform.y as fractions from the center;
+# 0.5 would be the edge). Subtitles sit just above the bottom edge.
+TEXT_PRESET_POS = {"Title": (0.0, 0.0), "Subtitle": (0.0, 0.36), "Caption": (0.0, 0.42),
+                   "Plain text": (0.0, 0.0), "Speech bubble": (0.18, -0.2), "Thought bubble": (0.18, -0.2)}
 
 _probe_cache: dict = {}
 
@@ -386,10 +409,12 @@ class EditorController(QObject):
     def add_text(self, preset: str = "Plain text", t: "float | None" = None,
                  track_index: "int | None" = None) -> "Segment | None":
         style = copy.deepcopy(TEXT_PRESETS.get(preset, TEXT_PRESETS["Plain text"]))
+        if style.font_family == COMIC_FONT:
+            style.font_family = comic_font()
         part = Part(kind=KIND_TEXT, source="", src_in=0.0, src_out=5.0, has_video=True, has_audio=False,
                     text=style)
         seg = Segment(parts=[part], name=style.text)
-        seg.transform.y = TEXT_PRESET_Y.get(preset, 0.0)
+        seg.transform.x, seg.transform.y = TEXT_PRESET_POS.get(preset, (0.0, 0.0))
         at = self.playhead if t is None else t
         ti = 1 if track_index is None else track_index
         placed = self.perform("Add text", lambda p: ops.place(p, seg, ti, at, prefer=-1))
@@ -427,6 +452,10 @@ class EditorController(QObject):
                     continue
                 if prop in s.keyframes:
                     ops.set_keyframe(p, s.id, prop, self.local_time(s), value)
+                elif prop in ("tail_x", "tail_y"):
+                    for part in s.parts:
+                        if part.text is not None:
+                            setattr(part.text, prop, value)
                 elif prop == "volume":
                     ops.set_volume(p, [s.id], value)
                 elif prop == "opacity":

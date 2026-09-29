@@ -67,3 +67,21 @@ def save_import(project: Project, source_path: str, progress=None, cancel=None, 
     export(project, str(out), progress=progress, cancel=cancel, **export_opts)
     store.save_project(project, store.project_path_for_import(source_path))
     return out
+
+
+def save_library_separately(project: Project, progress=None, cancel=None, **export_opts):
+    """"Save Separately": render into a NEW clip next to the original
+    ("<title> (edited).mp4"), added to the library as its own video (same
+    filters and favorite as the original). The original clip, its file and
+    its edit backups are untouched. Returns the new library.Video."""
+    video = library.get_video(project.library_video_id)
+    src = Path(video.path)
+    out = library._unique_path(src.parent, library._sanitize_filename_stem(f"{video.title} (edited)"), ".mp4")
+    export(project, str(out), progress=progress, cancel=cancel, **export_opts)
+    new = library.add_video(out, title=f"{video.title} (edited)")
+    for tag in video.tags:
+        library.add_tag_to_video(new.id, tag)
+    if video.favorite:
+        library.set_favorite(new.id, True)
+    library.mark_as_edited(new.id)
+    return library.get_video(new.id)
