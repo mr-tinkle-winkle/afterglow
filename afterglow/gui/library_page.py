@@ -64,7 +64,7 @@ class LibraryTabButton(QAbstractButton):
     work around via the old canvas-compositing trick.
 
     Also reused (unchanged) for the main sidebar's Library/Editor/
-    Settings buttons -- see main_window.py -- per Max's direct request
+    Settings buttons -- see main_window.py -- per the direct request
     to replace those with "the same custom button type" as this one,
     dropping the old border-gradient/hue-shift/icon-darkening system
     entirely in favor of this simpler turquoise fill.
@@ -287,7 +287,7 @@ class _VideoGridTab(QWidget):
         # painted below -- NOT relying on whatever the ambient QStyle's
         # own default QLayout margin happens to be (often nonzero, but
         # not guaranteed, and can differ between this sandbox's default
-        # offscreen-platform style and Max's real one). If a style ever
+        # offscreen-platform style and the real one). If a style ever
         # left zero margin here, child content would sit flush against
         # this widget's own edge and completely paint over the border
         # drawn beneath it in paintEvent -- exactly matching "the page
@@ -300,7 +300,7 @@ class _VideoGridTab(QWidget):
         # Search/Refresh/Sort now live once, shared, in LibraryPage's own
         # header row (alongside the Local/Uploaded page buttons) instead
         # of each tab having its own copy taking a whole separate row --
-        # per Max's direct instruction that the old per-tab row was
+        # per the direct instruction that the old per-tab row was
         # "encroaching on the videos." This tab still owns all the
         # underlying STATE (search text, active/excluded tags, sort
         # order, highlight toggle) and the three popover-page builder
@@ -340,7 +340,7 @@ class _VideoGridTab(QWidget):
         self.grid_layout.setVerticalSpacing(appearance.ui_padding)
         self.grid_layout.setHorizontalSpacing(appearance.ui_padding)
         # Same padding value on the grid's own OUTER edges too, not just
-        # between cards -- per Max's direct follow-up ("the padding
+        # between cards -- per the direct follow-up ("the padding
         # between videos should be applied to videos and the edges of
         # the library 'container'"). Previously this used whatever
         # QGridLayout's own default contentsMargins happened to be,
@@ -425,7 +425,7 @@ class _VideoGridTab(QWidget):
         # painted here, regardless of what the base class does on any
         # given platform/style.
         super().paintEvent(event)
-        # 3px, 15%-darker-than-itself outline -- per Max's direct
+        # 3px, 15%-darker-than-itself outline -- per the direct
         # request for every "page" (Local/Uploaded/Library/Editor/
         # Settings). Skips the TOP edge specifically: this tab's own
         # content area sits flush against the Library header (the
@@ -564,7 +564,7 @@ class _VideoGridTab(QWidget):
     def _wrap_scrollable(page: QWidget) -> QWidget:
         """Used to bound each SortPopover page to a fixed, capped
         height inside a scrolling viewport -- removed entirely per
-        Max's own direct suggestion after the padding/cutoff issue
+        the initial direct suggestion after the padding/cutoff issue
         this was involved in persisted even after the previous fix to
         it (computing each page's own actual content height instead of
         forcing a fixed 320px). The popover itself now simply grows to
@@ -1085,11 +1085,11 @@ class LibraryPage(QWidget):
         # showing (self._stack.currentWidget()), since Filters/Sort/Info
         # state, and the search text itself, still live per-tab (see
         # _VideoGridTab) even though the buttons/popups that control them
-        # are shared UI. Icon-only (per Max's provided icon set) rather
+        # are shared UI. Icon-only (per the provided icon set) rather
         # than text-labeled placeholders now.
         #
         # Circular and 2x the previous implicit size, with real padding
-        # between them, per Max's direct request -- these three (only
+        # between them, per the direct request -- these three (only
         # these three) use CustomButton.set_circular() rather than the
         # theme's normal rounded-corner-radius shape. TOOLBAR_BUTTON_
         # DIAMETER doubles what a default un-styled QToolButton's own
@@ -1101,7 +1101,7 @@ class LibraryPage(QWidget):
         # i.e. .darker(115) in Qt's own inverse-percentage convention
         # -- same idiom as every other "N% darker" spot in this
         # codebase) rather than shown in their own original artwork
-        # colors, per Max's direct instruction. tint_pixmap_cached
+        # colors, per the direct instruction. tint_pixmap_cached
         # preserves each icon's alpha/shape and just recolors it, so
         # they read as part of the same text system as everything else
         # on a card instead of standing out as separately-colored art.
@@ -1259,7 +1259,7 @@ class LibraryPage(QWidget):
 
     def _update_search_icon(self, text: str) -> None:
         """Swap the Search button's own icon for the "active search"
-        variant Max provided whenever the active tab's search box holds
+        variant provided whenever the active tab's search box holds
         actual text, per his direct instruction -- back to the plain
         icon once it's empty again."""
         self.search_btn.set_icon_pixmap(self._search_icon_active if text.strip() else self._search_icon)

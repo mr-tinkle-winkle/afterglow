@@ -56,7 +56,7 @@ class SettingsPage(QWidget):
         # ---- header row: one fully separate, fully-rounded custom
         # button per settings page, each with real padding between them
         # (NOT touching/corner-skipped like the Library's Local/
-        # Uploaded pair) -- per Max's direct instruction for this new
+        # Uploaded pair) -- per the direct instruction for this new
         # UI styling pass. Text for now; CustomButton already supports
         # set_icon_pixmap()/set_circular() for when Max provides the
         # actual per-tab icons and asks for these to become circles,
@@ -625,7 +625,7 @@ class SettingsPage(QWidget):
         up repeatedly: a color or setting default changes in a new
         build, but an already-saved config keeps showing the OLD
         value, and it can look indistinguishable from a real rendering
-        bug from the outside. Added directly on Max's request --
+        bug from the outside. Added directly on the request --
         "before assuming there is a bug" -- as the first thing to try."""
         group = CustomGroupBox("Reset")
         layout = group.make_layout(QVBoxLayout)

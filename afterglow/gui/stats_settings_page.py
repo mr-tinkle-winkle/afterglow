@@ -5,7 +5,7 @@ only -- no save() hook, unlike the other Settings tabs.
 
 Deliberately NOT auto-refreshed on every video/tag change (unlike, say,
 FiltersSettingsPage's refresh_dynamic_lists(), which SettingsPage calls
-whenever the page becomes visible) -- per Max's own instruction, this
+whenever the page becomes visible) -- per the instruction, this
 recomputes only when its own Refresh button is pressed, since a full
 library scan (every video's tags, every video's duration) on every
 "Settings became visible" would be needless work for a tab most

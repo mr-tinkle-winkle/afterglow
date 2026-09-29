@@ -87,7 +87,7 @@ class CardInfoSettings:
     show_creation_date: bool = False
     # Edit/Copy/Filters/Delete as their own clickable buttons directly
     # on the card, below the filters section, rather than only reachable
-    # via the right-click context menu. On by default per Max's request.
+    # via the right-click context menu. On by default per the request.
     show_action_buttons: bool = True
 
 
@@ -108,7 +108,7 @@ class AppearanceSettings:
     # When True, every place a video's date is shown (the Library card
     # info box, the video previewer's header) uses the full timestamp
     # (date + hours/minutes/seconds, whatever's in created_at) instead
-    # of just the date -- per Max's direct request.
+    # of just the date -- per the direct request.
     extended_dates: bool = False
     inactive_border_width: int = 5
     inactive_border_brightness: int = 65
@@ -124,13 +124,13 @@ class AppearanceSettings:
     # gradient or nothing -- with a plain gray border at this same
     # width), hence the name; was `unedited_highlight_width` before
     # selection existed (see load()'s backward-compat shim). Doubled
-    # three times now, each directly on Max's request once he could
+    # three times now, each directly on the request once he could
     # see it rendered for real -- 9 -> 18 -> 36 -> 72 -- this also
     # doubles the selection ring's width every time, since all of
     # these (the unedited-highlight border, the plain edited-video
     # border, and the selection ring) share this one setting.
     unedited_selected_border_width: int = 6
-    # Darkened 35% (100 -> 65) directly on Max's request.
+    # Darkened 35% (100 -> 65) directly on the request.
     unedited_highlight_brightness: int = 65
     filter_icon_size: int = 54
     # Sidebar nav icon scale, as a 0-200 percent of each button's own
@@ -177,7 +177,7 @@ class AppearanceSettings:
     unedited_border_hue_shift: int = 0
     # The selection border's own image override -- defaults to empty,
     # meaning "use the bundled selected_border_gradient.png" (a gold/
-    # white diagonal streak, chosen directly by Max to replace the
+    # white diagonal streak, chosen directly  to replace the
     # original flat gray selection fill). No hue-shift field for this
     # one -- wasn't asked for, unlike the other two border types.
     selected_border_image_path: str = ""
@@ -229,20 +229,20 @@ class AppearanceSettings:
     # SOURCE custom-painted elements read from (KDE palette -> these
     # fixed hex codes); it doesn't do anything on its own if
     # custom_buttons_enabled is off, since there's nothing custom-
-    # painted left to recolor. Chosen directly by Max:
+    # painted left to recolor. Chosen directly :
     # blue/dark-desaturated-blue/super-dark-desaturated-blue/turquoise.
     afterglow_theme_enabled: bool = True
-    # Exact hex given directly by Max, most recently. Previous values
+    # Exact hex given directly , most recently. Previous values
     # (computed derivations, etc.) are documented in this file's git
     # history / HANDOFF.md rather than here now that this is simply a
     # literal value he specified. The immediately-previous round of
     # this (all three of accent/card_background/library set to the
-    # same #152c4f) was a copy-paste mistake on Max's own end, not an
+    # same #152c4f) was a copy-paste mistake in the values as originally sent, not an
     # intentional "make them all identical" choice -- corrected here to
     # the actual three distinct values he meant to send.
     afterglow_color_accent: str = "#152c4f"
     afterglow_color_card_background: str = "#091e37"
-    # Given directly by Max, most recently -- meant to eventually
+    # Given directly , most recently -- meant to eventually
     # become the actual app-wide background (not yet wired everywhere
     # -- see HANDOFF.md).
     afterglow_color_app_background: str = "#0d1621"
@@ -268,7 +268,7 @@ class AppSettings:
     # background daemon instead (see daemon.py's _library_scan_loop),
     # and the GUI just re-queries the DB (already-fast, no filesystem
     # walk) and relies on its existing DB-file-watcher to pick up
-    # whatever the daemon just wrote. Per Max's own suspicion that
+    # whatever the daemon just wrote. Per the initial suspicion that
     # this is better for drive health (one process doing the
     # filesystem walking instead of both the GUI and daemon
     # potentially doing it independently) -- default False (GUI does
@@ -401,7 +401,7 @@ def _load_uncached() -> AppSettings:
         appearance_raw["afterglow_color_app_background"] = AppearanceSettings.afterglow_color_app_background
     if appearance_raw.get("afterglow_color_turquoise") == "#12b5c8":
         appearance_raw["afterglow_color_turquoise"] = AppearanceSettings.afterglow_color_turquoise
-    # New palette given directly by Max this session: accent,
+    # New palette given directly  this session: accent,
     # card_background, and library_background were all set to the SAME
     # hex (#152c4f) and turquoise moved to #0c8ea0 -- app_background is
     # untouched ("keep the current app background color"). Same
@@ -417,7 +417,7 @@ def _load_uncached() -> AppSettings:
     if appearance_raw.get("afterglow_color_turquoise") == "#05a4b9":
         appearance_raw["afterglow_color_turquoise"] = AppearanceSettings.afterglow_color_turquoise
     # The above (#152c4f for all three of accent/card_background/
-    # library) turned out to be a copy-paste mistake on Max's own end,
+    # library) turned out to be a copy-paste mistake in the values as originally sent,
     # not an intentional "make them identical" choice -- corrected to
     # the three actual distinct values he meant to send. accent's
     # correct value happens to also be #152c4f, so it needs no
@@ -432,7 +432,7 @@ def _load_uncached() -> AppSettings:
     if appearance_raw.get("card_text_outline_color") == "#3669a0":
         appearance_raw["card_text_outline_color"] = AppearanceSettings.card_text_outline_color
     # FOUND THE ACTUAL ROOT CAUSE of "asked to double this ~4 times and
-    # it either hasn't worked or hasn't happened": Max confirmed this
+    # it either hasn't worked or hasn't happened": Confirmed
     # is the SAME field that gets replaced by the unedited highlight --
     # i.e. exactly this one, unedited_selected_border_width -- and that
     # it's rendering at 3px on his real machine, nowhere near any of
@@ -445,7 +445,7 @@ def _load_uncached() -> AppSettings:
     # value never matched any number in the list below, so it sailed
     # through every one of these migrations untouched while the CODE
     # default kept climbing (9 -> 18 -> 36 -> 72 -> 144) in a direction
-    # his real saved config could never follow. Every one of Max's past
+    # his real saved config could never follow. Every one of the past
     # "please double it" requests was reasonably based on what he
     # ACTUALLY saw rendered (a small few-pixel border that never
     # budged), not on the increasingly large code default -- which

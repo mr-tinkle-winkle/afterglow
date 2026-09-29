@@ -9,11 +9,12 @@ machines. Recent sessions have focused on Library filtering/display
 features and app-wide appearance tuning rather than the Editor itself.
 
 ## MAJOR EPIC: UI Update + Editor Update (multi-session, in progress)
-Max handed over a huge combined spec for a UI overhaul AND a full
+A huge combined spec arrived for a UI overhaul AND a full
 Editor rebuild (tracks, segments, filters, transitions -- effectively
 a new NLE). Explicitly told to expect "many sessions with minor
-changes." **We are doing the UI Update first; the Editor Update below
-hasn't been started at all.** Read this whole section before touching
+changes." **The UI Update came first and is largely done. The Editor
+Update is now in progress: its engine (afterglow/nle/) is built and
+tested; the timeline UI is next -- see its "Phase plan".** Read this whole section before touching
 anything in this epic -- it's the actual spec plus every clarifying
 decision made so far, not just a changelog.
 
@@ -31,7 +32,7 @@ utilities, custom button base classes) instead of one-off styling.
 
 **Rounded Corners** (Settings > General, on by default, radius in px
 next to the toggle, default 24px -- raised from an initial 12px guess
-once Max could actually see it rendered):
+once it could actually be seen rendered):
 - Applies to: sidebar borders (not yet rounded -- no sidebar widget
   reads `rounded_corners_enabled` yet), Library page tab icons (DONE --
   the two tabs' touching inner corners stay sharp, outer three corners
@@ -41,11 +42,11 @@ once Max could actually see it rendered):
   text boxes if feasible (not yet touched -- QLineEdit/QTextEdit
   elsewhere in the app still have square corners), the video/audio
   segments in the future Editor (skip for now -- segments don't exist
-  yet), the corners of the app window itself (Max said to SKIP this
+  yet), the corners of the app window itself (explicitly SKIP this
   entirely -- window rounding should just be whatever the KDE/window-
   manager theme already does, not a custom frameless-window
   implementation).
-- "Apple style" clarified by Max: just means smooth/eased into the
+- "Apple style" clarified : just means smooth/eased into the
   curve, NOT literally circular -- does NOT need true superellipse/
   squircle math. Implemented via a tuned cubic-Bezier approximation
   (see Architecture pointers).
@@ -77,7 +78,7 @@ overrides `setStyle()`) -- independent of Afterglow Theme below.
 **Afterglow Theme** (Settings > General for the on/off toggle, on by
 default; Settings > Advanced for the actual editable hex values) --
 overrides Custom Buttons' color SOURCE from the live KDE palette to
-these fixed colors (confirmed by Max: Afterglow Theme on literally
+these fixed colors (confirmed: Afterglow Theme on literally
 overrides the KDE-sampled colors). Does nothing if Custom Buttons is
 off. **Current hex codes (superseded once already -- these are the
 CURRENT correct ones, from the "Real-screenshot feedback round" item
@@ -99,7 +100,7 @@ earlier in this section's own history)**:
 - `#12b5c8` (turquoise) -- reassigned from the library-page role above
   (which moved to the dark blue) to a narrower one: the Local/Uploaded
   TAB ICONS' own background specifically. DONE for those two tabs;
-  Max mentioned filters as a possible future use of turquoise too,
+  A mention of filters as a possible future use of turquoise too,
   explicitly not done yet ("for now leave it as just local and
   uploaded").
 - Pre-existing gradients (sidebar borders, unedited-video highlight)
@@ -111,10 +112,10 @@ earlier in this section's own history)**:
   redesign below.
   For the unedited-video highlight specifically: **REVISED again in
   item 18 below (this session) -- read that for the current, correct
-  behavior.** Two sessions ago, per Max's clarification at the time, it
+  behavior.** Two sessions ago, per the clarification at the time, it
   was BOTH a border around the video player AND a background overlay
   on the card's own background box, rendered behind everything. After
-  actually seeing it rendered, Max asked for that background-overlay
+  actually seeing it rendered, Requested: that background-overlay
   part to be removed -- the card's own background is now ALWAYS plain
   `card_background()`, and the gradient shows ONLY as the video
   thumbnail's own border. The separate "always-on thin outline for
@@ -127,7 +128,7 @@ earlier in this section's own history)**:
   a sliver of the (now-always-plain) card background visible around
   the video box and info box regardless of content.
 - Light shading is planned for later (subtle gradients replacing some
-  flat fills) -- Max confirmed this doesn't need a redesign as long as
+  flat fills) -- Confirmed doesn't need a redesign as long as
   color application is centralized (it now is -- see Theme class).
 
 **Card restructure** (Library grid) -- **DONE as of "This session" item
@@ -147,7 +148,7 @@ earlier in this section's own history)**:
   first -- this WAS the "duplicate clips / messed-up sizing" bug,
   confirmed by direct reproduction, not a guess.
 - Clicking the **info box** opens a separate, smaller preview player
-  (confirmed by Max: "similar to Medal, a separate smaller video
+  (confirmed: "similar to Medal, a separate smaller video
   player" -- NOT the same as the full Editor, and NOT the same as the
   hover-autoplay-in-grid feature below; three distinct playback
   contexts once this all exists). **NOT YET BUILT** -- see "Next up".
@@ -160,7 +161,7 @@ earlier in this section's own history)**:
 
 **Comfy UI** (Settings > General, on by default) -- enlarges smaller
 chrome elements (filters, sort by, info, text boxes, etc.). Confirmed
-by Max: stacks MULTIPLICATIVELY with the existing window-size-based
+: stacks MULTIPLICATIVELY with the existing window-size-based
 scale system (`scaling.py`), rather than being an independent
 fixed-size override.
 
@@ -186,7 +187,7 @@ the full height of the panel. Confirmed: clicking outside it closes it
 distinct from the info-box preview player above): hovering a card
 starts a muted-by-default autoplay preview; click toggles pause/
 resume; small volume meter bottom-left (same icon as the Editor's) and
-fullscreen button bottom-right (icon TBD, Max providing); an Edit
+fullscreen button bottom-right (icon TBD, to be provided); an Edit
 button (editor icon); loops from the beginning once it reaches the end
 rather than stopping.
 
@@ -200,7 +201,7 @@ changes.
 
 **Card text style** (Settings > General) -- default on-card text color
 `#9bcbff` with a `#3669a0` outline, applied to ALL on-card text (title,
-info/date lines, tag names -- Max: "all on-card text"). DONE, with a
+info/date lines, tag names -- request: "all on-card text"). DONE, with a
 real font-size caveat discovered while building it: at this app's
 actual 10px info/date/tag-name size, no outline width leaves any fill
 color visible at all (glyph strokes are only ~1px wide there), so only
@@ -213,14 +214,14 @@ filter icon's own actual shape (not a bounding square) in the card
 text outline color above, with a per-tag override color settable in
 Settings > Filters next to that tag's icon controls. DONE.
 
-**Icons Max is providing later** (build with placeholder icons for
+**Icons to be provided later** (build with placeholder icons for
 now, swap in real assets once dropped): magnifying glass (search),
 refresh, a fullscreen-button icon (for the small preview player), a
 hamburger-menu icon, a drag-handle icon (for reordering something
 draggable -- see Editor Update's track reordering), a lock icon (for
 the future Editor's segment-locking).
 
-### Editor Update -- full spec (NOT STARTED, reference only)
+### Editor Update -- full spec (IN PROGRESS: engine built + tested, timeline UI next)
 A complete Editor rebuild into a track-based NLE, opened via a
 bottom-right "Advanced Editor" entry point (with a "Always Open
 Advanced Editor" General setting to skip straight to it). Kept in full
@@ -250,7 +251,7 @@ otherwise:
   waveform.
 - Video segments render as a film-strip of tiled screenshots centered
   on each strip's timestamp (exact tile size/count left to
-  implementation, Max will give feedback once it's visible).
+  implementation, feedback expected once it's visible).
 - `S` splits, `C` combines (segments must be touching). Combining a
   video and an audio segment does an inclusive merge (e.g. long audio
   + short video = black footage with audio once the video runs out),
@@ -280,6 +281,105 @@ otherwise:
   feature set and rough organization.
 - Rounded-corners rule specific to this: segments/tracks get rounded
   corners UNLESS snapped to another segment.
+
+#### Decisions made when the Editor Update started (answers to clarifying questions)
+- **Saving a library clip:** overwrite the clip, keep the original in
+  "Edit Backups" (the same `.orig` backup the quick trim uses, so Undo
+  Edits works for both kinds of edit).
+- **Edits stay editable:** the full timeline is stored per clip and
+  reopened with tracks/segments/effects intact. Re-saving re-renders from
+  the original footage, so quality never degrades across re-edits.
+- **Layout: Filmora-style panels.** Browser (Media / Text / Audio /
+  Transitions / Effects) top-left, preview top-center, properties
+  top-right, timeline across the bottom with a toolbar (undo/redo,
+  split, combine, timecode, zoom).
+- **Extras approved:** per-segment speed, transform/crop (drag handles in
+  the preview), ripple delete, keyframes.
+- **Ripple delete, as specified:** a gap between two segments is marked
+  with a very slight line; hovering the middle of the gap opens a small
+  space there and shows a trash can; clicking it closes the gap
+  (shifts the later segments on that track left). Shift+Delete also
+  ripple-deletes selected segments.
+- **"Add anything else that fits"** -- added to the plan (veto any):
+  detach audio from video, duplicate (Ctrl+D), dragging segment edges to
+  trim/reveal, J/K/L shuttle playback, timeline zoom (Ctrl+wheel) + zoom
+  to fit, snapping on/off (N), text elements, project autosave +
+  unsaved-changes marker, export progress with cancel, frame-by-frame
+  stepping (, and .), Delete key.
+- **Previewer trimming:** the video previewer got the same trim as the
+  basic Editor (done this session -- see "This session").
+
+#### Architecture (see afterglow/nle/)
+- `model.py` -- pure-Python timeline: Project > Track > Segment > Part.
+  Tracks listed top to bottom; no video/audio track types. A Segment
+  holds Parts (normally one; "combine" makes several = the inclusive
+  merge, part boundaries = the clickable split markers). Parts carry
+  their own gain/visibility so combining never changes the output.
+  JSON round-trip with a schema version.
+- `ops.py` -- every editing rule from the spec: buffer tracks (top and
+  bottom always empty; landing on one creates a new one past it),
+  overlap "kick" to the nearest fully free track on the preferred side,
+  split (S), combine (C), locked/muted/visible toggles (L/M/V, group
+  toggling), copy/paste at playhead, duplicate, detach audio, gap close
+  (trash can), ripple delete, edge trims bounded by source length and
+  neighbors, fades, speed (limited so it never overlaps the next
+  segment), transform, zoom filter, keyframes, snapping (segment edges
+  snap to edges + playhead; playhead snaps to edges at 40% strength).
+- `history.py` -- snapshot undo/redo; drags are one step via
+  begin()/end(); failed edits roll back; saved/dirty tracking.
+- `media.py` -- PyAV: probe, frame-accurate decoding (forward decode
+  during playback, keyframe seek for jumps), whole-file audio decode
+  (mono duplicated at full level -- the default upmix is -3 dB).
+- `render.py` -- ONE renderer for preview AND export, so the preview is
+  exactly what's saved: compositing (upper tracks on top, letterbox fit,
+  crop, x/y/scale/rotation, zoom filter, fades, opacity/scale/x/y/
+  rotation/volume keyframes, text elements, still images), audio mixing
+  (volume 0-200%, mute, fades, speed, per-part gain), H.264/AAC export to
+  a temp file moved into place only when complete; cancellable.
+- `store.py` / `save.py` -- per-clip project files in
+  `~/.config/afterglow/projects/`. Before the clip is overwritten, any
+  part referencing it is re-pointed at a stable source (the `.orig`
+  backup, or a `<stem>.srcN` snapshot when the clip had already been
+  quick-trimmed). Undo Edits, Clear Edit Backup and a quick trim discard
+  the project (it no longer describes the file). Import saves
+  `<name>-edited.<ext>` beside the original, which is never modified.
+- **New dependencies:** PyAV (`av`) and `numpy` -- added to
+  `pyproject.toml` and the flake's `propagatedBuildInputs`
+  (`python.pkgs.av`, `python.pkgs.numpy`). Not verified with a real Nix
+  build in the sandbox; check `nix build` first.
+- Measured: a 1080p60 source previews at 960x540 in ~6 ms/frame (under
+  the 16.7 ms real-time budget); full 1080p compositing ~11 ms/frame.
+
+#### Phase plan
+1. **Engine (DONE):** model, ops, undo, renderer, export, save/reopen,
+   library integration. 121 checks in `tests/test_nle_*.py`.
+2. **Timeline UI (NEXT):** the Advanced Editor page (Filmora layout) and
+   its bottom-right entry button in the basic Editor; "Always Open
+   Advanced Editor" (General) and the "Editor" header with the
+   track-handle-side setting; tracks with 3-line reorder handles,
+   collapse; segments (film-strip thumbnails, waveforms with the draggable
+   volume line + type-a-percent), playhead (red, bulky head; drag/click/
+   wheel/Space), selection (click/Ctrl/Shift incl. cross-track ranges),
+   drag-move with snapping + kick, edge trims, S/C/L/M/V/Ctrl+C/Ctrl+V/
+   Ctrl+D/Delete/Shift+Delete, gap trash can, context menus, split
+   markers; preview panel playing through the renderer with audio
+   output (QAudioSink); properties panel (fades, volume, speed).
+3. **Additions:** browser panel contents, text/pictures/GIFs, added
+   audio, transitions (crossfade, blur/focus, slide/fade x target x
+   direction), zoom filter UI, transform/crop handles in the preview,
+   keyframe UI, Import button, drag-and-drop into the timeline.
+4. **Polish:** pitch-preserving speed, streaming audio for very long
+   sources, proxy decoding if 4K sources preview too slowly.
+
+#### Open questions (not yet answered)
+- "Scroll to adjust the timestep": interpreted as mouse wheel = step the
+  playhead one frame (Shift+wheel = 1 s), Ctrl+wheel = zoom the timeline.
+  Confirm.
+- Export settings: currently canvas = the first clip's size/fps, H.264
+  CRF 18. Whether an export-settings dialog (resolution/quality) is
+  wanted.
+- Speed changes audio pitch like a tape for now; pitch-preserving
+  stretch is planned (phase 4) unless wanted sooner.
 
 All files compile and import cleanly as of this handoff. This
 session covered a lot of ground and corrected three of its own earlier
@@ -313,7 +413,7 @@ widget subtree, not just the widget it's called on -- and this
 sandbox's offscreen platform plugin doesn't reliably reproduce that
 cascading the same way a real compositor does, so a pixel-perfect
 passing test *in this sandbox* genuinely is not proof a background
-color is safe on Max's real machine, specifically for anything
+color is safe on the real machine, specifically for anything
 touching `setStyleSheet` with a bare (unscoped) property. See item 19
 below for the concrete case (a background color meant for one
 container bleeding into every VideoCard's own custom-painted
@@ -327,11 +427,65 @@ plain QSS rule is unavoidable.
 Seven consecutive batches of Library/Settings/appearance
 features/bug fixes, given together each time. Newest first.
 
-> **Name:** the owner of this project now goes by **mrtw**. Earlier
-> entries in this file say "Max"; that's the same person. Use "mrtw"
-> going forward.
-
 ### This session
+**Editor Update started; trimming added to the video previewer.**
+
+1. **Previewer trimming.** The previewer's scrubber is replaced by the
+   basic Editor's `TrimTimeline`, with identical behavior: left-click/
+   drag seeks, right-click drags the nearest trim handle while the
+   player follows the handle, dragging pauses playback, playback stops
+   at the end handle, and pressing play at/after the end (or before the
+   start) restarts from the start handle. A second row in the same
+   transport card holds the Start/End/Selected label, Frame Perfect
+   Accuracy, Undo Edits and Save Trim (same `library.apply_trim` /
+   `undo_edit` as the Editor). Because it's the same card, fullscreen's
+   floating/auto-hiding controls carry the trim row too.
+   `tests/test_previewer_trim.py` (17 checks) drives it with real mouse
+   events and the REAL mpv player: the player itself reports being at
+   the dragged handle, a keyframe trim gives 3.04 s for a 3 s range, a
+   Frame Perfect trim gives exactly 2.400 s, Undo restores 10.00 s.
+2. **Real-player testing is now possible in the sandbox.** mpv needs an
+   OpenGL context, which the offscreen Qt platform can't provide -- the
+   reason earlier sessions could never test actual playback. Running
+   under `Xvfb :99 -screen 0 1920x1080x24 +extension GLX` with
+   `QT_QPA_PLATFORM=xcb` (packages: xvfb, libgl1-mesa-dri, libxcb-cursor0
+   and the other libxcb-* Qt needs) gives mpv software OpenGL: real
+   decode, real seeking, real durations, and real screenshots of the
+   app. Software GL draws a faint grid over scaled video in screenshots;
+   that's the virtual display, not the app.
+3. **Bug found from the first real screenshot: disabled CustomButtons
+   looked enabled** (no disabled state was ever painted -- e.g. the
+   previewer's arrows at the ends of a list, the Editor's buttons with no
+   video). Now painted at 40% opacity; repaint on enable/disable. Same fix
+   applied to the standalone UI kit.
+4. **Advanced Editor engine built** (see the Editor Update section above
+   for decisions, architecture and the phase plan). 121 checks:
+   `tests/test_nle_ops.py` (58), `tests/test_nle_render.py` (40, against
+   real generated media: pixel colors and audio levels at known times,
+   exports decoded back and checked), `tests/test_nle_save.py` (23: first
+   save, reopen + re-save from the original, Undo Edits, an
+   already-trimmed clip, Import).
+   Real bug caught by those tests: mono audio played 3 dB quiet (the
+   resampler's default mono->stereo upmix pans to center at x0.707).
+   Fixed: mono is decoded as mono and duplicated at full level.
+   Test mistakes caught and fixed along the way (worth knowing for
+   future tests): ffmpeg's color "green" is #008000, not #00ff00;
+   ffmpeg's `sine` source defaults to 1/8 amplitude (use `aevalsrc` for
+   exact levels); comparing re-encoded frames needs a tolerance.
+5. **Library integration:** a quick trim, Undo Edits and Clear Edit
+   Backup now discard the clip's Advanced Editor project (see
+   `store.py`); new `library.record_advanced_edit()`.
+6. **Known, not fixed (pre-existing):** the first Library load of clips
+   with no cached thumbnail runs ffmpeg once per card inside the
+   (time-sliced) build -- 80 new clips took 6.1 s and the grid fills in
+   with stutters. Once cached it's instant. Fix: generate thumbnails in a
+   background thread and show a placeholder until ready.
+   Also: plain `QLabel`s (time label, trim range label, "Speed:") take
+   their color from the system palette; on a palette with dark text they
+   render dark-on-dark (seen in the Xvfb screenshots; the real desktop's
+   KDE palette presumably has light text).
+
+### Previous session
 **Release bounce looked low-FPS (press and hover were fine) -- fixed.**
 Measured, not guessed: recorded every pulse-animation frame during press
 vs release on each real button in the full app with an 80-clip library.
@@ -380,14 +534,14 @@ Also fixed a stale comment in `MainWindow._on_nav_clicked` that claimed
 switching to Library no longer refreshes (the refresh call was right
 below it).
 
-Pending mrtw's all-clear before porting to the UI kit. What carries over:
+Pending an all-clear before porting to the UI kit. What carries over:
 nothing in the kit code itself (the skip-rebuild is afterglow's Library),
 but the guide gets a pitfall: clicks fire on mouse-up, so heavy click
 work lands on the release animation -- skip no-op work, slice the rest.
-Also rename "Max" -> "mrtw" throughout the guide.
+Also make the guide fully impersonal (no names).
 
 ### Previous session
-**Rounding disappeared on the release bounce -- fixed.** Max reported
+**Rounding disappeared on the release bounce -- fixed.** Reported:
 that releasing a click made custom buttons bounce past their limits
 (fine) but lose their rounded corners at that moment (not fine).
 Cause: `PressPulse`'s release overshoot scaled the shape to 1.04x, and a
@@ -412,7 +566,7 @@ not shipped silently. The headroom mechanism is KEPT in `apply()`
 `PressPulse.touching_extension(rect)`, used by `LibraryTabButton` and
 `_PopoverTabButton` on their touching (square) sides, so raising the
 overshoot later automatically keeps corners intact AND joined tabs
-flush. If Max wants the bigger bounce back, that's a one-constant
+flush. If the bigger bounce is wanted back, that's a one-constant
 change with the smaller-at-rest tradeoff above -- ask him first.
 
 Verified: frame-by-frame over a real QTest press/release on the sidebar
@@ -430,8 +584,8 @@ Same fix applied to the standalone UI kit for Conduit/Puppetry
 (`qt-ui-kit.zip`, `UI_THEMING_GUIDE.md` section 4 + pitfall 13).
 
 ### Previous session
-Follow-up to the previous session's five items, after Max tested them on
-his real machine. Two of last session's fixes were WRONG (right symptom,
+Follow-up to the previous session's five items, after testing them on
+a real machine. Two of last session's fixes were WRONG (right symptom,
 wrong cause) -- both now re-diagnosed by direct measurement and fixed
 properly. Plus an app-wide optimization pass.
 
@@ -583,7 +737,7 @@ button behavior rather than Library/appearance this time.
    correctly release/fire `False` when `_do_refresh` is made to raise,
    confirmed by direct test rather than just reading the code.
 4. **Custom Buttons now have an eased hover-shrink + click-pulse
-   animation**, per Max's exact spec: slightly smaller on hover,
+   animation**, per the exact spec: slightly smaller on hover,
    pulsing further down while the click is held, pulsing back up the
    instant it's released and smoothly settling back to rest -- all of
    it eased, none of it a hard jump. Added a `visual_scale` Qt
@@ -750,7 +904,7 @@ keyboard bug caught along the way.
    persistent, repeatedly-reported problem was always specifically the
    Filters list, where toggling several tags in one visit genuinely
    needs to keep it open. Caught a real bug of my own while verifying
-   this, not left for Max to hit: connecting to the popup's
+   this, not left to hit: connecting to the popup's
    `destroyed` signal to track when it closes would likely never have
    fired at all, since a Qt.Popup typically just HIDES (not destroys)
    on an outside click -- fixed by adding an explicit `closed` signal
@@ -864,7 +1018,7 @@ fix attempts) finally root-caused for real, plus a new feature.
    Fixed by using `QApplication.sendEvent()` instead, which correctly
    exercises the whole dispatch chain. Verified against both a
    different card and a click on empty background.
-3. **Filters tab padding -- removed the scroller entirely, per Max's
+3. **Filters tab padding -- removed the scroller entirely, per the
    own direct suggestion**, rather than continuing to refine the
    capped/scrolling version through a third attempt.
    `_wrap_scrollable()` is now a documented no-op passthrough (kept,
@@ -888,7 +1042,7 @@ fix attempts) finally root-caused for real, plus a new feature.
    untouched, and an already-.mp4 file is never copied at all.
 
 Caught one more real bug in my OWN edit while wiring the Settings
-checkbox for item 4, not left for Max to hit: a `str_replace` meant to
+checkbox for item 4, not left to hit: a `str_replace` meant to
 insert the new checkbox's note label accidentally consumed the
 following method's own `def _export_settings(self):` line, which
 would have crashed Settings outright on construction -- caught
@@ -1063,7 +1217,7 @@ half of 5 were already done; this covers the rest).
    NOT fire `renamed` and that it fires exactly once on commit.
 7. **Item 4: replaced "Mark as Edited" with a single "Edited"
    checkbox** in the context menu (embedded via `QWidgetAction`, same
-   as the Filters checkboxes), covering both directions Max asked for
+   as the Filters checkboxes), covering both directions Requested:
    in one control rather than two separate menu items -- checked only
    when EVERY selected video already has `has_edit` set; toggling
    applies the checkbox's new state to the whole selection. New
@@ -1089,7 +1243,7 @@ half of 5 were already done; this covers the rest).
    box in both Settings pages carries the custom stylesheet.
 
 ### Previous session
-Six of the seven items from Max's latest batch -- item 2 ("adjust all
+Six of the seven items from the latest batch -- item 2 ("adjust all
 of the settings things to be custom instead of KDE") is still
 outstanding, the biggest remaining piece by far, not started this
 round.
@@ -1115,7 +1269,7 @@ round.
 3. **"Mark as Edited" added to the context menu** -- new
    `library.mark_as_edited()`, manually flips `has_edit` without a
    real trim/backup, for a video that's already edited from elsewhere
-   or one Max doesn't consider "raw" even though the app itself never
+   or one not considered "raw" even though the app itself never
    touched it. Deliberately leaves `backup_path` alone (stays None) --
    `undo_edit()`/`clear_edit_backup()` already correctly refuse to act
    without a real backup regardless of `has_edit`, so this can't put a
@@ -1221,7 +1375,7 @@ Filters menu and the Sort popover's Filters page.
 **A real data-loss incident, root-caused and fixed, plus the durability
 feature it directly motivated.** Reported: every video's tags/filters
 gone (trims survived), and every video showing "created today" even
-though most were captured well before. Max also mentioned separately
+though most were captured well before. Also mentioned separately
 having moved the entire clips folder out and back in a while back --
 that's the actual trigger, confirmed directly.
 
@@ -1270,7 +1424,7 @@ that's the actual trigger, confirmed directly.
    backdated file) and that the capture pipeline's own direct
    `add_video()` calls still default to "now" as before.
 3. **New: a durable, human-readable manifest file outside the SQLite
-   DB**, per Max's own direct follow-up request once the root cause
+   DB**, per the direct follow-up request once the root cause
    was found -- `library.write_library_manifest()` writes a plain
    JSON snapshot (title, tags, favorite, has_edit, dates, for every
    video) to `~/.config/afterglow/library_manifest.json`, called after
@@ -1359,14 +1513,14 @@ directly and fixed -- plus the quick-action-button shape, the
 previewer's fade in/out, and its size reverted back to fixed pixels.
 
 **Startup performance -- confirmed root cause, fixed at both layers.**
-Max's own diagnosis was exactly right: `resource_qpixmap()`/
+the initial diagnosis was exactly right: `resource_qpixmap()`/
 `resource_qicon()` (afterglow/gui/resources/__init__.py) had NO
 caching at all -- every single call re-read the file from disk AND
 re-decoded the full-resolution PNG from scratch, even for the exact
 same file requested by many different widgets (a filter icon or
 `CustomCheckBox`'s checkmark, for example, loaded fresh for every
 single VideoCard/checkbox instance). On top of that, several of the
-actual PNG files Max had provided across recent sessions were
+actual PNG files provided across recent sessions were
 enormously oversized for how they're ever displayed on screen --
 `checkmark_icon.png` was 1920x1920 (577KB), the four new action icons
 were all 2048x2048 (up to 421KB each), `volume_speaker_icon.png` was
@@ -1382,7 +1536,7 @@ to be. Fixed both layers:
    `set_icon_pixmap`, etc. -- already treats these as read-only source
    images and returns a NEW pixmap for anything that needs to look
    different).
-2. Resized the actual on-disk files, per Max's own suggested target
+2. Resized the actual on-disk files, per the suggested target
    sizes: small UI icons (checkmark, x, search/refresh/sort,
    edit/copy/filters/delete, volume speaker) down to 128x128; sidebar/
    tab full-art icons (library/editor/settings/local/uploaded videos)
@@ -1396,7 +1550,7 @@ to be. Fixed both layers:
    `resource_qpixmap()` now returns the literal same object on repeat
    calls (not a fresh decode); confirmed every runtime-loaded PNG is
    now under 512px in its largest dimension; and measured actual
-   construction time directly -- `SettingsPage()` (Max's own suspicion
+   construction time directly -- `SettingsPage()` (the initial suspicion
    for why Settings specifically was slow, given how many
    `CustomCheckBox`es it has) now constructs in ~51ms. `LibraryPage()`
    with 20 videos still takes real time (~850ms) -- that remaining
@@ -1413,7 +1567,7 @@ to be. Fixed both layers:
    visible"). Switched to `set_circular(56)` -- the same mechanism the
    Search/Refresh/Sort header buttons already use -- which fixes both
    the shape AND the size in one call (slightly larger than the old
-   48px, per Max's own "slightly increase the size"). Also reduced
+   48px, per the "slightly increase the size"). Also reduced
    `CustomButton`'s own icon margin fraction (0.2 -> 0.14, applies to
    every icon-bearing CustomButton, not just these four) so icons fill
    more of whatever shape they're drawn in generally. Verified pixel-
@@ -1437,7 +1591,7 @@ to be. Fixed both layers:
    actually animating down, and the overlay only truly closes (its
    `closed` signal fires, triggering MainWindow's own cleanup) once
    that fade-out completes.
-4. **Preview content size reverted to a fixed pixel size**, per Max's
+4. **Preview content size reverted to a fixed pixel size**, per the
    direct request -- back to 1581x1035 (the same value from before the
    proportional-sizing overlay rewrite), rather than a percentage of
    whatever window it's embedded in. Still clamped to fit the overlay's
@@ -1448,7 +1602,7 @@ to be. Fixed both layers:
 Two pieces landed and packaged so far -- a critical regression fix
 (the previewer redesign from last session broke in exactly the ways a
 separate top-level window would be expected to), and the action-button
-icons Max provided. Four more items (page-load lag, the still-invisible
+icons provided. Four more items (page-load lag, the still-invisible
 outlines, the Filters tab's own remaining issues, and custom Settings
 widgets) are queued but not started yet this round -- see "Next up".
 
@@ -1459,7 +1613,7 @@ possible to open two at once. All three are exactly the failure modes
 of a genuinely separate OS window (a modal dialog can make the window
 manager swallow clicks on whatever's behind it before the app ever
 sees them; nothing prevented a second `.show()` from creating a second
-one). Per Max's own suggestion ("put the window in the main window and
+one). Per the initial suggestion ("put the window in the main window and
 size it proportionally"): `VideoPreviewDialog` (a `QDialog`) is now
 `VideoPreviewContent` (a plain `QWidget`) wrapped by a new
 `VideoPreviewOverlay`, which is a direct CHILD of MainWindow's central
@@ -1487,7 +1641,7 @@ proportionally smaller and centered; clicking the scrim closes it;
 opening a second preview replaces the first with the old one hidden
 immediately, not left visible until Qt gets around to deleting it.
 
-**Video-card action-button icons.** The 4 icons Max provided (pencil/
+**Video-card action-button icons.** The 4 icons provided (pencil/
 copy/funnel/trash) replace the Edit/Copy/Filters/Delete text labels on
 the action-buttons row -- shown at their own original colors (not
 retinted, unlike the Search/Refresh/Sort toolbar icons, since these
@@ -1510,7 +1664,7 @@ further, one flagged as "still not visible"), plus four new items.
    file) 150ms after the original load, and if OUR OWN explicit
    `play()` had already started real audio output by then, the reload
    briefly overlapped a second copy of it starting on top -- "doubles
-   up on the audio... jarring." Per Max's own suggested fix (delay the
+   up on the audio... jarring." Per the initial suggested fix (delay the
    autoplay a little): `VideoPreviewDialog._load_video()` now checks
    `MpvVideoWidget._first_load_done` and, ONLY on the very first video
    ever loaded into a fresh widget (Prev/Next never re-trigger the
@@ -1557,7 +1711,7 @@ further, one flagged as "still not visible"), plus four new items.
    value from whatever fade last completed, silently skipping the
    blend for that frame.
 5. **Page switch lag, still present -- removed the automatic Library
-   refresh entirely, per Max's own suggestion.** Both of last round's
+   refresh entirely, per the suggestion.** Both of last round's
    fixes (a faster crossfade, deferring the refresh call) only changed
    WHEN or HOW FAST the rebuild happened, never WHETHER it happened --
    rebuilding potentially hundreds of VideoCards is real, unavoidable
@@ -1579,14 +1733,14 @@ further, one flagged as "still not visible"), plus four new items.
    codebase (a sandbox-vs-real-compositor rendering difference).
    Reordered all FIVE affected `paintEvent`s (the four pages from last
    round, plus the sidebar itself -- new `_Sidebar(QWidget)` subclass
-   in main_window.py, since Max explicitly listed "sidebar" as still
+   in main_window.py, since "sidebar" was explicitly listed as still
    missing one this round) to call `super().paintEvent()` FIRST and
    draw the border SECOND, guaranteeing the border is always the last
    thing painted regardless of what the base class does on any given
    platform. Verified this doesn't regress anything in this sandbox
    (all prior pixel checks still pass) and added a matching check for
    the sidebar itself -- genuinely can't confirm this is the real
-   fix without Max's own machine, flagged as such.
+   fix without the real machine, flagged as such.
 7. **Sort popover's Filters-tab padding -- actually fixed this time,
    found the real cause.** Last round's fix (cap each page's own
    wrapping QScrollArea to `min(sizeHint, 320)`) was necessary but not
@@ -1676,7 +1830,7 @@ separately.
    actually appears (a broad "does the accent color show up anywhere
    on this widget" scan, not a single fragile coordinate guess).
 4. **Page outlines not appearing -- likely root cause found (can't
-   fully confirm without Max's real display, but fixed regardless).**
+   fully confirm without the real display, but fixed regardless).**
    The border-drawing code itself was correct, but it relied on
    whatever the ACTIVE QSTYLE's own default QLayout margin happens to
    be to leave room for the border -- which this sandbox's default
@@ -1696,7 +1850,7 @@ separately.
    `BORDER_WIDTH` import (only `paint_page_outline` had been
    imported), which would have crashed SettingsPage outright on
    construction -- caught immediately by actually constructing one
-   and checking, not left for Max to hit.
+   and checking, not left to hit.
 
 ### Previous session
 A huge combined batch on top of the previewer's first version --
@@ -1867,7 +2021,7 @@ than continuing to block:
 Play/pause, fullscreen, and the volume/mute button are all custom-
 painted (a triangle/two bars, four corner brackets, a speaker cone +
 arcs) rather than needing a provided icon asset for any of them --
-per Max's own "see which of these you can do yourself." The scrubber
+per the "see which of these you can do yourself." The scrubber
 and volume level are real `QSlider`s (dragging, click-to-seek, and
 keyboard stepping all come for free from that) recolored via
 stylesheet to match the theme, rather than built from scratch.
@@ -1894,7 +2048,7 @@ piece, a real dropdown needs its own popup list styled like the
 search bar's text-bubble attachment).
 
 ### Previous session
-Five more items from Max's latest feedback round, all implemented and
+Five more items from the latest feedback round, all implemented and
 verified:
 
 1. **Smooth scrolling everywhere**, not just the Library grid. Every
@@ -1935,7 +2089,7 @@ verified:
    Replaces every `QGroupBox` in settings_page.py and
    filters_settings_page.py, AND the Sort popover's tag-category
    grouping in library_page.py's `_build_filters_page` -- the "sort
-   tab" headers Max meant. Rounded, accent-colored border with a
+   tab" headers that were meant. Rounded, accent-colored border with a
    punched-out gap behind the title text (same idea as a native
    groupbox's own title notch), filled with the actual palette window
    color so the border doesn't visibly run behind the text.
@@ -1991,7 +2145,7 @@ about click behavior vs. the existing multi-select and Local-only vs.
 Uploaded scope).
 
 ### Previous session
-Max provided a real app icon (replacing the `library.png`-derived
+provided a real app icon (replacing the `library.png`-derived
 placeholder from last session) and gave three more animation notes:
 
 1. **New app icon applied.** Regenerated the full 9-size icon set
@@ -2004,7 +2158,7 @@ placeholder from last session) and gave three more animation notes:
    button" overlay effect added last session (`reveal_from_point`,
    called from `_on_settings_tab_clicked`) is gone -- tab switching is
    back to a plain, instant `QStackedWidget.setCurrentIndex()`, per
-   Max's direct "get rid of the animations in the settings."
+   the direct "get rid of the animations in the settings."
 3. **Search bubble now grows out of the Search icon**, matching what
    Sort already had. `SearchBubble.show_below()` now calls the same
    `animate_popup_from_point()` SortPopover uses, computing its usual
@@ -2063,7 +2217,7 @@ Video;Recorder;) and the full 9-size icon set, generated from
 `library.png` (the sidebar's own Library icon) resized down via
 Pillow, since no dedicated app logo/icon has ever been provided --
 flagged here as a placeholder specifically so a future session (or
-Max directly) knows to swap in a real one if/when he has one, rather
+directly) knows to swap in a real one if/when one exists, rather
 than assuming this was a deliberate icon choice. Verified: the
 `.desktop` file parses correctly as valid INI/desktop-entry syntax,
 and every one of the 9 generated PNGs is confirmed to actually be
@@ -2126,7 +2280,7 @@ Four more items:
      widget cleans itself up once the animation completes.
 4. **Library scanning can now be offloaded to the background daemon**
    (new `AppSettings.offload_library_scan_to_daemon`, off by default,
-   toggle in Settings > Advanced > Performance). Per Max's own
+   toggle in Settings > Advanced > Performance). Per the
    suspicion that this is better for drive health: with it on,
    `LibraryPage` skips its own `scan_and_ingest_new_videos()`/
    `prune_missing_videos()`/`remove_stray_orig_entries()` calls
@@ -2154,7 +2308,7 @@ Seven more direct pieces of feedback on last session's work, all
 implemented and pixel-verified:
 
 1. **Sidebar rewritten for real this time.** Last session's "turquoise
-   layer underneath the old border system" was explicitly NOT what Max
+   layer underneath the old border system" was explicitly NOT what was
    wanted -- he asked again for "the same custom button type as
    switching between local/uploaded videos in the library." Done
    properly now: `_ScalingIconButton` (border-gradient images, hue
@@ -2168,7 +2322,7 @@ implemented and pixel-verified:
    `'right'` pair). All three sidebar buttons (Library, Editor,
    Settings) now use it with `position='full'`, and the sidebar's own
    `QVBoxLayout` spacing/margins are set to `appearance.ui_padding` --
-   the EXACT same value the Library grid uses between cards, per Max's
+   the EXACT same value the Library grid uses between cards, per the
    explicit "ensure that the padding between them is the same padding
    between videos" (not a separately-tuned constant that happens to
    look similar). Verified pixel-level: the gap between buttons equals
@@ -2269,7 +2423,7 @@ long-standing bug finally root-caused. Newest first isn't practical
 here given the volume; grouped by area instead.
 
 **The border-width bug -- ROOT CAUSE FOUND, not just bumped again.**
-Max confirmed this is the SAME setting that gets replaced by the
+Confirmed is the SAME setting that gets replaced by the
 unedited highlight (`unedited_selected_border_width`), rendering at
 3px on his real machine despite the code default having been doubled
 four times across past sessions (9 -> 18 -> 36 -> 72 -> 144). Traced
@@ -2282,13 +2436,13 @@ oldest default) got renamed correctly but that carried-over value
 never matched any number in the separate "stale value -> bump
 forward" migration list, so it sailed through every one of those
 untouched while the CODE default kept climbing in a direction his
-real saved config could never follow. Every one of Max's past "please
+real saved config could never follow. Every one of the past "please
 double it" requests was reasonably based on what he actually SAW
 rendered (a small, never-budging border), not the increasingly
 disconnected code default -- which is exactly why the gap kept
 growing instead of closing. Fixed: default reset to 6 (double the
 confirmed 3px), and 3 (plus the now-understood-mistaken 144) added to
-the stale-value migration list. Verified by simulating Max's exact
+the stale-value migration list. Verified by simulating the exact
 scenario -- the old field name, holding value 3 -- and confirming it
 now correctly becomes 6, plus confirming a genuinely custom value
 still survives untouched.
@@ -2313,7 +2467,7 @@ still survives untouched.
   grid's actual spacing/margins.
 
 **Custom checkboxes -- new `custom_checkbox.py`, `CustomCheckBox`.**
-Video-card-background box + accent outline + the checkmark icon Max
+Video-card-background box + accent outline + the checkmark icon
 provided, replacing native QCheckBox rendering. Wired into Favorite,
 Highlight Unedited, and all four Info-page checkboxes.
 `FilterCheckBox` (library_page.py) now subclasses `CustomCheckBox`
@@ -2327,7 +2481,7 @@ shows the checkmark or nothing.
   HORIZONTALLY toward the peak so the curve leaves the body's flat
   top edge on a near-horizontal tangent ("flatten out as it reaches
   the text bubble") before swinging sharply back in to the point --
-  the "bump"/arc shape Max described, replacing the old smoother
+  the "bump"/arc shape described, replacing the old smoother
   curve.
 - `_TAIL_GAP` (6px): the bubble now floats that far below the button
   instead of touching it -- just an offset added in `show_below()`'s
@@ -2356,10 +2510,10 @@ emit`, `_bulk_copy_to_clipboard({self.video_id})`, a new
 `_build_filters_menu` result the right-click Filters submenu builds,
 `_bulk_delete({self.video_id})`) -- one source of truth for what each
 action does, not a parallel reimplementation. Text labels for now
-(Max: icons for these later). Toggle lives on the Info popover page
+(icons for these come later). Toggle lives on the Info popover page
 alongside the other three card-info checkboxes.
 
-**Sidebar -- turquoise added, NOT a full rewrite.** Max asked for the
+**Sidebar -- turquoise added, NOT a full rewrite.** Requested: the
 sidebar (Library/Editor/Settings) to become "custom buttons akin to
 the current library local and uploaded tabs, use turquoise." Given
 how much carefully-tuned functionality `_ScalingIconButton` already
@@ -2381,7 +2535,7 @@ test config, since it paints over most of the turquoise layer and
 would confound a corner check): checked/active fill matches
 `Theme.turquoise()` exactly, unchecked/inactive matches
 `.darker(140)` exactly, and each button's corners round exactly where
-expected. Flagged as a scoped-down delivery, not deferred: if Max
+expected. Flagged as a scoped-down delivery, not deferred: if the
 wants the FULL Library-tab-button treatment (dropping the border-
 customization suite entirely rather than layering turquoise
 underneath it), that's a separate, larger follow-up.
@@ -2405,7 +2559,7 @@ touching Local/Uploaded pair) with real spacing between them via
 `addSpacing()` -- "these tabs can be completely separate, each having
 their own rounding and a bit of padding in between them." Text for
 now; CustomButton already supports `set_icon_pixmap()`/
-`set_circular()` for when Max provides per-tab icons and asks for
+`set_circular()` for when per-tab icons are provided and requested as
 these to become circles later, same as the Library header's Search/
 Refresh/Sort buttons -- no new plumbing needed for that step.
 Verified pixel-level that every corner of every tab button rounds
@@ -2418,7 +2572,7 @@ search-bar-style custom box) -- a much broader, more open-ended sweep
 across many files than anything else in this batch, not started.
 
 ### Previous session
-Max caught his own copy-paste mistake from two sessions ago: the
+A copy-paste mistake was caught in the provided colors from two sessions ago: the
 "everything is the same color" report from last session wasn't a code
 bug after all (confirmed then, holds up now) -- he'd meant to send
 three DIFFERENT hex values for accent/card_background/library and
@@ -2457,7 +2611,7 @@ investigating the second one:
    actually circular (corner pixel differs from center fill), not just
    "square with a big enough radius to look round from a distance."
 2. **Found and fixed the REAL bug behind "changing the border
-   thickness in the past doesn't seem to have worked."** Max reported
+   thickness in the past doesn't seem to have worked."** Reported:
    this while asking for the unedited/selected border to double again
    (144px) -- investigated rather than just bumping the number again.
    The actual cause: `settings_page.py`'s
@@ -2483,7 +2637,7 @@ investigating the second one:
    reflects the new 144px margin directly (`THUMB_SIZE + 2*144`), not
    just that the config field holds the right number.
 
-**Investigated, NOT changed, needs Max's input:** "everything in the
+**Investigated, NOT changed, needs the input:** "everything in the
 Library page is the same color now... this remains even after I reset
 my colors." Checked `Theme.accent()` / `card_background()` /
 `library_background()` directly -- each still correctly reads its own
@@ -2496,7 +2650,7 @@ Default Colors" is also working exactly as coded (`_revert_default_colors`
 resets to `AppearanceSettings()`'s own defaults) -- it doesn't change
 anything because the CURRENT default already IS that same flat scheme,
 not because the button is broken. So: not a bug, but also clearly not
-what Max wants now that he's seeing it rendered -- flagged rather than
+what is wanted now that it's visible rendered -- flagged rather than
 guessed at, since picking new specific hex values isn't something to
 do without his input. The one piece he confirmed as already correct
 (the edited-video border's color, which uses `app_background()`) makes
@@ -2509,7 +2663,7 @@ Direct follow-up feedback on last session's four items, plus one more
 long-queued item (Local/Uploaded's own custom page headers) finally
 tackled. Seven pieces, given together:
 
-1. **Search/Refresh/Sort moved into the header row.** Per Max's direct
+1. **Search/Refresh/Sort moved into the header row.** Per the direct
    instruction ("place the search, refresh, and sort up top with the
    pages in the empty space instead of having their own little space
    that enroaches on the videos"), these three buttons no longer have
@@ -2568,7 +2722,7 @@ tackled. Seven pieces, given together:
    placeholders. `CustomButton` gained `set_icon_pixmap()` (draws a
    centered, aspect-ratio-preserved icon instead of the text label when
    set) since the button already fully replaces native painting and
-   had nothing to hang a normal `setIcon()` off of. The four icons Max
+   had nothing to hang a normal `setIcon()` off of. The four icons
    provided are bundled as `afterglow/gui/resources/{search,refresh,
    sort,search_icon_active}.png` (also covered by pyproject.toml's
    existing `gui/resources/*.png` package-data glob, so no packaging
@@ -2604,7 +2758,7 @@ tackled. Seven pieces, given together:
      the bubble on that) instead of left-aligning to it, which is what
      was actually causing "below it and to the side" with a bubble
      wider than the button.
-6. **New color palette given directly by Max**: accent, card_background,
+6. **New color palette given directly **: accent, card_background,
    and library_background all set to the SAME hex (`#152c4f`);
    turquoise moved to `#0c8ea0`; app_background explicitly left alone
    ("keep the current app background color"). Same stale-default
@@ -2616,7 +2770,7 @@ tackled. Seven pieces, given together:
 7. **Scroll frame-rate fix.** Reported directly: "the scrolling is low
    frame rate, but the movement is smooth" -- i.e. last session's
    SmoothScrollArea animation itself was fine, but something per-frame
-   was expensive. Diagnosis matched Max's own suggestion exactly
+   was expensive. Diagnosis matched the initial suggestion exactly
    (video cards only need to change on resize; thumbnails only on
    refresh): `VideoCard.paintEvent`, `_InfoBox.paintEvent`, and
    `OutlinedLabel.paintEvent` were all reconstructing rounded-rect
@@ -2676,15 +2830,15 @@ installed fresh via pip before testing, same as always).
    and average/longest/shortest video length. Combined Local +
    Uploaded (`list_videos()` with no filters already returns both).
    Length stats use the CURRENT (possibly trimmed) `duration_sec`, per
-   Max's direct answer, not the original pre-trim capture length.
+   the direct answer, not the original pre-trim capture length.
    Percentages deliberately NOT shown on the three length rows --
    there's no sensible "percent of what" for a duration, only for a
-   count-of-videos subset -- flagged as a judgment call in case Max
+   count-of-videos subset -- flagged as a judgment call in case the
    actually wants a percent shown there anyway (e.g. against some
    fixed reference length), since the ask's own wording technically
    covered "all except total." Read-only tab, no save() hook (unlike
    every other Settings tab) -- deliberately only recomputes when its
-   own Refresh button is clicked, per Max's explicit instruction to
+   own Refresh button is clicked, per the explicit instruction to
    avoid a full library scan (every video's tags + duration) running
    on every "Settings became visible," which is how `FiltersSettingsPage`
    handles ITS dynamic lists. Verified against a real SQLite-backed
@@ -2695,7 +2849,7 @@ installed fresh via pip before testing, same as always).
 3. **Sort popover redesign** -- new `afterglow/gui/sort_popover.py`
    (`SortPopover`, `_PopoverTabButton`, `_RoundedContentArea`). Replaces
    the combined Filters/Sort By/Info `QMenu` (three labeled sections
-   stacked vertically -- the "vertical tiling" Max wanted gone) with an
+   stacked vertically -- the "vertical tiling" requested gone) with an
    actual custom popup: three horizontally-tiled tabs switching a real
    `QStackedWidget` page below, rather than a dropdown list. Rounding
    exactly as specified: the two OUTER tabs round only their own outer
@@ -2748,12 +2902,12 @@ installed fresh via pip before testing, same as always).
    the outline strokes as one continuous shape rather than two
    overlapping ones. Outline color is `Theme.accent()` (the button
    color); fill is `Theme.card_background()` (the video card
-   background color), per Max's explicit color pairing for this one --
+   background color), per the explicit color pairing for this one --
    note this is the OPPOSITE pairing convention from the Sort popover's
    content panel above only in which theme color plays which role, not
    a new color source. Auto-closes on an outside click for free via
    `Qt.Popup`'s own mouse-grab behavior -- no separate "clicked
-   elsewhere" handling needed, confirmed this is what Max wanted when
+   elsewhere" handling needed, confirmed this is what was wanted when
    asked directly. `search_edit` is now just an attribute alias
    pointing at `SearchBubble.line_edit` (`self.search_edit =
    self.search_bubble.line_edit`) so every existing reference
@@ -2942,7 +3096,7 @@ include a full Advanced Sound feature partway through. In order:
    existing `set_volume()`) backs a new "Watch Speed" `QDoubleSpinBox`
    (0.05x-4.00x) in the Editor -- preview-only, doesn't touch the saved
    file, and resets to 1.00x on every `load_video()` call rather than
-   persisting across videos (a judgment call made with Max away from
+   persisting across videos (a judgment call made with no feedback available from
    his PC -- flagged as an open question below in case that's not what
    was wanted). Prev/Next arrows now flank `video_widget` directly
    (`video_row`, a new `QHBoxLayout` wrapping it). They cycle according
@@ -2967,7 +3121,7 @@ include a full Advanced Sound feature partway through. In order:
    instance's real `speed` property and reset correctly on video
    change.
 
-   **Bug found afterward (Max caught it from a screenshot, not this
+   **Bug found afterward (caught from a screenshot, not this
    session's own testing):** wrapping `video_widget` in `video_row` for
    the arrows broke the Editor's whole layout -- the video collapsed to
    a short band near the top (~20% of window height) with all the
@@ -3054,7 +3208,7 @@ include a full Advanced Sound feature partway through. In order:
     100%/50%/200%, and a full Settings-page save/load round trip.
 
 11. **Border image-replacement + hue shift** (the other two thirds of
-    the border customization suite, completed after all -- Max asked
+    the border customization suite, completed after all -- requested
     to continue on it while away from his PC, so the "needs a real
     display to confirm" concern from "Next up" got resolved with
     judgment calls instead, clearly flagged below rather than silently
@@ -3106,7 +3260,7 @@ include a full Advanced Sound feature partway through. In order:
     directly against a real `ClipConfigRow`.
 
 13. **Selection border swapped from flat gray to a gold/white
-    gradient image**, per an image Max provided directly (now bundled
+    gradient image**, per an image provided directly (now bundled
     as `afterglow/gui/resources/selected_border_gradient.png`).
     `VideoCard.paintEvent`'s selected branch now `drawPixmap`s this
     (stretched to fill, same technique as the unedited-highlight
@@ -3133,7 +3287,7 @@ include a full Advanced Sound feature partway through. In order:
     actual work:
     - `afterglow/gui/rounded_rect.py` -- `rounded_rect_path()`, a
       smooth (Bezier-based, tuned flatter than a true quarter-circle
-      per Max's "smooth, not immediately circular" clarification)
+      per the "smooth, not immediately circular" clarification)
       rounded-rect path builder with per-corner skip flags for touching
       edges. Not yet APPLIED to anything real -- that's later phases --
       but its geometry is fully verified: a rounded corner's exact tip
@@ -3161,7 +3315,7 @@ include a full Advanced Sound feature partway through. In order:
       rejection -- all against a real `SettingsPage`.
 
 15. **Spam-click library bug -- found and fixed, not guessed at.**
-    Max gave exact repro steps (spam-click the sidebar Library button,
+    Exact repro steps were given (spam-click the sidebar Library button,
     or the per-tab Refresh button) this time, which made this
     straightforward to actually reproduce rather than search blind.
     Root cause: `_VideoGridTab.refresh()` clears old cards via
@@ -3224,19 +3378,19 @@ include a full Advanced Sound feature partway through. In order:
       between the outer card edge and its two children, and between
       the two children themselves -- generous enough that the outer
       background portrusion (`Theme.card_background()`) stays visible
-      on every side, everywhere, per Max's ask. Neither inner box's own
+      on every side, everywhere, per the ask. Neither inner box's own
       internal children reach far enough into ITS corners to need any
       per-pixel child masking for the rounding to look right -- the
       padding itself keeps everything clear of the curved areas, which
       is what let this be done with plain clip-path-then-fill/draw
       calls in `paintEvent`, no `QWidget.setMask()` or render-to-pixmap
       tricks needed.
-    - **Unedited highlight redefined**, per Max's clarification: now
+    - **Unedited highlight redefined**, per the clarification: now
       BOTH a background wash across the whole outer card (behind BOTH
       the video box and info box -- was previously the only place the
       highlight rendered at all) AND a separate border drawn
       specifically into `video_box`'s own margin. Selection was
-      deliberately NOT redefined the same way (Max only asked for this
+      deliberately NOT redefined the same way (only this was requested
       on the unedited highlight) -- it stays a ring around the whole
       outer card, same as before, just now rounded-corner-aware.
     - **Rounded corners actually applied for the first time** (Phase
@@ -3272,7 +3426,7 @@ include a full Advanced Sound feature partway through. In order:
       rounded corners default to on -- not a regression, the same
       "corner pixel is legitimately excluded now" situation.
     - **Not done yet, deferred:** the info-box-click-opens-a-separate-
-      smaller-preview-player feature (Max confirmed: distinct from both
+      smaller-preview-player feature (confirmed: distinct from both
       the Editor and the future hover-autoplay), and what clicking the
       thumbnail/video-box area itself should do now that it's visually
       separated from the info box (current selection/double-click-to-
@@ -3282,7 +3436,7 @@ include a full Advanced Sound feature partway through. In order:
       assuming this is right once the preview player actually gets
       built). Video padding setting also not done yet.
 
-17. **Real-screenshot feedback round (first time Max actually saw this
+17. **Real-screenshot feedback round (first time this was actually seen
     rendered) -- a big batch of fixes and new small features.** Full
     Q&A and every decision below is also folded into the "MAJOR EPIC"
     section's spec near the top of this file, since some of these
@@ -3299,7 +3453,7 @@ include a full Advanced Sound feature partway through. In order:
       constant. A video with a long auto-generated timestamp title
       (common for never-renamed, i.e. still-unedited, clips) shrinks
       its font more than one with a short hand-picked title (common
-      for renamed, i.e. edited, clips) -- so the correlation Max
+      for renamed, i.e. edited, clips) -- so the correlation
       actually saw ("unedited next to edited") was real, just not
       caused by edit-state itself. Fixed by reserving the title row's
       height from the TARGET (un-shrunk) font size in both `__init__`
@@ -3309,19 +3463,19 @@ include a full Advanced Sound feature partway through. In order:
       Resize Text to Fit, end up with literally identical title-row
       pixel heights and identical overall `sizeHint()`, despite very
       different actual font sizes.
-    - **New color palette**, given directly by Max, replacing the
+    - **New color palette**, given directly , replacing the
       placeholders from two sessions ago: `#2161bb` (accent -- buttons,
       card info box), `#274162` (card background), `#1d2c3d` (library
       page background -- reassigned from turquoise), and turquoise
       itself (`#12b5c8`) reassigned to a NEW, narrower role: the Local/
-      Uploaded tab icons' own background specifically (Max: "for now
+      Uploaded tab icons' own background specifically (request: "for now
       leave it as just local and uploaded" -- filters mentioned as a
       possible future use, not done). App background
       (`afterglow_color_app_background`) is no longer an independently
-      Max-picked color -- its default is now COMPUTED from the library
+      hand-picked color -- its default is now COMPUTED from the library
       background (10% brighter, 15% more saturated in HSV, via
       `colorsys`) so it's reliably a bit lighter than the library page
-      per Max's earlier ask, while staying a normal editable field
+      per the earlier ask, while staying a normal editable field
       afterward. Wired into real widgets for the first time this
       session: `MainWindow`'s central widget (app background) and
       `LibraryPage`'s scroll area + grid container (library
@@ -3338,7 +3492,7 @@ include a full Advanced Sound feature partway through. In order:
     - **Outlined on-card text** -- new `afterglow/gui/outlined_label.py`
       (`OutlinedLabel`, a `QLabel` replacement drawing text via a
       `QPainterPath` fill+stroke instead of QLabel's own plain
-      rendering), wired into all four text elements per Max's answer
+      rendering), wired into all four text elements per the answer
       ("all on-card text"): title, info line, date line, tag names.
       Default fill `#9bcbff`, outline `#3669a0`, both new Settings >
       General fields. **Found and fixed a real rendering bug while
@@ -3357,7 +3511,7 @@ include a full Advanced Sound feature partway through. In order:
       three small text elements use that rather than force an outline
       that would just replace the fill color entirely. The title is
       the only one of the four that gets a genuine two-tone effect;
-      this is a real font-size limitation, not a setting Max can tune
+      this is a real font-size limitation, not a setting that can be tuned
       around. Verified by rendering real labels and checking actual
       pixel colors match both the fill and outline hex values (title),
       and that the small labels render in the fill color with no
@@ -3389,7 +3543,7 @@ include a full Advanced Sound feature partway through. In order:
       (bakes a transparent-cornered clip into a pixmap copy), called
       from `_load_pixmap()`.
     - **Always-on thumbnail contrast outline**, new and separate from
-      the unedited-highlight border -- per Max's answer to "keep both,
+      the unedited-highlight border -- per the answer to "keep both,
       the thumbnail outline is for contrast": a thin (2px) stroke drawn
       at the thumbnail's own content boundary, in
       `card_text_outline_color`, regardless of edit/selection state.
@@ -3404,11 +3558,11 @@ include a full Advanced Sound feature partway through. In order:
       changes rather than regressions (the old radius default, the old
       hex codes, and the tab-icon-size test needing to distinguish the
       new turquoise background fill from the icon's own silhouette).
-    - **Still not done**, per Max's own "if you get to those now"
+    - **Still not done**, per the "if you get to those now"
       framing (explicitly optional this round): turquoise applied to
       filters as well as the Local/Uploaded tabs.
 
-18. **Follow-up from a second screenshot** (Max: turquoise showing up
+18. **Follow-up from a second screenshot** (report: turquoise showing up
     in the wrong places, thumbnails not visibly rounded, and a
     deliberate redesign of the unedited-highlight).
     - **Investigated the turquoise/rounding reports first, before
@@ -3425,14 +3579,14 @@ include a full Advanced Sound feature partway through. In order:
         tab-icon-background just last session), and dataclass DEFAULT
         changes never retroactively update a value already written to
         an existing `config.toml`, the most likely explanation for
-        what Max is seeing is a config file on his end still holding
+        what is visible there is a config file still holding
         color values saved under an OLDER assignment -- worth checking
         Settings > Advanced directly to see what's actually saved
         there now, since editing/re-saving those fields (or deleting
         the relevant lines from the config file to fall back to the
         current code defaults) would resolve it either way. Flagged as
         a real open question below rather than guessed at further,
-        since there's no way to inspect Max's actual local config file
+        since there's no way to inspect the actual local config file
         from here.
       - Thumbnail rounding: `round_pixmap_corners()` was verified
         directly against a real 16:9 test clip's actual generated
@@ -3443,11 +3597,11 @@ include a full Advanced Sound feature partway through. In order:
         resulting pixmap's corner pixels are genuinely transparent
         (alpha 0), confirming the rounding IS being applied correctly
         at the pixmap level in this sandbox. Since this can't be
-        cross-checked against Max's actual on-screen KDE/Wayland
+        cross-checked against the actual on-screen KDE/Wayland
         rendering, this is flagged as unverified-on-real-hardware
         rather than "definitely fine" -- but there's no bug found in
         the actual rounding code itself.
-    - **The redesign Max asked for outright (not a bug -- a deliberate
+    - **The redesign Requested: outright (not a bug -- a deliberate
       change from what was confirmed two sessions ago): the unedited-
       highlight background wash is REMOVED.** The card's own background
       is now ALWAYS plain `card_background()`, regardless of edit
@@ -3476,7 +3630,7 @@ include a full Advanced Sound feature partway through. In order:
       correct, expected updates given the design actually changed, not
       regressions.
 
-19. **The turquoise-color bug -- found for real this time.** Max
+19. **The turquoise-color bug -- found for real this time.** The
     confirmed the two obvious explanations from item 18's investigation
     were BOTH ruled out (he'd rebuilt/redeployed, and both Custom
     Buttons and Afterglow Theme were confirmed on), which meant there
@@ -3499,9 +3653,9 @@ include a full Advanced Sound feature partway through. In order:
     behavior (consistent with the various other "this plugin does not
     support..." limitations already known from earlier sessions), which
     is exactly why direct pixel tests against fresh configs kept coming
-    back correct in this environment despite Max seeing the wrong
+    back correct in this environment despite the real machine showing the wrong
     colors on his real machine -- a good concrete example of "verified
-    in the sandbox" and "verified for Max" not being the same claim,
+    in the sandbox" and "verified on the real machine" not being the same claim,
     worth remembering for any future background/stylesheet work
     specifically. Fixed by switching both to `QPalette` (`setPalette()`
     + `setAutoFillBackground(True)`), which sets a color on exactly one
@@ -3537,7 +3691,7 @@ include a full Advanced Sound feature partway through. In order:
     widget) deliberately deferred.**
     - **The library-background-turquoise bug, actually resolved.**
       Given the new clue that specifically the LIBRARY background (not
-      the app background, which Max confirmed was already correct)
+      the app background, which was confirmed already correct)
       was wrong, the far more likely explanation flipped back to a
       stale SAVED VALUE for that one specific field, from BEFORE
       `afterglow_color_library`'s role was reassigned (twice, across
@@ -3570,7 +3724,7 @@ include a full Advanced Sound feature partway through. In order:
       pixels; the fixed order produced 256. This was a severe, real
       bug (not a subtle contrast issue), not something a mere color
       change would have fixed.
-    - **Direct color/sizing adjustments, all on Max's explicit
+    - **Direct color/sizing adjustments, all on the explicit
       instruction, all applied to config defaults with the migration
       pattern above where a default actually changed:**
       `unedited_selected_border_width` doubled (9 -> 18 -- this is a
@@ -3594,7 +3748,7 @@ include a full Advanced Sound feature partway through. In order:
       confirmed tradeoff of following the literal instruction, not a
       guess. The setting itself works correctly at smaller widths
       (verified: at 1.0, the fill is visible again), so this is a
-      values/defaults question for Max to weigh in on, not a bug in
+      values/defaults question to weigh in on, not a bug in
       `OutlinedLabel`.
     - **New `afterglow/gui/custom_button.py`** (`CustomButton`, a
       `QToolButton` subclass with fully custom rounded/theme-colored
@@ -3688,7 +3842,7 @@ include a full Advanced Sound feature partway through. In order:
       the window for exactly this), enough queued rebuilds can still
       look like "multiplying and messing up scaling" even with that
       fix in place. Added a LEADING-EDGE debounce (750ms) to
-      `_VideoGridTab.refresh()`, per Max's own suggested fix -- the
+      `_VideoGridTab.refresh()`, per the suggested fix -- the
       first call in any 750ms window acts immediately (Refresh should
       feel instant on a single click), every call after that until the
       cooldown clears is silently dropped. Deliberately NOT the same
@@ -3724,7 +3878,7 @@ include a full Advanced Sound feature partway through. In order:
       Local/Uploaded tab-icon pulsing was never affected by this,
       because switching between tabs WITHIN an already-open Library
       page doesn't trigger anything nearly as expensive -- which is
-      exactly why Max's own framing ("match the way the library pages
+      exactly why the initial framing ("match the way the library pages
       pulse") pointed at the right root cause. No changes were needed
       to `pulse_animation.py` or the sidebar button's event handlers --
       they were already correct and already consistent with the
@@ -3818,7 +3972,7 @@ include a full Advanced Sound feature partway through. In order:
       `#1f3a5f` (card background), `#0d1621` (app background),
       `#05a4b9` (turquoise). Library background untouched (not part of
       this round's given values).
-    - **Filters, Sort By, and Info merged into one button** (Max: "all
+    - **Filters, Sort By, and Info merged into one button** (request: "all
       now in one tab referred to in the code as Sort, with placeholder
       text until i give you the icon"). `self.filters_btn` and
       `self.info_btn` are gone; `self.sort_btn` (labeled "Sort",
@@ -4091,7 +4245,7 @@ widget-level testing note above):
   mode, etc.) is still native/KDE-styled -- a real custom dropdown
   needs its own popup list, not just recoloring the closed box, which
   is a meaningfully bigger build than anything else in this sweep.
-  Worth confirming whether Max wants this before starting it.
+  Worth confirming this is wanted before starting it.
 
 **Nothing else explicitly re-requested is still outstanding** -- the
 previous round's two open items (custom text fields app-wide, and the
@@ -4102,7 +4256,7 @@ sidebar's full custom-button treatment) are both done; see the
 1. **Lazy-load the grid**: load the first ~36 videos so the app opens
    immediately, then load more as the user scrolls further down,
    rather than building every card synchronously up front. Explicitly
-   OK with videos still loading in the background per Max ("its okay
+   OK with videos still loading in the background per request ("its okay
    if the videos are still loading as the app opens"). Needs: an
    initial batch-limited `_do_refresh()`, and a scroll-position
    listener on `_VideoGridTab.scroll` that appends the next batch when
@@ -4118,7 +4272,7 @@ sidebar's full custom-button treatment) are both done; see the
   lighten/press-darken feedback they currently have.
 - Icons for the Settings tabs (Clipping/General/Filters/Stats/
   Advanced) and the four action buttons (Edit/Copy/Filters/Delete) --
-  Max said he'll provide these later, at which point both should also
+  These will be provided later, at which point both should also
   become circles (Settings tabs) matching the Search/Refresh/Sort
   treatment.
 
@@ -4144,7 +4298,7 @@ sidebar's full custom-button treatment) are both done; see the
   proven correct, just not yet applied to `QLineEdit`/`QTextEdit`
 
    elsewhere in the app.
-6. Turquoise applied to filters too (Max: optional, "if you get to
+6. Turquoise applied to filters too (optional, "if you get to
    those now").
 7. Everything else in the UI Update spec not yet touched: Comfy UI,
    Video Info settings tab, the hamburger popover, hover-autoplay-in-
@@ -4337,7 +4491,7 @@ not a fixed roadmap.
   `rounded_rect.py` + `theme.py`; padding constants replaced by
   `appearance.ui_padding` this session.
 - `afterglow/gui/resources/selected_border_gradient.png` -- the
-  gold/white image Max provided directly, now the selection border's
+  gold/white image provided directly, now the selection border's
   bundled default.
 - `afterglow/gui/clip_config_row.py` -- `clear_hotkey_btn`/
   `_clear_hotkey()`.
@@ -4435,7 +4589,7 @@ not a fixed roadmap.
   just new sections) should happen as its own dedicated pass.
 - Whether categories need their own rename/delete UI.
 - **Watch Speed persistence** -- currently resets to 1.00x on every
-  `load_video()` (a judgment call made with Max away from his PC,
+  `load_video()` (a judgment call made with no feedback available from his PC,
   since the alternative readings -- per-video, per-Editor-session
   without resetting, or a global Settings default -- all seemed at
   least as plausible from the original wording). Easy to change to
@@ -4458,7 +4612,7 @@ not a fixed roadmap.
   hue shift is applied once at load time to whichever pixmap (built-in
   or custom) ends up in use, BEFORE the multiply-blend darken step
   runs at paint time -- so darkening still behaves the same way
-  afterward regardless of hue. Worth Max actually looking at once
+  afterward regardless of hue. Worth actually looking at once
   there's a real display, same as anything else visual from this
   session -- if the stretch behavior looks bad with a real image he
   picks, aspect-aware scale-and-crop would be the fix, in

@@ -12,7 +12,7 @@ unchanged; only the PAINTING is replaced, not the click/popup behavior.
 """
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, QRectF
+from PySide6.QtCore import Qt, QRectF, QEvent
 from PySide6.QtGui import QPainter, QColor
 from PySide6.QtWidgets import QToolButton
 
@@ -43,7 +43,7 @@ class CustomButton(QToolButton):
         """Override this button's fill instead of the theme's own
         button_color() -- used for the video-card action buttons
         (Edit/Copy/Filters/Delete), which take on the card TEXT color
-        rather than the standard accent fill, per Max's direct
+        rather than the standard accent fill, per the direct
         request. Pass None to go back to the theme default."""
         self._fill_override = QColor(color) if color is not None else None
         self.update()
@@ -72,7 +72,7 @@ class CustomButton(QToolButton):
         """Force this button into a perfect circle of the given
         diameter, regardless of the Afterglow Theme rounded-corner
         radius setting -- used for the Library header's Search/
-        Refresh/Sort buttons specifically, per Max's direct request
+        Refresh/Sort buttons specifically, per the direct request
         for those three (not a general CustomButton shape option)."""
         self._circular = True
         self.setFixedSize(diameter, diameter)
@@ -88,6 +88,11 @@ class CustomButton(QToolButton):
         # Pulse scale around the center, before anything is drawn, so
         # fill/outline/icon/text all shrink and grow together.
         self._pulse.apply(painter)
+        # Disabled buttons used to paint exactly like enabled ones, so e.g.
+        # the previewer's arrows at the end of a list, or Undo Edits on an
+        # unedited clip, looked clickable. Dim the whole button instead.
+        if not self.isEnabled():
+            painter.setOpacity(0.4)
 
         if self._circular:
             # A perfect circle regardless of the theme's own corner-
@@ -162,6 +167,11 @@ class CustomButton(QToolButton):
         # Deliberately NOT calling super().paintEvent() -- this fully
         # replaces QToolButton's native/KDE-styled rendering rather than
         # layering on top of it (the whole point of "Custom Buttons").
+
+    def changeEvent(self, event) -> None:
+        super().changeEvent(event)
+        if event.type() == QEvent.EnabledChange:
+            self.update()
 
     def enterEvent(self, event) -> None:
         self.update()

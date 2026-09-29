@@ -40,12 +40,19 @@ from .outlined_label import OutlinedLabel
 from .custom_button import CustomButton
 from .custom_line_edit import CustomLineEdit
 from .custom_spinbox import CustomDoubleSpinBox
+from .custom_checkbox import CustomCheckBox
+from .custom_message_dialog import show_message
+from .trim_timeline import TrimTimeline
 from .mpv_widget import MpvVideoWidget
 from .rounded_rect import rounded_rect_path
 from .video_card import _format_duration, _format_file_size, _format_date, FAVORITE_STAR
 
+# Same tolerance the Editor uses around the trim-end clamp: mpv's last
+# decoded frame is often a hair before the nominal end.
+_EOF_EPSILON_SEC = 0.15
+
 _TRANSPORT_BTN_SIZE = 40
-# Fixed content size -- reverted per Max's direct request, after the
+# Fixed content size -- reverted per the direct request, after the
 # proportional CONTENT_SIZE_FRACTION approach was tried. Same value as
 # the last fixed-size version before that (1581x1035, itself 1.15x an
 # earlier 1.25x-of-1100x720 chain) -- clamped to fit the overlay's own
@@ -222,7 +229,7 @@ class _ClickToSeekSlider(QSlider):
     (instead of QSlider's own default of moving one page-step toward
     it) AND lets you continue dragging from there -- "you should be
     able to drag the scrubber around, even if you don't click on it
-    and rather click on the line," per Max's direct request. Used for
+    and rather click on the line," per the direct request. Used for
     both the scrubber and the volume slider. Dragging the handle
     itself is completely unaffected -- this only changes what starting
     a drag somewhere ELSE on the track does.
@@ -355,7 +362,12 @@ class VideoPreviewContent(QWidget):
         self._neighbor_provider = neighbor_provider
         self._duration = 0.0
         self._current_pos = 0.0
-        self._seeking = False
+        # Trim-range playback bounds -- committed on handle release, like
+        # the Editor (not on every intermediate drag step, so the clamp
+        # below doesn't jitter mid-drag).
+        self._preview_start = 0.0
+        self._preview_end = 0.0
+        self._awaiting_restart_seek = False
         self._pre_mute_volume = 80
         self._title_edit = None
         self.setAttribute(Qt.WA_TranslucentBackground, True)  # lets this widget's own rounded corners show the scrim behind it
@@ -425,7 +437,15 @@ class VideoPreviewContent(QWidget):
 
         # ---- transport, in its own card_background protrusion ----
         self._transport_box = _CardBox()
-        transport = QHBoxLayout(self._transport_box)
+        # Two rows inside ONE card: the transport row, then the trim row.
+        # Same card so fullscreen's floating/auto-hiding controls (which
+        # reparent this whole box) carry the trim controls along too.
+        transport_outer = QVBoxLayout(self._transport_box)
+        transport_outer.setContentsMargins(0, 0, 0, 0)
+        transport_outer.setSpacing(0)
+        transport_row_widget = QWidget()
+        transport = QHBoxLayout(transport_row_widget)
+        transport_outer.addWidget(transport_row_widget)
         transport.setContentsMargins(14, 10, 14, 10)
 
         self.play_pause_btn = _PlayPauseButton()
@@ -435,11 +455,16 @@ class VideoPreviewContent(QWidget):
         self.time_label = QLabel("0:00 / 0:00")
         transport.addWidget(self.time_label)
 
-        self.scrubber = _ClickToSeekSlider(Qt.Horizontal)
-        self.scrubber.setRange(0, 1000)
-        self.scrubber.sliderPressed.connect(self._on_scrub_start)
-        self.scrubber.sliderMoved.connect(self._on_scrub_moved)
-        self.scrubber.sliderReleased.connect(self._on_scrub_end)
+        # The Editor's own trim timeline replaces the plain scrubber, with
+        # identical interactions: left-click/drag seeks, right-click grabs
+        # and drags the nearest trim handle (live-seeking to it), and
+        # playback is clamped to the trimmed range.
+        self.trim_timeline = TrimTimeline()
+        self.trim_timeline.set_scale(0.75)
+        self.trim_timeline.range_changed.connect(self._on_trim_range_changed)
+        self.trim_timeline.seek_requested.connect(self._on_trim_seek_requested)
+        self.trim_timeline.drag_started.connect(self._on_trim_drag_started)
+        self.trim_timeline.drag_finished.connect(self._on_trim_drag_finished)
         slider_style = (
             "QSlider::groove:horizontal { background: " + self._theme.card_background().name()
             + "; height: 6px; border-radius: 3px; }"
@@ -457,8 +482,7 @@ class VideoPreviewContent(QWidget):
             # its own distinct thing.
             "QSlider::add-page:horizontal { background: rgba(255, 255, 255, 70); border-radius: 3px; }"
         )
-        self.scrubber.setStyleSheet(slider_style)
-        transport.addWidget(self.scrubber, stretch=1)
+        transport.addWidget(self.trim_timeline, stretch=1)
 
         self.volume_btn = _VolumeButton()
         self.volume_btn.clicked.connect(self._toggle_mute)
@@ -486,6 +510,29 @@ class VideoPreviewContent(QWidget):
         self.fullscreen_btn = _FullscreenButton()
         self.fullscreen_btn.clicked.connect(self._toggle_fullscreen)
         transport.addWidget(self.fullscreen_btn)
+
+        trim_row_widget = QWidget()
+        trim_row = QHBoxLayout(trim_row_widget)
+        trim_row.setContentsMargins(14, 0, 14, 10)
+        self.trim_range_label = QLabel("Start: 0:00   End: 0:00   Selected: 0:00")
+        trim_row.addWidget(self.trim_range_label)
+        trim_row.addStretch(1)
+        self.frame_perfect_checkbox = CustomCheckBox("Frame Perfect Accuracy")
+        self.frame_perfect_checkbox.setToolTip(
+            "Exact frame-accurate trim (slower, full re-encode). Off uses a "
+            "fast keyframe-based trim: the cut may land on the nearest "
+            "keyframe instead of exactly where the handle is."
+        )
+        trim_row.addWidget(self.frame_perfect_checkbox)
+        self.undo_edits_btn = CustomButton("Undo Edits")
+        self.undo_edits_btn.setToolTip("Restore this clip from its edit backup.")
+        self.undo_edits_btn.clicked.connect(self._undo_edits)
+        trim_row.addWidget(self.undo_edits_btn)
+        self.save_trim_btn = CustomButton("Save Trim")
+        self.save_trim_btn.setToolTip("Trim this clip to the selected range (keeps a backup for Undo).")
+        self.save_trim_btn.clicked.connect(self._save_trim)
+        trim_row.addWidget(self.save_trim_btn)
+        transport_outer.addWidget(trim_row_widget)
 
         outer.addWidget(self._transport_box)
 
@@ -515,6 +562,9 @@ class VideoPreviewContent(QWidget):
 
         self._duration = 0.0
         self._current_pos = 0.0
+        self._preview_start = 0.0
+        self._preview_end = 0.0
+        self._update_trim_buttons()
         self.speed_spin.blockSignals(True)
         self.speed_spin.setValue(1.0)
         self.speed_spin.blockSignals(False)
@@ -571,21 +621,50 @@ class VideoPreviewContent(QWidget):
 
     def _toggle_play_pause(self) -> None:
         if self.video_widget.is_paused:
+            # Same as the Editor: pressing play outside the trimmed range,
+            # or at/after its end, restarts from the trim start.
+            position = self._current_pos
+            if self._preview_end > 0 and (
+                position < self._preview_start - _EOF_EPSILON_SEC
+                or position >= self._preview_end - _EOF_EPSILON_SEC
+            ):
+                self.video_widget.seek(self._preview_start)
+                self._current_pos = self._preview_start
+                self._awaiting_restart_seek = True
+                QTimer.singleShot(250, self._clear_restart_seek_guard)
             self.video_widget.play()
         else:
             self.video_widget.pause()
         self.play_pause_btn.setChecked(not self.video_widget.is_paused)
 
+    def _clear_restart_seek_guard(self) -> None:
+        self._awaiting_restart_seek = False
+
     def _on_position_changed(self, position: float) -> None:
+        # Ignore stale positions still arriving from before a restart
+        # seek (async seek race -- the Editor has the same guard).
+        if self._awaiting_restart_seek:
+            return
         self._current_pos = position
-        if not self._seeking and self._duration > 0:
-            self.scrubber.blockSignals(True)
-            self.scrubber.setValue(round(position / self._duration * 1000))
-            self.scrubber.blockSignals(False)
+        # Clamp playback to the trimmed range: stop at the end handle.
+        if (
+            not self.video_widget.is_paused
+            and self._preview_end > 0
+            and position >= self._preview_end - _EOF_EPSILON_SEC
+        ):
+            self.video_widget.pause()
+            self.video_widget.seek(self._preview_end)
+            self._current_pos = self._preview_end
+            self.play_pause_btn.setChecked(False)
+        self.trim_timeline.set_playhead(self._current_pos)
         self._update_time_label()
 
     def _on_duration_known(self, duration: float) -> None:
         self._duration = duration
+        self.trim_timeline.set_duration(duration)
+        self._preview_start = 0.0
+        self._preview_end = duration
+        self._update_trim_range_label(0.0, duration)
         self._update_time_label()
 
     def _on_playback_ended(self) -> None:
@@ -596,40 +675,71 @@ class VideoPreviewContent(QWidget):
         total = _format_duration(self._duration) or "0:00"
         self.time_label.setText(f"{current} / {total}")
 
-    # ------------------------------------------------------------ scrubber
+    # ------------------------------------------------------------ trim (same behavior as the Editor)
 
-    def _on_scrub_start(self) -> None:
-        self._seeking = True
-        # "if you keep holding click it should leave the video paused
-        # until you let go of click" -- pauses for the duration of the
-        # drag, remembering whether it was actually playing beforehand
-        # so release only resumes it if it genuinely was (scrubbing an
-        # already-paused video should just stay paused afterward).
-        self._was_playing_before_scrub = not self.video_widget.is_paused
-        if self._was_playing_before_scrub:
-            self.video_widget.pause()
-            self.play_pause_btn.setChecked(False)
+    def _on_trim_drag_started(self) -> None:
+        self.video_widget.pause()
+        self.play_pause_btn.setChecked(False)
 
-    def _on_scrub_moved(self, value: int) -> None:
-        if self._duration > 0:
-            self._current_pos = value / 1000 * self._duration
-            self._update_time_label()
-            # Live preview WHILE dragging, not just once on release --
-            # "show the frame you are on, rather than just showing the
-            # frame you started holding click on." Playback is already
-            # paused for the duration of the drag (_on_scrub_start), so
-            # this seek just moves the single displayed frame, the same
-            # thing the final seek on release already did, just now on
-            # every step of the drag instead of only at the end.
-            self.video_widget.seek(self._current_pos)
+    def _on_trim_range_changed(self, start: float, end: float) -> None:
+        self._update_trim_range_label(start, end)
+        # Live-seek to whichever handle is being dragged, so the frame
+        # under the handle is what's shown while dragging.
+        handle = self.trim_timeline.dragging_handle
+        if handle == "start":
+            self.video_widget.seek(start)
+            self._current_pos = start
+        elif handle == "end":
+            self.video_widget.seek(end)
+            self._current_pos = end
+        self._update_time_label()
 
-    def _on_scrub_end(self) -> None:
-        if self._duration > 0:
-            self.video_widget.seek(self.scrubber.value() / 1000 * self._duration)
-        self._seeking = False
-        if getattr(self, "_was_playing_before_scrub", False):
-            self.video_widget.play()
-            self.play_pause_btn.setChecked(True)
+    def _on_trim_drag_finished(self, start: float, end: float) -> None:
+        self._preview_start = start
+        self._preview_end = end
+
+    def _on_trim_seek_requested(self, position: float) -> None:
+        self.video_widget.seek(position)
+        self._current_pos = position
+        self.trim_timeline.set_playhead(position)
+        self._update_time_label()
+
+    def _update_trim_range_label(self, start: float, end: float) -> None:
+        fmt = lambda t: _format_duration(t) or "0:00"
+        self.trim_range_label.setText(
+            f"Start: {fmt(start)}   End: {fmt(end)}   Selected: {fmt(max(0.0, end - start))}"
+        )
+
+    def _update_trim_buttons(self) -> None:
+        video = getattr(self, "_video", None)
+        self.undo_edits_btn.setEnabled(bool(video and video.has_edit and video.backup_path))
+
+    def _save_trim(self) -> None:
+        start, end = self.trim_timeline.start, self.trim_timeline.end
+        if self._duration <= 0 or end - start <= 0.05:
+            show_message(self, "Can't Trim", "Select a longer range first.")
+            return
+        self.video_widget.pause()
+        self.play_pause_btn.setChecked(False)
+        try:
+            library.apply_trim(self._video.id, start, end,
+                               frame_perfect=self.frame_perfect_checkbox.isChecked())
+        except Exception as e:  # ffmpeg / file errors -- surface, don't crash the previewer
+            show_message(self, "Trim Failed", str(e))
+            return
+        self._load_video(library.get_video(self._video.id))
+
+    def _undo_edits(self) -> None:
+        video = getattr(self, "_video", None)
+        if not (video and video.has_edit and video.backup_path):
+            return
+        self.video_widget.pause()
+        try:
+            library.undo_edit(video.id)
+        except Exception as e:
+            show_message(self, "Undo Failed", str(e))
+            return
+        self._load_video(library.get_video(video.id))
 
     # ------------------------------------------------------------ volume
 
@@ -761,7 +871,7 @@ class VideoPreviewContent(QWidget):
     def _animate_overlay_slide(self, showing: bool) -> None:
         """Slides the header UP off the top edge / down into place, and
         the transport DOWN off the bottom edge / up into place -- per
-        Max's direct request for a slide, not a fade or a teleport."""
+        the direct request for a slide, not a fade or a teleport."""
         header_h = self._header_box.height()
         transport_h = self._transport_box.height()
         header_shown = QRect(0, 0, self.width(), header_h)
@@ -812,7 +922,7 @@ class VideoPreviewContent(QWidget):
 
     def changeEvent(self, event) -> None:
         # Hides the controls immediately on losing window focus (not
-        # waiting out the 2s inactivity timer) -- per Max's direct
+        # waiting out the 2s inactivity timer) -- per the direct
         # "when the window loses focus."
         if event.type() == QEvent.ActivationChange and self._is_expanded:
             if not self.window().isActiveWindow():
@@ -950,7 +1060,7 @@ class VideoPreviewContent(QWidget):
 class VideoPreviewOverlay(QWidget):
     """Wraps VideoPreviewContent with a semi-transparent scrim, sizing
     the content box to a fixed pixel size (CONTENT_WIDTH x
-    CONTENT_HEIGHT -- back to a fixed size per Max's direct request,
+    CONTENT_HEIGHT -- back to a fixed size per the direct request,
     after CONTENT_SIZE_FRACTION's proportional sizing was tried;
     clamped to fit the overlay's own bounds so it can't overflow a
     smaller window) rather than a fraction of whatever window it's

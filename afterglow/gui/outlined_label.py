@@ -2,7 +2,7 @@
 A QLabel that draws its text with a colored outline (stroke) behind a
 colored fill, instead of QLabel's own plain (outline-less) rendering --
 the default styling for all on-card text (title, info/date lines, tag
-names), per Max's request for readable text over the info box's
+names), per the request for readable text over the info box's
 accent-colored background.
 
 Renders into a cached QPixmap rather than re-stroking the glyph path on

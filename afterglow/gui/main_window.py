@@ -20,7 +20,7 @@ looked proportionally too small once the window was large/fullscreen.
 
 All three nav buttons are now `LibraryTabButton` -- "the same custom
 button type as switching between local/uploaded videos in the library,"
-per Max's direct request -- rather than the old `_ScalingIconButton`
+per the direct request -- rather than the old `_ScalingIconButton`
 (border-gradient images, hue shift, per-button brightness multipliers,
 icon darkening, a pulse animation) that lived here through many past
 sessions. That whole system is gone now, not just visually hidden: no
@@ -60,7 +60,7 @@ SIDEBAR_MAX_WIDTH = 140
 
 # Padding around/between the sidebar's own three buttons -- NOT a fixed
 # constant, but the exact same appearance.ui_padding used for the
-# Library grid's own card-to-card spacing, per Max's direct request
+# Library grid's own card-to-card spacing, per the direct request
 # ("ensure that the padding between them is the same padding between
 # videos"). Read once at construction; a live-settings-change mid-
 # session isn't retrofitted here any more than the sidebar's other
@@ -70,7 +70,7 @@ SIDEBAR_MAX_WIDTH = 140
 class _Sidebar(QWidget):
     """Plain QWidget subclass purely so it can paint its own 3px,
     15%-darker-than-itself outline -- "sidebar" is one of the page
-    elements Max asked for this on, alongside Local/Uploaded/Library/
+    elements Requested: this on, alongside Local/Uploaded/Library/
     Editor/Settings. No explicit background of its own (inherits
     MainWindow's central-widget app_background()), same basis as
     Editor/Settings' own outlines."""

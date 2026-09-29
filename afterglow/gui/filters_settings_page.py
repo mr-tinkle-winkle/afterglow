@@ -133,7 +133,7 @@ class _TagIconRow(QFrame):
 
     def _update_icon_thumb(self) -> None:
         """A real scaled preview of the chosen icon file, next to its
-        filename -- per Max's direct request, since the filename alone
+        filename -- per the direct request, since the filename alone
         doesn't show what the icon actually looks like."""
         if self.icon_path and Path(self.icon_path).exists():
             pixmap = QPixmap(self.icon_path)

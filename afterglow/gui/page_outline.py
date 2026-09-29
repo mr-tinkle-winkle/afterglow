@@ -1,7 +1,7 @@
 """
 A plain 3px, 15%-darker-than-itself outline around each top-level page
 (Local, Uploaded, the overall Library page, Editor, Settings) -- per
-Max's direct request. Each page uses ITS OWN background color as the
+the direct request. Each page uses ITS OWN background color as the
 basis (darkened 15%), not one shared border color, since these pages
 don't all share the same background. `skip_*` lets a page omit
 whichever edge touches something else directly (no gap) -- Local/

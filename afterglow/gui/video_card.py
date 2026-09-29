@@ -47,7 +47,7 @@ FAVORITE_STAR = "\u2605"  # "★"
 # "adjusts the pixels of padding used everywhere", per how this was
 # actually asked for. Generous enough by default that a sliver of the
 # background portrusion stays visible on every side of the card, per
-# Max's ask, regardless of where you look.
+# the ask, regardless of where you look.
 
 # 3x the original 18px icon size, per request -- ICON_SPACING between
 # each. When more filter icons are on one video than fit at that size
@@ -813,7 +813,7 @@ class VideoCard(QWidget):
             # Selection stays a ring around the WHOLE outer card (unlike
             # the unedited highlight below, this one was NOT redefined
             # to also become a background wash behind everything --
-            # only the unedited highlight was, per Max's own
+            # only the unedited highlight was, per the own
             # clarification). Same stretch-then-inset technique as
             # before, now respecting the outer box's rounded shape.
             if radius:
@@ -1052,7 +1052,7 @@ class VideoCard(QWidget):
 
         # A single "Edited" checkbox instead of two separate "Mark as
         # Edited"/"Mark as Unedited" actions -- covers both directions
-        # in one control, per Max's own preference. Checked only when
+        # in one control, per the preference. Checked only when
         # EVERY selected video already has has_edit set; toggling it
         # sets ALL of them to the checkbox's new state (so checking it
         # on a mixed selection marks everything edited in one go,
@@ -1099,7 +1099,7 @@ class VideoCard(QWidget):
 
     def _build_action_buttons_row(self) -> QWidget:
         """Edit/Copy/Filters/Delete, in that order, as real buttons on
-        the card -- icons Max provided (pencil/copy/funnel/trash),
+        the card -- icons provided (pencil/copy/funnel/trash),
         replacing the old text labels. Each acts on just THIS card's
         video, reusing the exact same handler methods the right-click
         menu's single-video actions use, so there's one source of
@@ -1135,7 +1135,7 @@ class VideoCard(QWidget):
             # fill the row's own width rather than keeping them square)
             # -- same set_circular() the Search/Refresh/Sort header
             # buttons already use. Slightly larger than the old 48px
-            # minimum height (56px), per Max's own "slightly increase
+            # minimum height (56px), per the "slightly increase
             # the size" -- CustomButton.paintEvent already scales the
             # icon to fill most of whatever shape it's drawing (a true
             # circle now, instead of a mostly-empty rectangle), so
@@ -1171,7 +1171,7 @@ class VideoCard(QWidget):
         without applying it to anything).
 
         Reverted back to this QMenu-based version (from the Qt.Popup-
-        based FiltersPopup) per Max's own direct request, after that
+        based FiltersPopup) per the direct request, after that
         rebuild both still didn't reliably stay open AND looked worse
         than this version -- setting the underlying "stays open while
         toggling" problem aside for now rather than attempting a sixth
@@ -1348,7 +1348,7 @@ class VideoCard(QWidget):
     def _rename(self) -> None:
         """Triggered by the context menu's Rename action -- edits the
         title INLINE on the card itself instead of opening a separate
-        dialog window, per Max's direct request (same technique as the
+        dialog window, per the direct request (same technique as the
         video previewer's own click-to-edit title). Autosaves the
         current text once a second while editing, in addition to
         committing on Enter or clicking away (both go through

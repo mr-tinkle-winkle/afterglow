@@ -1,7 +1,7 @@
 """
 Replaces the native KDE-styled QLineEdit box with the same rounded,
 accent-outlined, card-background-filled look the Library's search bar
-already has -- per Max's direct request to apply that same box style
+already has -- per the direct request to apply that same box style
 to every text field, not just the search bar. Text editing itself
 (cursor, selection, IME, etc.) is still QLineEdit's own native
 behavior; only the background/border painting is replaced, and a

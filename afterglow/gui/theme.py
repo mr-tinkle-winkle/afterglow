@@ -91,7 +91,7 @@ class Theme:
         (not the library page background above, despite the similar
         name -- turquoise was reassigned to this narrower role once the
         library page background itself became the dark blue). Not
-        currently used anywhere else, though Max mentioned filters as a
+        currently used anywhere else, though A mention of filters as a
         possible future use."""
         if self.afterglow_enabled:
             return QColor(self._appearance.afterglow_color_turquoise)

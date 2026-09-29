@@ -4,7 +4,7 @@ sections stacked vertically in one dropdown) with an actual custom
 popup panel: three horizontally-tiled tabs, each switching a real page
 of widgets below rather than scrolling through one long vertical list.
 
-Corner rounding, per Max's instruction: the two OUTER tabs round only
+Corner rounding, per the instruction: the two OUTER tabs round only
 their own outer top corner (left tab: top-left; right tab: top-right);
 the MIDDLE tab has no rounding at all, and no tab rounds a corner that
 touches a neighboring tab or the content area below it -- same "don't
@@ -218,7 +218,7 @@ class SortPopover(QWidget):
 
     def show_below(self, anchor: QWidget) -> None:
         """Grows out of `anchor`'s own position rather than just
-        appearing -- per Max's direct request for the Sort popover and
+        appearing -- per the direct request for the Sort popover and
         Settings tab pages both to "come out of their buttons by
         scaling" instead of an instant appearance. adjustSize() first
         (unchanged) to get this popover's real final height from its

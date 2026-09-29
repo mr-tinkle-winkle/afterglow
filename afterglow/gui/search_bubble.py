@@ -1,5 +1,5 @@
 """
-The search field, redesigned per Max's direct correction: not a text
+The search field, redesigned per the direct correction: not a text
 box that opens to the SIDE of the Search button (the old
 _toggle_search_visibility placeholder), but a small popup that appears
 UNDERNEATH the button and visually attaches to it with a little tail,
@@ -113,7 +113,7 @@ class SearchBubble(QWidget):
         row.addWidget(self.confirm_checkbox)
 
         # Search no longer runs live-as-you-type -- only on Enter or the
-        # confirm checkbox above, per Max's direct instruction (typing
+        # confirm checkbox above, per the direct instruction (typing
         # alone used to trigger _do_refresh on every keystroke via a
         # chain this widget doesn't own; that wiring now waits for one
         # of these two signals instead -- see LibraryPage). Enter now
@@ -136,7 +136,7 @@ class SearchBubble(QWidget):
         base_left = self._tail_x - _TAIL_WIDTH / 2
         base_right = self._tail_x + _TAIL_WIDTH / 2
         # A genuine POINT at the top now (not a small rounded/flat tip
-        # like before) -- per Max's direct correction, the tail should
+        # like before) -- per the direct correction, the tail should
         # "reach a point where it ends at the top."
         #
         # THE HORIZONTAL-TANGENT POINT MUST BE AT THE VISIBLE BOUNDARY
@@ -197,7 +197,7 @@ class SearchBubble(QWidget):
 
     def show_below(self, anchor: QWidget) -> None:
         """Grows out of `anchor`'s own icon rather than just appearing
-        -- per Max's direct request, same "resize out of the icon"
+        -- per the direct request, same "resize out of the icon"
         treatment as SortPopover now has. Still centered under the
         button with the tail floating _TAIL_GAP px clear of it (both
         unchanged from before) -- animate_popup_from_point just

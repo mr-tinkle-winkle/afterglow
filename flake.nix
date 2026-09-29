@@ -131,6 +131,10 @@
             evdev
             python-mpv
             pyopengl
+            # Advanced Editor renderer (afterglow/nle): PyAV decodes/encodes
+            # through FFmpeg's own libraries; numpy does the audio mixing.
+            av
+            numpy
           ];
 
           # ffmpeg and paplay (pipewire) are invoked as subprocesses, not

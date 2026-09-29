@@ -1,7 +1,7 @@
 """
 Replaces the native KDE-styled QCheckBox indicator with a small custom-
 painted box: video-card-background fill, accent-colored outline, and
-the checkmark icon Max provided drawn in when checked (nothing when
+the checkmark icon provided drawn in when checked (nothing when
 not). FilterCheckBox (library_page.py) builds on this to add a third
 "blocked" state (the x icon) for the Library's Filters list -- per Max,
 that third state is specific to Filters and shouldn't appear anywhere
@@ -38,7 +38,7 @@ class CustomCheckBox(QAbstractButton):
         # checkbox indicator and its label -- distinct from _checkmark
         # (which shows INSIDE the indicator box to mark checked/
         # unchecked state) or FilterCheckBox's block-state x icon.
-        # Added per Max's direct request to show these "in the
+        # Added per the direct request to show these "in the
         # dropdowns" (context menu, quick-action Filters menu, Sort
         # popover) alongside the checkbox itself, not just on the
         # video card.

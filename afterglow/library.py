@@ -254,7 +254,7 @@ def write_library_manifest() -> None:
     """A plain, human-readable JSON snapshot of every video's metadata
     (title, tags, favorite, edited status, date) written to
     MANIFEST_PATH -- a durable backup living OUTSIDE the SQLite DB, per
-    Max's direct request after a real data-loss incident (every tag
+    the direct request after a real data-loss incident (every tag
     association on every video was silently wiped when
     prune_missing_videos() saw a false mass "missing" after the whole
     clips folder was moved out and back in -- see that function's own
@@ -780,11 +780,36 @@ def apply_trim(video_id: int, start_sec: float, end_sec: float, frame_perfect: b
     existing_backup = Path(video.backup_path) if video.backup_path else None
     backup_path = commit_trim(request, has_prior_edit=video.has_edit, existing_backup=existing_backup)
     new_duration = probe_duration(video.path_obj)
+    # A quick trim edits the file directly, so any Advanced Editor
+    # project no longer describes it (see nle/store.py).
+    _discard_advanced_project(video)
 
     with db.get_conn() as conn:
         conn.execute(
             "UPDATE videos SET has_edit = 1, backup_path = ?, duration_sec = ? WHERE id = ?",
             (str(backup_path), new_duration, video_id),
+        )
+    return get_video(video_id)
+
+
+def _discard_advanced_project(video: "Video") -> None:
+    from .nle import store  # lazy: avoids an import cycle
+    try:
+        store.discard_for_video(video.id, video.path)
+    except OSError:
+        pass
+
+
+def record_advanced_edit(video_id: int, backup_path: str) -> Video:
+    """Called by the Advanced Editor after it has overwritten the clip
+    with a render (see nle/save.py): marks it edited, remembers the
+    original backup (so Undo Edits works), and refreshes the duration."""
+    video = get_video(video_id)
+    new_duration = probe_duration(video.path_obj)
+    with db.get_conn() as conn:
+        conn.execute(
+            "UPDATE videos SET has_edit = 1, backup_path = ?, duration_sec = ? WHERE id = ?",
+            (backup_path, new_duration, video_id),
         )
     return get_video(video_id)
 
@@ -829,6 +854,7 @@ def undo_edit(video_id: int) -> Video:
         raise LibraryError("This video has no pending edit to undo.")
     undo_trim(video.path_obj, Path(video.backup_path))
     new_duration = probe_duration(video.path_obj)
+    _discard_advanced_project(video)
     with db.get_conn() as conn:
         conn.execute(
             "UPDATE videos SET has_edit = 0, backup_path = NULL, duration_sec = ? WHERE id = ?",
@@ -845,6 +871,8 @@ def clear_edit_backup(video_id: int) -> Video:
     if not video.has_edit or not video.backup_path:
         raise LibraryError("This video has no edit backup to clear.")
     clear_backup(Path(video.backup_path))
+    # The project re-renders from the backup, so it can't survive this.
+    _discard_advanced_project(video)
     with db.get_conn() as conn:
         conn.execute("UPDATE videos SET backup_path = NULL WHERE id = ?", (video_id,))
     return get_video(video_id)

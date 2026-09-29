@@ -1,6 +1,6 @@
 """
 Replaces the native KDE-styled vertical scroll bar in the Library grid.
-Per Max's direct request: twice the default width, the handle in the
+Per the direct request: twice the default width, the handle in the
 info/button blue (Theme.accent()), and the track (the space it scrolls
 in) in the video-card-background color (Theme.card_background()).
 
