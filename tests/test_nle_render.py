@@ -347,6 +347,22 @@ export(p, small, width=160, height=90, crf=28)
 si = media.probe(small)
 check((si["width"], si["height"]) == (160, 90), f"export at a chosen resolution ({si['width']}x{si['height']})")
 
+# ---- faster export: passthrough + parallel pieces keep every frame in place ----------
+p = project_with((1, seg_of(BLOCKS, src_in=1.0, src_out=5.0)))
+for jobs in (1, 3):
+    outp = os.path.join(TMP, f"par{jobs}.mp4")
+    export(p, outp, jobs=jobs)
+    info_ = media.probe(outp)
+    rr = Renderer(project_with((1, seg_of(outp))))
+    cols = [px(rr.frame(sec + 0.5), 160, 90) for sec in range(4)]
+    rr.close()
+    ok = all(near(c, COLORS[sec + 1]) for sec, c in enumerate(cols))
+    check(abs(info_["duration"] - 4.0) < 0.1 and ok,
+          f"export jobs={jobs}: 4.0 s, every second the right color ({info_['duration']:.2f}s)")
+    with av.open(outp) as c_:
+        nf = sum(1 for _ in c_.decode(video=0))
+    check(nf == 120, f"export jobs={jobs}: exactly 120 frames ({nf})")
+
 # ---- performance (informational) ----------------------------------------------------
 BIG = os.path.join(TMP, "big.mp4")
 ff("-f", "lavfi", "-i", "testsrc2=s=1920x1080:r=60:d=5", "-f", "lavfi", "-i", "sine=d=5",

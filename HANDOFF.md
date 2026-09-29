@@ -423,7 +423,72 @@ plain QSS rule is unavoidable.
 Seven consecutive batches of Library/Settings/appearance
 features/bug fixes, given together each time. Newest first.
 
-### This session (newest -- Advanced Editor feedback round 1)
+### This session (newest -- Advanced Editor feedback round 2)
+1. **Fonts.** Speech/thought bubbles default to Back Issues (Blambot's comic
+   lettering font) when it's installed -- matched loosely ("Back Issues BB",
+   "BackIssues BB"...), else another comic font, else a plain sans
+   (`controller.comic_font()`). The font is NOT bundled (license); it has
+   to be installed on the system. Properties > Text > Font is now a
+   searchable dropdown of every installed font (type to filter), comic
+   fonts listed first.
+2. **Hide layers:** `Track.hidden` -- a hidden layer draws nothing and
+   plays no sound (renderer + audio + export fast path skip it). H toggles
+   the selected layers (click a track header to select; Ctrl adds), or the
+   layers holding the selected segments. Eye icon in each track header.
+   Hidden lanes are dimmed and hatched.
+3. **Timeline wheel:** plain wheel scrolls along the timeline; Shift+wheel
+   steps one frame; Ctrl+Shift+wheel one second; Ctrl+wheel zooms;
+   Alt+wheel or over the headers scrolls tracks. Uses whichever wheel axis
+   moved (Qt/desktops swap axes under Alt/Shift).
+4. **Middle-drag pans** the timeline (time and tracks).
+5. **Grow in/out for bubbles** (`TextStyle.grow_in`/`grow_out`, seconds;
+   presets: speech 0.35/0.3, thought 0.6/0.45; turning a bubble on in
+   Properties applies them too). Speech: the body flies out of the tail
+   tip to its place while scaling up (slight overshoot), the tail
+   stretching between them. Thought: trail circles sprout from the tip
+   outward, then the cloud forms -- core first, then the bumps pop in
+   starting on the trail's side. Shrinking out is the reverse.
+   `render.bubble_shape(kind, body, tip, g)` does both the static and the
+   animated shape (g = grow progress).
+6. **Delay text transition** (`delay_in`/`delay_out`): words fade in one
+   after another, letters left to right within each word; out fades in
+   reading order. For bubbles it starts after the grow-in (and ends before
+   the grow-out). Bubble presets default to a 0.6 s Delay in. Properties >
+   "Text Transitions" (with Type in/out).
+7. **Thought trail density:** the number of circles follows the distance
+   to the tip (constant spacing relative to circle size), circles shrink
+   toward the tip, sized from the bubble (`render._thought_trail`).
+8. **Preview click-select:** a single click selects the TOPMOST element
+   under the cursor. Before, a selected full-frame video underneath
+   claimed the click as a move, so text on top could only be reached by
+   double-clicking.
+9. **Bubble transparency:** Background transparency and Outline
+   transparency (0-100 %) for bubbles.
+10. **Drop shadow** on every visual segment (`Segment.shadow*`: color,
+    opacity, distance, angle, softness; off by default; Properties > Drop
+    Shadow). Rendered by drawing the segment to a layer and compositing a
+    tinted, softened, offset copy under it (also inside transitions).
+11. **Gap line** at half the previous contrast.
+12. **Faster Save.** Profiled a 10 s 1080p60 export (2-core sandbox):
+    14.6 s. Most time was the RGB round trip (decode -> RGB -> paint ->
+    RGB -> YUV). Now: (a) frames that are one untouched full-frame clip
+    go from the decoder straight to the encoder
+    (`Renderer.passthrough_frame`) -- plain cuts/trims; (b) pictures are
+    rendered on a worker thread while encoding runs; (c) on machines with
+    6+ cores the timeline is split into 2-6 pieces rendered + encoded in
+    parallel and joined without re-encoding (`export(jobs=...)`,
+    `_join_parts`). Same edit: 7.0 s. Verified frame-exact (PSNR >= 43.8 dB
+    on all 600 frames vs the source with jobs=3; render tests check colors
+    and exact frame counts for jobs=1 and 3). Couldn't measure (c) here --
+    2 cores; it should help most on many-core CPUs.
+
+Also: HEADER_W widened to 124 px (room for the eye), MainWindow closes the
+previewer's player on exit (its mpv thread outlived it in tests).
+Tests: `tests/test_advanced_editor_3.py` (35 checks incl. a stand-in
+"Back Issues BB" font built from DejaVu with fontTools), render tests for
+parallel export; all earlier suites pass.
+
+### Previous session (Advanced Editor feedback round 1)
 1. **Dragging a library clip from Media scrolled the list instead of
    dragging.** QListView's built-in drag in icon mode became a rubber-band
    selection with auto-scroll. `_DragList` (browser.py) now starts the drag

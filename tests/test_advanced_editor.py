@@ -144,6 +144,7 @@ pump(0.1)
 check(abs(ctl.playhead - 3.0) < 0.05, f"click on the ruler moves the playhead ({ctl.playhead:.3f})")
 
 # ---- S split -----------------------------------------------------------------------
+ctl.set_playhead(3.0)   # exact (a ruler click lands within a pixel of it)
 key(Qt.Key_S)
 segs = sorted(p.tracks[1].segments, key=lambda s: s.start)
 check(len(segs) == 2 and abs(segs[1].start - 3.0) < 0.05, "S splits at the playhead")
@@ -381,10 +382,13 @@ def wheel(dy, mods=Qt.NoModifier, pos=None):
     ev = QWheelEvent(pos, view.mapToGlobal(pos), QPoint(0, 0), QPoint(0, dy), Qt.NoButton, mods, Qt.NoScrollPhase, False)
     QApplication.sendEvent(view, ev)
     pump(0.05)
-wheel(120)
-check(abs(ctl.playhead - (2.0 + 1 / p.fps)) < 1e-6, f"mouse wheel steps the playhead one frame ({ctl.playhead:.4f})")
-wheel(-120, Qt.ShiftModifier)
-check(abs(ctl.playhead - (1.0 + 1 / p.fps)) < 1e-6, "Shift+wheel steps one second")
+st0 = view.scroll_t
+wheel(-120)
+check(view.scroll_t > st0 and abs(ctl.playhead - 2.0) < 1e-9, f"plain wheel scrolls along the timeline ({st0:.2f} -> {view.scroll_t:.2f}s)")
+wheel(120, Qt.ShiftModifier)
+check(abs(ctl.playhead - (2.0 + 1 / p.fps)) < 1e-6, f"Shift+wheel steps the playhead one frame ({ctl.playhead:.4f})")
+wheel(-120, Qt.ShiftModifier | Qt.ControlModifier)
+check(abs(ctl.playhead - (1.0 + 1 / p.fps)) < 1e-6, "Ctrl+Shift+wheel steps one second")
 pps0 = view.pps
 wheel(120, Qt.ControlModifier)
 check(view.pps > pps0 * 1.2, f"Ctrl+wheel zooms in ({pps0:.1f} -> {view.pps:.1f} px/s)")

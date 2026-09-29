@@ -15,7 +15,7 @@ from __future__ import annotations
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont
 from PySide6.QtWidgets import (
-    QColorDialog, QComboBox, QFontComboBox, QFormLayout, QHBoxLayout, QLabel, QPlainTextEdit,
+    QColorDialog, QComboBox, QFormLayout, QHBoxLayout, QLabel, QPlainTextEdit,
     QScrollArea, QVBoxLayout, QWidget,
 )
 
@@ -138,9 +138,12 @@ class PropertiesPanel(QWidget):
         if not segs:
             self.title.setText("Properties")
             hint = QLabel("Select a segment on the timeline to edit it.\n\n"
-                          "S split · C combine · L lock · M mute · V hide\n"
+                          "S split · C combine · L lock · M mute · V hide segment\n"
+                          "H hide layer (click a track header to select it)\n"
                           "Ctrl+C / Ctrl+V / Ctrl+D · Del · Shift+Del ripple\n"
-                          "Space play · , . frame step · N snapping")
+                          "Space play · , . frame step · N snapping\n"
+                          "Wheel scrolls the timeline · Shift+wheel steps frames\n"
+                          "Ctrl+wheel zooms · middle-drag pans")
             hint.setWordWrap(True)
             hint.setStyleSheet(self._label_qss)
             lay.addWidget(hint)
@@ -223,6 +226,30 @@ class PropertiesPanel(QWidget):
                     form.addRow(self._lbl(lbl), w)
                     self._fields[key] = w
 
+            g, form = self._group(lay, "Drop Shadow")
+            sh_on = CustomCheckBox("Drop shadow")
+            sh_on.clicked.connect(lambda: self._once("Drop shadow", lambda p: self._set_seg(p, shadow=sh_on.isChecked())))
+            sh_col = CustomButton("Color")
+            sh_col.clicked.connect(self._pick_shadow_color)
+            sh_op = _spin(0, 100, 5, 0, " %")
+            sh_op.valueChanged.connect(lambda v: self._edit("Shadow", lambda p: self._set_seg(p, shadow_opacity=v / 100)))
+            sh_dist = _spin(0, 20, 0.1, 1, " %")
+            sh_dist.setToolTip("Distance, as a percentage of the frame height")
+            sh_dist.valueChanged.connect(lambda v: self._edit("Shadow", lambda p: self._set_seg(p, shadow_distance=v / 100)))
+            sh_ang = _spin(-360, 360, 5, 0, "°")
+            sh_ang.setToolTip("Direction the shadow falls (0 = right, 90 = down)")
+            sh_ang.valueChanged.connect(lambda v: self._edit("Shadow", lambda p: self._set_seg(p, shadow_angle=v)))
+            sh_blur = _spin(0, 100, 5, 0, " %")
+            sh_blur.valueChanged.connect(lambda v: self._edit("Shadow", lambda p: self._set_seg(p, shadow_blur=v / 100)))
+            form.addRow(self._lbl(""), sh_on)
+            form.addRow(self._lbl("Color"), sh_col)
+            form.addRow(self._lbl("Opacity"), sh_op)
+            form.addRow(self._lbl("Distance"), sh_dist)
+            form.addRow(self._lbl("Angle"), sh_ang)
+            form.addRow(self._lbl("Softness"), sh_blur)
+            self._fields.update(shadow=sh_on, shadow_color_btn=sh_col, shadow_opacity=sh_op, shadow_distance=sh_dist,
+                                shadow_angle=sh_ang, shadow_blur=sh_blur)
+
             g, form = self._group(lay, "Zoom Filter")
             za = _spin(100, 500, 5, 0, " %")
             zi = _spin(0, 3600, 0.1, 2, " s")
@@ -273,10 +300,9 @@ class PropertiesPanel(QWidget):
                 f" color: {self._appearance.card_text_color}; border: 1px solid {self._appearance.afterglow_color_accent};"
                 f" border-radius: 6px; }}")
             edit.textChanged.connect(lambda: self._edit("Edit text", lambda p: self._set_text(p, text=edit.toPlainText())))
-            font = QFontComboBox()
-            font.setStyleSheet(self._combo_qss)
-            font.setCurrentFont(QFont(text_part.text.font_family))
-            font.currentFontChanged.connect(lambda fnt: self._once("Font", lambda p: self._set_text(p, font_family=fnt.family())))
+            font = self._font_combo(text_part.text.font_family)
+            font.activated.connect(lambda _i, c=font: self._pick_font(c))
+            font.lineEdit().editingFinished.connect(lambda c=font: self._pick_font(c))
             size = _spin(0.5, 50, 0.5, 1, " %")
             size.valueChanged.connect(lambda v: self._edit("Text size", lambda p: self._set_text(p, font_size=v / 100)))
             color = CustomButton("Color")
@@ -302,7 +328,7 @@ class PropertiesPanel(QWidget):
             row2.addWidget(italic)
             form.addRow(self._lbl("Style"), row2)
 
-            g2, form2 = self._group(lay, "Typing")
+            g2, form2 = self._group(lay, "Text Transitions")
             tin = _spin(0, 600, 0.1, 2, " s")
             tin.setToolTip("Type the text in over this long at the start (0 = off)")
             tin.valueChanged.connect(lambda v: self._edit("Type in", lambda p: self._set_text(p, type_in=v)))
@@ -311,9 +337,17 @@ class PropertiesPanel(QWidget):
             tout.valueChanged.connect(lambda v: self._edit("Type out", lambda p: self._set_text(p, type_out=v)))
             cur = CustomCheckBox("Show typing cursor ( | )")
             cur.clicked.connect(lambda: self._once("Typing cursor", lambda p: self._set_text(p, type_cursor=cur.isChecked())))
+            din = _spin(0, 600, 0.1, 2, " s")
+            din.setToolTip("Delay: fade the words in one by one (letters left to right) over this long (0 = off)")
+            din.valueChanged.connect(lambda v: self._edit("Delay in", lambda p: self._set_text(p, delay_in=v)))
+            dout = _spin(0, 600, 0.1, 2, " s")
+            dout.setToolTip("Delay: fade the words out in reading order over this long at the end (0 = off)")
+            dout.valueChanged.connect(lambda v: self._edit("Delay out", lambda p: self._set_text(p, delay_out=v)))
             form2.addRow(self._lbl("Type in"), tin)
             form2.addRow(self._lbl("Type out"), tout)
             form2.addRow(self._lbl(""), cur)
+            form2.addRow(self._lbl("Delay in"), din)
+            form2.addRow(self._lbl("Delay out"), dout)
 
             g3, form3 = self._group(lay, "Bubble")
             bub = self._combo([("None", ""), ("Speech", "speech"), ("Thought", "thought")])
@@ -330,15 +364,33 @@ class PropertiesPanel(QWidget):
             brow.addWidget(bline)
             form3.addRow(self._lbl("Colors"), brow)
             form3.addRow(self._lbl("Outline width"), bwidth)
+            bft = _spin(0, 100, 5, 0, " %")
+            bft.valueChanged.connect(lambda v: self._edit("Bubble transparency", lambda p: self._set_text(
+                p, bubble_fill_transparency=v / 100)))
+            bot = _spin(0, 100, 5, 0, " %")
+            bot.valueChanged.connect(lambda v: self._edit("Bubble outline transparency", lambda p: self._set_text(
+                p, bubble_outline_transparency=v / 100)))
+            gin = _spin(0, 30, 0.05, 2, " s")
+            gin.setToolTip("Grow: the bubble grows out of its tail tip into place (0 = off)")
+            gin.valueChanged.connect(lambda v: self._edit("Grow in", lambda p: self._set_text(p, grow_in=v)))
+            gout = _spin(0, 30, 0.05, 2, " s")
+            gout.setToolTip("Grow out: the bubble shrinks back into its tail tip at the end (0 = off)")
+            gout.valueChanged.connect(lambda v: self._edit("Grow out", lambda p: self._set_text(p, grow_out=v)))
+            form3.addRow(self._lbl("Background transparency"), bft)
+            form3.addRow(self._lbl("Outline transparency"), bot)
+            form3.addRow(self._lbl("Grow in"), gin)
+            form3.addRow(self._lbl("Grow out"), gout)
             note = QLabel("Drag the orange diamond in the preview to aim the tail; it moves independently of "
                           "the bubble and can be keyframed (Keyframes > Bubble tail tip).")
             note.setWordWrap(True)
             note.setStyleSheet(self._label_qss + "QLabel { font-size: 11px; }")
             form3.addRow(note)
-            for w_ in (bfill, bline, bwidth):
+            for w_ in (bfill, bline, bwidth, bft, bot, gin, gout):
                 w_.setEnabled(bool(text_part.text.bubble))
             self._fields.update(type_in=tin, type_out=tout, type_cursor=cur, bubble=bub, bubble_fill_btn=bfill,
-                                bubble_outline_btn=bline, bubble_outline_width=bwidth)
+                                bubble_outline_btn=bline, bubble_outline_width=bwidth, delay_in=din, delay_out=dout,
+                                bubble_fill_transparency=bft, bubble_outline_transparency=bot, grow_in=gin,
+                                grow_out=gout)
             self._fields.update(text=edit, font=font, text_size=size, color_btn=color, outline_btn=ocolor,
                                 outline_width=owidth, bold=bold, italic=italic)
 
@@ -451,6 +503,15 @@ class PropertiesPanel(QWidget):
         self._set("crop_right", tr.crop_right * 100)
         self._set("crop_bottom", tr.crop_bottom * 100)
         self._set("zoom_amount", s.zoom_amount * 100)
+        self._set("shadow", s.shadow)
+        self._set("shadow_opacity", s.shadow_opacity * 100)
+        self._set("shadow_distance", s.shadow_distance * 100)
+        self._set("shadow_angle", s.shadow_angle)
+        self._set("shadow_blur", s.shadow_blur * 100)
+        if "shadow_color_btn" in self._fields:
+            self._fields["shadow_color_btn"].set_fill_color(s.shadow_color)
+            for key in ("shadow_color_btn", "shadow_opacity", "shadow_distance", "shadow_angle", "shadow_blur"):
+                self._fields[key].setEnabled(s.shadow)
         self._set("zoom_in", s.zoom_in)
         self._set("zoom_out", s.zoom_out)
         t = s.transition_in
@@ -479,6 +540,21 @@ class PropertiesPanel(QWidget):
             self._set("type_cursor", st.type_cursor)
             self._set("bubble", st.bubble)
             self._set("bubble_outline_width", st.bubble_outline_width)
+            self._set("delay_in", st.delay_in)
+            self._set("delay_out", st.delay_out)
+            self._set("bubble_fill_transparency", st.bubble_fill_transparency * 100)
+            self._set("bubble_outline_transparency", st.bubble_outline_transparency * 100)
+            self._set("grow_in", st.grow_in)
+            self._set("grow_out", st.grow_out)
+            fc = self._fields.get("font")
+            if fc is not None and not fc.hasFocus() and fc.currentText() != st.font_family:
+                fc.blockSignals(True)
+                i = fc.findText(st.font_family)
+                if i >= 0:
+                    fc.setCurrentIndex(i)
+                else:
+                    fc.setEditText(st.font_family)
+                fc.blockSignals(False)
             self._fields["bubble_fill_btn"].set_fill_color(st.bubble_fill)
             self._fields["bubble_outline_btn"].set_fill_color(st.bubble_outline)
             self._fields["outline_btn"].set_fill_color(st.outline_color)
@@ -620,6 +696,63 @@ class PropertiesPanel(QWidget):
                 if "text" in values:
                     s.name = values["text"].split("\n")[0][:40] or "Text"
 
+    def _font_combo(self, current: str) -> QComboBox:
+        """Every installed font (type to search), comic lettering fonts first."""
+        from .controller import COMIC_FONT_PREFS, installed_font_families
+        from PySide6.QtWidgets import QCompleter
+        fams = sorted(set(installed_font_families()), key=str.lower)
+        comic = [f for f in fams if "backissue" in f.lower().replace(" ", "")
+                 or f.lower() in {n.lower() for n in COMIC_FONT_PREFS}]
+        c = QComboBox()
+        c.setStyleSheet(self._combo_qss)
+        c.setEditable(True)
+        c.setInsertPolicy(QComboBox.NoInsert)
+        c.setMaxVisibleItems(18)
+        for f in comic:
+            c.addItem(f)
+        if comic:
+            c.insertSeparator(c.count())
+        for f in fams:
+            if f not in comic:
+                c.addItem(f)
+        comp = QCompleter([c.itemText(i) for i in range(c.count()) if c.itemText(i)], c)
+        comp.setCaseSensitivity(Qt.CaseInsensitive)
+        comp.setFilterMode(Qt.MatchContains)
+        c.setCompleter(comp)
+        i = c.findText(current)
+        if i >= 0:
+            c.setCurrentIndex(i)
+        else:
+            c.setEditText(current)
+        c.setToolTip("Font -- pick from the list or type to search")
+        return c
+
+    def _pick_font(self, combo: QComboBox) -> None:
+        name = combo.currentText().strip()
+        if not name or self._refreshing:
+            return
+        segs = self._segments()
+        tp = next((pt.text for pt in segs[0].parts if pt.kind == KIND_TEXT and pt.text), None) if segs else None
+        if tp is not None and tp.font_family == name:
+            return
+        self._once("Font", lambda p: self._set_text(p, font_family=name))
+
+    def _set_seg(self, p, **values) -> None:
+        for sid in self._ids:
+            _, s = p.find_segment(sid)
+            if s is None or s.locked:
+                continue
+            for k, v in values.items():
+                setattr(s, k, v)
+
+    def _pick_shadow_color(self) -> None:
+        segs = self._segments()
+        if not segs:
+            return
+        c = QColorDialog.getColor(QColor(segs[0].shadow_color), self, "Shadow color")
+        if c.isValid():
+            self._once("Shadow color", lambda p: self._set_seg(p, shadow_color=c.name()))
+
     def _set_bubble(self, kind: str) -> None:
         if self._refreshing or not self._ids:
             return
@@ -635,8 +768,13 @@ class PropertiesPanel(QWidget):
                     continue
                 if kind and not st.bubble:
                     # Turning a bubble on: aim the tail just below-left of it,
-                    # and switch to dark text on the white bubble.
+                    # switch to dark comic lettering on the white bubble, and
+                    # give it the default grow in/out.
+                    from .controller import comic_font
                     st.tail_x, st.tail_y = s.transform.x - 0.08, s.transform.y + 0.2
+                    st.font_family = comic_font()
+                    if st.grow_in == 0 and st.grow_out == 0:
+                        st.grow_in, st.grow_out = (0.6, 0.45) if kind == "thought" else (0.35, 0.3)
                     if st.color.lower() in ("#ffffff", "#ffffffff"):
                         st.color = "#111111"
                         st.outline_width = 0.0

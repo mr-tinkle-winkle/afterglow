@@ -226,7 +226,10 @@ class MainWindow(QMainWindow):
         self._open_in_editor(video_id)
 
     def closeEvent(self, event) -> None:
-        # Flush the editor's autosave and stop its worker/audio.
+        # Flush the editor's autosave and stop its worker/audio; shut the
+        # previewer's player down cleanly (its mpv thread must not outlive it).
+        if self._preview_overlay is not None:
+            self._preview_overlay.close_overlay(immediate=True)
         self.editor_page.shutdown()
         super().closeEvent(event)
 

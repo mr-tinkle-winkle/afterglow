@@ -86,6 +86,18 @@ def set_track_collapsed(project: Project, track_id: str, collapsed: bool) -> Non
     project.tracks[project.track_index(track_id)].collapsed = collapsed
 
 
+def set_tracks_hidden(project: Project, track_ids: list, hidden: "bool | None" = None) -> None:
+    """H: hide/show layers. hidden=None toggles as a group (any shown -> all
+    hidden, else all shown)."""
+    tracks = [project.tracks[project.track_index(t)] for t in track_ids]
+    if not tracks:
+        return
+    if hidden is None:
+        hidden = not all(t.hidden for t in tracks)
+    for t in tracks:
+        t.hidden = hidden
+
+
 # =========================================================================
 # placement
 # =========================================================================

@@ -608,6 +608,7 @@ class AdvancedEditorPage(QWidget):
         sc("L", need(lambda: ctl.toggle("locked")))
         sc("M", need(lambda: ctl.toggle("muted")))
         sc("V", need(lambda: ctl.toggle("visible")))
+        sc("H", need(ctl.toggle_hidden_layers))
         sc("N", self._toggle_snap)
         sc("Ctrl+C", need(ctl.copy))
         sc("Ctrl+X", need(ctl.cut))

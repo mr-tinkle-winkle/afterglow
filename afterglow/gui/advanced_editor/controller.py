@@ -23,18 +23,36 @@ from ...nle.model import (
 )
 
 AUTOSAVE_DELAY_MS = 3000
-def comic_font() -> str:
-    """A comic-style font that's actually installed (Qt's own fallback for a
-    missing "Comic Sans MS" can land on a script font), else a plain sans."""
+COMIC_FONT_PREFS = ("Back Issues BB", "Back Issues", "Comic Sans MS", "Comic Neue", "Comic Relief",
+                    "Chalkboard SE", "Bangers", "Patrick Hand", "Architects Daughter")
+
+
+def installed_font_families() -> list:
     try:
         from PySide6.QtGui import QFontDatabase
-        have = {f.lower(): f for f in QFontDatabase.families()}
+        return list(QFontDatabase.families())
     except Exception:
-        have = {}
-    for name in ("Comic Sans MS", "Comic Neue", "Comic Relief", "Chalkboard SE", "Bangers", "Patrick Hand",
-                 "Architects Daughter", "Noto Sans", "DejaVu Sans"):
-        if name.lower() in have:
-            return have[name.lower()]
+        return []
+
+
+def comic_font() -> str:
+    """THE comic lettering font, Back Issues (Blambot), when installed --
+    matched loosely since it installs under a few names ("Back Issues BB",
+    "BackIssues BB"...). Otherwise another comic-style font, otherwise a
+    plain sans (Qt's own fallback for a missing comic font can land on a
+    script font)."""
+    fams = installed_font_families()
+    norm = {f.lower().replace(" ", ""): f for f in fams}
+    for f in fams:
+        if "backissue" in f.lower().replace(" ", ""):
+            return f
+    for name in COMIC_FONT_PREFS:
+        hit = norm.get(name.lower().replace(" ", ""))
+        if hit:
+            return hit
+    for name in ("Noto Sans", "DejaVu Sans"):
+        if name.lower().replace(" ", "") in norm:
+            return norm[name.lower().replace(" ", "")]
     return "Sans Serif"
 
 
@@ -44,10 +62,12 @@ TEXT_PRESETS = {
     "Subtitle": TextStyle(text="Subtitle", font_size=0.06, outline_width=2.0),
     "Caption": TextStyle(text="Caption", font_size=0.045, outline_width=2.0),
     "Plain text": TextStyle(text="Text", font_size=0.08),
-    "Speech bubble": TextStyle(text="Speech!", font_family=COMIC_FONT, font_size=0.055, bold=True,
-                               color="#111111", bubble="speech", tail_x=0.02, tail_y=0.05),
-    "Thought bubble": TextStyle(text="Hmm...", font_family=COMIC_FONT, font_size=0.055, italic=True,
-                                color="#111111", bubble="thought", tail_x=0.02, tail_y=0.05),
+    "Speech bubble": TextStyle(text="Speech!", font_family=COMIC_FONT, font_size=0.055,
+                               color="#111111", bubble="speech", tail_x=0.02, tail_y=0.05,
+                               grow_in=0.35, grow_out=0.3, delay_in=0.6),
+    "Thought bubble": TextStyle(text="Hmm...", font_family=COMIC_FONT, font_size=0.055,
+                                color="#111111", bubble="thought", tail_x=0.02, tail_y=0.05,
+                                grow_in=0.6, grow_out=0.45, delay_in=0.6),
 }
 # Where each preset sits (Transform.x, Transform.y as fractions from the center;
 # 0.5 would be the edge). Subtitles sit just above the bottom edge.
@@ -84,6 +104,7 @@ class EditorController(QObject):
         self.project: "Project | None" = None
         self.history: "History | None" = None
         self.selection: list[str] = []
+        self.selected_tracks: list[str] = []    # layers picked by clicking their header
         self.anchor: "str | None" = None
         self.playhead = 0.0
         self.clipboard: dict = {}
@@ -110,6 +131,7 @@ class EditorController(QObject):
         self.history = History(project, on_change=self._on_history_change)
         self._loaded_unsaved = bool(project.unsaved_changes)
         self.selection = []
+        self.selected_tracks = []
         self.anchor = None
         self.playhead = 0.0
         self.changed.emit()
@@ -203,6 +225,8 @@ class EditorController(QObject):
         # Selection may point at segments an undo removed.
         before = list(self.selection)
         self.selection = [i for i in self.selection if self.project.find_segment(i)[1] is not None]
+        valid = {t.id for t in self.project.tracks}
+        self.selected_tracks = [t for t in self.selected_tracks if t in valid]
         self.changed.emit()
         if self.selection != before:
             self.selection_changed.emit()
@@ -288,6 +312,29 @@ class EditorController(QObject):
         if ids != self.selection:
             self.selection = ids
             self.selection_changed.emit()
+
+    def set_track_selection(self, track_ids: list) -> None:
+        if self.project is None:
+            return
+        valid = {t.id for t in self.project.tracks}
+        ids = [t for t in dict.fromkeys(track_ids) if t in valid]
+        if ids != self.selected_tracks:
+            self.selected_tracks = ids
+            self.selection_changed.emit()
+
+    def toggle_hidden_layers(self) -> None:
+        """H: hide/show the selected layers (track headers), or else the
+        layers holding the selected segments."""
+        if self.project is None:
+            return
+        ids = list(self.selected_tracks)
+        if not ids:
+            for sid in self.selection:
+                t, _s = self.project.find_segment(sid)
+                if t is not None and t.id not in ids:
+                    ids.append(t.id)
+        if ids:
+            self.perform("Hide layer", lambda p: ops.set_tracks_hidden(p, ids))
 
     def click_select(self, seg_id: str, ctrl: bool, shift: bool) -> None:
         """Click/Ctrl/Shift selection, per the spec: Ctrl toggles; Shift

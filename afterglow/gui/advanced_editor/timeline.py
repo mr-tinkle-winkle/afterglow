@@ -19,9 +19,11 @@ Interaction summary (see HANDOFF.md for the spec each comes from):
   can that closes the gap.
 - Track header: drag the 3-line handle to reorder, click the arrow to
   collapse. Header side follows Settings > General > Editor.
-- Wheel: step the playhead one frame (Shift = 1 s); Ctrl = zoom around
-  the cursor; over the headers (or with Alt) = scroll tracks; a
-  horizontal wheel/trackpad scrolls time.
+- Wheel: scroll along the timeline; Shift = step the playhead one frame
+  (Ctrl+Shift = 1 s); Ctrl = zoom around the cursor; over the headers (or
+  with Alt) = scroll tracks. Middle-drag pans the view.
+- Track header: click selects the layer (Ctrl adds), the eye (or H)
+  hides it.
 - Alt while dragging bypasses snapping; N toggles snapping.
 
 Rendering: everything except the playhead and hover-only details is
@@ -54,7 +56,7 @@ from .controller import EditorController, probe_cached, seg_kind
 
 MIME_ITEM = "application/x-afterglow-editor-item"
 
-HEADER_W = 104
+HEADER_W = 124
 RULER_H = 30
 COLLAPSED_H = 26
 VISIBLE_TRACKS = 4
@@ -270,11 +272,15 @@ class TimelineView(QWidget):
         if hr.left() <= x < hr.right():
             handle_x = hr.left() + 14 if self.header_side == "left" else hr.right() - 14
             chevron_x = hr.left() + 34 if self.header_side == "left" else hr.right() - 34
+            eye_x = hr.right() - 14 if self.header_side == "left" else hr.left() + 14
+            cy = top + (COLLAPSED_H / 2 if track.collapsed else min(h / 2, 18))
             zone = "body"
             if abs(x - handle_x) <= 11:
                 zone = "handle"
             elif abs(x - chevron_x) <= 10:
                 zone = "collapse"
+            elif abs(x - eye_x) <= 11 and abs(pos.y() - cy) <= 11:
+                zone = "eye"
             return {"kind": "header", "track": ti, "zone": zone}
         t = self.x_to_t(x)
         # Segments, topmost-drawn last -> check in reverse draw order.
@@ -433,7 +439,7 @@ class TimelineView(QWidget):
             # A horizontal line across the gap with a break in the middle;
             # the trash can appears in that break on hover.
             c = QColor(text_c)
-            c.setAlpha(150 if hovered else 60)
+            c.setAlpha(150 if hovered else 30)
             p.setPen(QPen(c, 1.5))
             y = top + h / 2
             brk = 17 if gx1 - gx0 >= 40 else 0
@@ -454,6 +460,15 @@ class TimelineView(QWidget):
             if r.right() < clip.left() - 2 or r.left() > clip.right() + 2:
                 continue
             self._paint_segment(p, i, track, seg, r)
+        if track.hidden:
+            # A hidden layer: everything on it dimmed + hatched.
+            p.fillRect(lane, QColor(0, 0, 0, 120))
+            p.setPen(QPen(QColor(255, 255, 255, 22), 1))
+            step = 14
+            x = lane.left() - lane.height()
+            while x < lane.right():
+                p.drawLine(QPointF(x, lane.bottom()), QPointF(x + lane.height(), lane.top()))
+                x += step
         p.restore()
 
     # ---------------------------------------------------------------- segments
@@ -811,7 +826,10 @@ class TimelineView(QWidget):
             hovered = self._hover is not None and self._hover["kind"] == "header" and self._hover["track"] == i
             if hovered:
                 p.fillRect(row, theme.card_background().lighter(120))
-            if self._drag is not None and self._drag.get("mode") == "track" and self._drag.get("from") == i:
+            if track.id in self.ctl.selected_tracks:
+                p.fillRect(row, theme.accent().darker(115))
+            if self._drag is not None and self._drag.get("mode") == "track" and self._drag.get("from") == i \
+                    and self._drag.get("moved"):
                 p.fillRect(row, theme.accent().darker(140))
             left = self.header_side == "left"
             handle_x = hr.left() + 14 if left else hr.right() - 14
@@ -819,14 +837,19 @@ class TimelineView(QWidget):
             cy = top + (COLLAPSED_H / 2 if track.collapsed else min(h / 2, 18))
             icons.draw_handle_lines(p, QPointF(handle_x, cy), 14, text_c)
             icons.draw_chevron(p, QPointF(chevron_x, cy), 12, text_c, expanded=not track.collapsed)
+            eye_x = hr.right() - 14 if left else hr.left() + 14
+            ec = QColor(text_c)
+            if not track.hidden:
+                ec.setAlpha(120)
+            icons.draw_eye(p, QPointF(eye_x, cy), 15, ec if not track.hidden else QColor("#ff9f1c"), slashed=track.hidden)
             is_buffer = (i == 0 or i == n - 1) and track.is_empty()
             label = track.name or ("+" if is_buffer else f"Track {i}")
             c = QColor(text_c)
             if is_buffer:
                 c.setAlpha(110)
             p.setPen(c)
-            label_rect = QRectF(hr.left() + 46, cy - 10, hr.width() - 52, 20) if left \
-                else QRectF(hr.left() + 6, cy - 10, hr.width() - 52, 20)
+            label_rect = QRectF(hr.left() + 46, cy - 10, hr.width() - 72, 20) if left \
+                else QRectF(hr.left() + 26, cy - 10, hr.width() - 72, 20)
             p.drawText(label_rect, Qt.AlignVCenter | (Qt.AlignLeft if left else Qt.AlignRight), label)
             p.setPen(QPen(theme.card_background().darker(140), 1))
             p.drawLine(QPointF(row.left(), row.bottom() - 0.5), QPointF(row.right(), row.bottom() - 0.5))
@@ -907,6 +930,12 @@ class TimelineView(QWidget):
         h = self.hit(pos)
         if event.button() == Qt.RightButton:
             return  # contextMenuEvent handles it
+        if event.button() == Qt.MiddleButton:
+            # Middle-drag pans the view (time and tracks).
+            self._drag = {"mode": "pan", "press": pos, "moved": True, "mods": event.modifiers(),
+                          "scroll_t": self.scroll_t, "scroll_y": self.scroll_y}
+            self.setCursor(Qt.ClosedHandCursor)
+            return
         if event.button() != Qt.LeftButton or h is None:
             return
         mods = event.modifiers()
@@ -923,8 +952,13 @@ class TimelineView(QWidget):
                 self.ctl.perform("Collapse track", lambda p: ops.set_track_collapsed(p, tid, new))
                 self.set_scroll_y(self.scroll_y)
                 return
+            if h["zone"] == "eye":
+                tid = self.project.tracks[h["track"]].id
+                self.ctl.perform("Hide layer", lambda p: ops.set_tracks_hidden(p, [tid]))
+                return
             if h["zone"] in ("handle", "body"):
-                self._drag = {**base, "mode": "track", "from": h["track"], "to": None}
+                self._drag = {**base, "mode": "track", "from": h["track"], "to": None,
+                              "ctrl": bool(mods & Qt.ControlModifier)}
             return
         if kind == "gap":
             track_id = self.project.tracks[h["track"]].id
@@ -1002,6 +1036,10 @@ class TimelineView(QWidget):
 
     def _continue_gesture(self, d: dict, pos: QPointF, event) -> None:
         mode = d["mode"]
+        if mode == "pan":
+            self.set_scroll_t(d["scroll_t"] - (pos.x() - d["press"].x()) / self.pps)
+            self.set_scroll_y(d["scroll_y"] - (pos.y() - d["press"].y()))
+            return
         snap = self._snapping(event)
         thr = self._snap_threshold()
         if mode == "playhead":
@@ -1121,11 +1159,24 @@ class TimelineView(QWidget):
         if d is None:
             return
         mode = d["mode"]
+        if mode == "pan":
+            self.setCursor(Qt.ArrowCursor)
+            self._update_hover(event.position())
+            return
         if mode == "lane" and not d["moved"]:
             self.ctl.set_selection([])
         elif mode == "track" and d["moved"] and d.get("to") is not None and d["to"] != d["from"]:
             a, b = d["from"], d["to"]
             self.ctl.perform("Reorder tracks", lambda p: ops.move_track(p, a, b))
+        elif mode == "track" and not d["moved"]:
+            # a click on a track header selects that layer (Ctrl adds/removes)
+            tid = self.project.tracks[d["from"]].id
+            sel = list(self.ctl.selected_tracks) if d.get("ctrl") else []
+            if tid in sel:
+                sel.remove(tid)
+            else:
+                sel.append(tid)
+            self.ctl.set_track_selection(sel)
         elif mode == "move" and not d["moved"] and d.get("reselect"):
             self.ctl.set_selection([d["seg_id"]], anchor=d["seg_id"])
         elif d["moved"] and mode in ("move", "trim_l", "trim_r", "fade_in", "fade_out"):
@@ -1220,18 +1271,24 @@ class TimelineView(QWidget):
             # horizontal wheel / trackpad: scroll time
             self.set_scroll_t(self.scroll_t - ad.x() / 120 * self.visible_seconds() * 0.1)
             return
-        steps = ad.y() / 120.0
-        if mods & Qt.ControlModifier:
+        # Qt swaps the wheel to horizontal while Alt is held (and some
+        # desktops do for Shift): use whichever axis actually moved.
+        raw = ad.y() if ad.y() else ad.x()
+        steps = raw / 120.0
+        if mods & Qt.ControlModifier and not mods & Qt.ShiftModifier:
             self.zoom_by(steps, anchor_x=pos.x())
         elif in_header or mods & Qt.AltModifier:
             self.set_scroll_y(self.scroll_y - steps * self.lane_h() * 0.5)
         elif mods & Qt.ShiftModifier:
-            self.ctl.step_playhead(seconds=math.copysign(1.0, steps) * max(1, round(abs(steps))))
+            if mods & Qt.ControlModifier:        # Ctrl+Shift: one second per notch
+                self.ctl.step_playhead(seconds=math.copysign(1.0, steps) * max(1, round(abs(steps))))
+            else:                                # Shift: one frame per notch
+                n = int(math.copysign(max(1, round(abs(steps))), steps))
+                self.ctl.step_playhead(frames=n)
             self.ensure_playhead_visible()
         else:
-            n = int(math.copysign(max(1, round(abs(steps))), steps))
-            self.ctl.step_playhead(frames=n)
-            self.ensure_playhead_visible()
+            # Plain wheel scrolls along the timeline (down = later).
+            self.set_scroll_t(self.scroll_t - steps * self.visible_seconds() * 0.1)
         event.accept()
 
     # ================================================================ context menu

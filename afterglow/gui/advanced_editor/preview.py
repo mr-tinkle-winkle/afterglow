@@ -350,10 +350,14 @@ class PreviewCanvas(QWidget):
             return
         pos = event.position()
         seg, handle = self._hit_handle(pos)
-        if handle is None:
+        if handle is None or handle == "move":
+            # A plain click selects the TOPMOST element under the cursor --
+            # even when another (e.g. the full-frame video underneath) is
+            # selected and would otherwise have claimed the click as a move.
             s = self._segment_at(pos)
             if s is not None:
-                self.ctl.set_selection([s.id], anchor=s.id)
+                if s.id not in self.ctl.selection or len(self.ctl.selection) != 1:
+                    self.ctl.set_selection([s.id], anchor=s.id)
                 seg, handle = s, "move"
             else:
                 self.ctl.set_selection([])

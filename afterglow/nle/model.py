@@ -103,6 +103,18 @@ class TextStyle:
     bubble_outline_width: float = 4.0     # px at 1080p
     tail_x: float = -0.1
     tail_y: float = 0.25
+    bubble_fill_transparency: float = 0.0      # 0 = solid, 1 = invisible
+    bubble_outline_transparency: float = 0.0
+    # "Grow" in/out (seconds, 0 = off): a bubble grows out of its tail tip
+    # into place (a thought bubble sprouts its circles first, then puffs up
+    # like a cloud), and shrinks back into the tip at the end.
+    grow_in: float = 0.0
+    grow_out: float = 0.0
+    # "Delay" in/out (seconds, 0 = off): the text fades in word by word, and
+    # within a word letter by letter left to right (out = the reverse).
+    # When the bubble grows, the delay starts once it has grown.
+    delay_in: float = 0.0
+    delay_out: float = 0.0
 
 
 @dataclass
@@ -181,6 +193,13 @@ class Segment:
     # "rotation", "opacity"). Keyframes override the static value.
     keyframes: dict[str, list[Keyframe]] = field(default_factory=dict)
     transition_in: "Transition | None" = None
+    # Drop shadow under whatever the segment draws (off by default).
+    shadow: bool = False
+    shadow_color: str = "#000000"
+    shadow_opacity: float = 0.6
+    shadow_distance: float = 0.012     # fraction of canvas height
+    shadow_angle: float = 135.0        # degrees; 135 = down-right (0 = right, 90 = down)
+    shadow_blur: float = 0.35          # 0 = hard edge .. 1 = very soft
 
     @property
     def duration(self) -> float:
@@ -218,6 +237,7 @@ class Track:
     name: str = ""
     segments: list[Segment] = field(default_factory=list)
     collapsed: bool = False
+    hidden: bool = False          # a hidden layer (H) contributes no picture and no sound
 
     def sorted_segments(self) -> list[Segment]:
         return sorted(self.segments, key=lambda s: s.start)
