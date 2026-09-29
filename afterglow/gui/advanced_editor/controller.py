@@ -24,11 +24,10 @@ from ...nle.model import (
 
 AUTOSAVE_DELAY_MS = 3000
 def comic_font() -> str:
-    """THE comic lettering font, Back Issues (Blambot), when installed on the
-    system (it can't be bundled); otherwise the bundled Comic Neue."""
-    from ..fonts import installed_back_issues, load_bundled_fonts
+    """Default font for speech/thought bubbles: the bundled Permanent Marker."""
+    from ..fonts import load_bundled_fonts
     load_bundled_fonts()
-    return installed_back_issues() or "Comic Neue"
+    return "Permanent Marker"
 
 
 COMIC_FONT = "Comic Sans MS"     # replaced with comic_font() when a bubble is created
@@ -38,10 +37,10 @@ TEXT_PRESETS = {
     "Caption": TextStyle(text="Caption", font_family="Roboto", font_size=0.045, outline_width=2.0),
     "Plain text": TextStyle(text="Text", font_family="Roboto", font_size=0.08),
     "Speech bubble": TextStyle(text="Speech!", font_family=COMIC_FONT, font_size=0.055,
-                               color="#111111", bubble="speech", tail_x=0.02, tail_y=0.05,
+                               color="#111111", bubble="speech", tail_x=-0.16, tail_y=0.25,
                                grow_in=0.35, grow_out=0.3, delay_in=0.6),
     "Thought bubble": TextStyle(text="Hmm...", font_family=COMIC_FONT, font_size=0.055,
-                                color="#111111", bubble="thought", tail_x=0.02, tail_y=0.05,
+                                color="#111111", bubble="thought", tail_x=-0.16, tail_y=0.25,
                                 grow_in=0.6, grow_out=0.45, delay_in=0.6),
 }
 # Where each preset sits (Transform.x, Transform.y as fractions from the center;

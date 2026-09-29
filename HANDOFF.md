@@ -423,7 +423,26 @@ plain QSS rule is unavoidable.
 Seven consecutive batches of Library/Settings/appearance
 features/bug fixes, given together each time. Newest first.
 
-### This session (newest -- feedback round 3)
+### This session (newest -- feedback round 4)
+1. **Bubble tail follows the tracked object through grow in/out.** The tail
+   tip used to be an absolute canvas position, so with Position keyframes
+   the grow-out collapsed into a fixed spot while the object kept moving.
+   `TextStyle.tail_x/tail_y` (and their "tail_x"/"tail_y" keyframes) are
+   now an OFFSET from the bubble's animated position, in canvas fractions.
+   `SCHEMA_VERSION = 2`; `model._migrate_tail_to_offset` converts older
+   projects on load (subtracts the static or keyframed bubble position).
+   render.py adds the offset after evaluating x/y at the clamped local
+   time; preview.py `tail_point` and tail dragging use the same rule.
+   Defaults: presets (-0.16, 0.25), Properties > Bubble switch (-0.08, 0.2).
+2. **Thought cloud finishes before its text appears.** The cloud grows over
+   g in [THOUGHT_CLOUD_START=0.3, THOUGHT_CLOUD_END=THOUGHT_TEXT_IN_AT=0.75];
+   the far (top right) bumps start earlier (`u = _window(cg, 0.45*d, 0.55)`),
+   and thought text starts at 0.75 of the grow (speech stays at 0.55). The
+   shape at g=0.75 equals the finished shape (test_round4 checks this).
+3. **Speech/thought bubble default font = Permanent Marker**
+   (`controller.comic_font()`), for presets and the Bubble switch.
+
+### Previous session (feedback round 3)
 1. **"The app closes and reopens the first time the previewer opens" --
    fixed.** The previewer's player is a QOpenGLWidget; the first GL widget
    to join a window makes Qt destroy and re-create the window's native
@@ -559,8 +578,8 @@ parallel export; all earlier suites pass.
    while typing. Properties > Typing. `render.typed_state()`.
 6. **Speech and thought bubbles:** `TextStyle.bubble` ("" | "speech" |
    "thought"), `bubble_fill`, `bubble_outline`, `bubble_outline_width`,
-   and the tail tip `tail_x`/`tail_y` -- a CANVAS position (same units as
-   Transform.x/y), independent of the bubble, keyframable ("tail_x"/
+   and the tail tip `tail_x`/`tail_y` -- (superseded: now an OFFSET from the
+   bubble position, see feedback round 4) keyframable ("tail_x"/
    "tail_y"; Keyframes > "Bubble tail tip" sets both). Speech = ellipse +
    curved pointed tail (unioned into one outline); thought = cloud of
    bumps + three shrinking circles toward the tip; no tail when the tip

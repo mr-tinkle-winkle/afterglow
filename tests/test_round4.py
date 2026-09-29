@@ -133,12 +133,12 @@ ctl = ed.ctl
 props = ed.properties
 sp = ctl.add_text("Speech bubble", t=1.0)
 pump(0.4)
-check(sp.parts[0].text.font_family == "Comic Neue", "without Back Issues installed, bubbles use the bundled Comic Neue")
+check(sp.parts[0].text.font_family == "Permanent Marker", "bubbles default to the bundled Permanent Marker")
 fc = props._fields["font"]
 check(not fc.isEditable(), "the font picker is a plain dropdown (no typing needed)")
 items = [fc.itemData(i) for i in range(fc.count()) if fc.itemData(i)]
 check(set(items) == set(bundled) and len(items) == len(bundled), f"it offers exactly the {len(bundled)} bundled fonts")
-check(fc.itemData(fc.currentIndex()) == "Comic Neue", "and shows the current font")
+check(fc.itemData(fc.currentIndex()) == "Permanent Marker", "and shows the current font")
 check(all(fc.itemData(i, Qt.FontRole) is not None for i in range(fc.count()) if fc.itemData(i)),
       "each entry is drawn in its own typeface")
 i = fc.findData("Tinos")
@@ -234,13 +234,46 @@ w.grab().save(f"{OUT}/r4_word_keys.png")
 # ---- 8: thought cloud grows without a center oval -----------------------------------------------------------------
 body = QRectF(-100, -40, 200, 80)
 tip = QPointF(160, 160)
-path_mid = R.bubble_shape("thought", body, tip, 0.62)[0]
+path_mid = R.bubble_shape("thought", body, tip, 0.45)[0]
 far_side = QPointF(-80, -10)             # opposite the trail
 near_side = QPointF(70, 20)
 check(not path_mid.contains(far_side) and path_mid.contains(near_side),
       "mid-grow: the cloud has formed on the trail's side only (no whole oval up front)")
 full = R.bubble_shape("thought", body, tip, 1.0)[0]
 check(full.contains(QPointF(0, 0)) and full.contains(far_side), "fully grown: the middle is solid")
+
+# ---- round 5: the tail follows the bubble; thought cloud done before text; Permanent Marker ----------
+from afterglow.nle.model import Keyframe, Project
+pp = default_project(640, 360, 30)
+st5 = TextStyle(text="hey!", font_size=0.07, color="#111111", bubble="speech", tail_x=-0.2, tail_y=0.25,
+                grow_in=0.4, grow_out=0.4)
+seg5 = Segment(parts=[Part(kind=KIND_TEXT, src_in=0, src_out=4, has_audio=False, text=st5)])
+seg5.keyframes["x"] = [Keyframe(0, -0.3), Keyframe(4, 0.3)]
+ops.place(pp, seg5, 1, 0.0)
+rr = R.Renderer(pp)
+
+
+def cx(img):
+    xs = [x for y in range(0, img.height(), 2) for x in range(0, img.width(), 2)
+          if img.pixelColor(x, y).red() > 230 and img.pixelColor(x, y).green() > 230]
+    return sum(xs) / len(xs) if xs else None
+tip_x = lambda t: (0.5 + (-0.3 + 0.6 * t / 4) - 0.2) * 640
+xs = [cx(rr.frame(t, 640, 360)) for t in (3.7, 3.85, 3.95)]
+tips = [tip_x(t) for t in (3.7, 3.85, 3.95)]
+check(all(x is not None for x in xs[:2]) and xs[1] > tips[0] - 5 and abs(xs[1] - tips[1]) < abs(xs[0] - tips[0]),
+      f"shrinking into a tail that moves with the keyframed bubble (centroid {[round(x or 0) for x in xs]}, tip {[round(t) for t in tips]})")
+rr.close()
+old = {"schema_version": 1, "tracks": [{"segments": [{"transform": {"x": 0.2, "y": -0.1}, "parts": [
+    {"kind": "text", "src_out": 3, "text": {"text": "hi", "bubble": "speech", "tail_x": 0.0, "tail_y": 0.3}}]}]}]}
+mp = Project.from_dict(old)
+mst = mp.tracks[0].segments[0].parts[0].text
+check(abs(mst.tail_x - (-0.2)) < 1e-9 and abs(mst.tail_y - 0.4) < 1e-9, "old projects: absolute tail tips become offsets")
+body = QRectF(-100, -40, 200, 80)
+done = R.bubble_shape("thought", body, QPointF(160, 160), R.THOUGHT_TEXT_IN_AT)[0]
+full = R.bubble_shape("thought", body, QPointF(160, 160), 1.0)[0]
+far = QPointF(90, -30)                 # top right, the far side from the trail
+check(done.contains(far) and abs(done.boundingRect().width() - full.boundingRect().width()) < 1.0,
+      "the thought cloud (top right included) is complete when its text starts")
 
 w.close()
 pump(0.3)

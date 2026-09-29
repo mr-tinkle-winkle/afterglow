@@ -867,7 +867,7 @@ class PropertiesPanel(QWidget):
                     # switch to dark comic lettering on the white bubble, and
                     # give it the default grow in/out.
                     from .controller import comic_font
-                    st.tail_x, st.tail_y = s.transform.x - 0.08, s.transform.y + 0.2
+                    st.tail_x, st.tail_y = -0.08, 0.2          # offset from the bubble
                     st.font_family = comic_font()
                     if st.grow_in == 0 and st.grow_out == 0:
                         st.grow_in, st.grow_out = (0.6, 0.45) if kind == "thought" else (0.35, 0.3)

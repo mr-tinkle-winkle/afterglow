@@ -100,9 +100,9 @@ def white_count(img, rect=None, thr=235):
 
 
 # ---- 1: Back Issues by default + a real font dropdown --------------------------------------------------------
-check(ctl_mod.comic_font() == "Back Issues BB", f"comic_font() finds Back Issues ({ctl_mod.comic_font()})")
+check(ctl_mod.comic_font() == "Permanent Marker", f"bubbles default to Permanent Marker ({ctl_mod.comic_font()})")
 sp = ctl.add_text("Speech bubble", t=0.0)
-check(F(sp).parts[0].text.font_family == "Back Issues BB", "Speech bubbles default to Back Issues")
+check(F(sp).parts[0].text.font_family == "Permanent Marker", "Speech bubbles default to Permanent Marker")
 pump(0.3)
 fc = props._fields["font"]
 check(fc.itemData(0) == "Back Issues BB" and fc.count() > 20, f"font dropdown: Back Issues first when installed ({fc.itemText(0)})")
@@ -129,7 +129,8 @@ check(sizes_out[0] > sizes_out[2] and sizes_out[1] > sizes_out[2] and sizes_out[
 # early in the grow, what's visible sits near the tail tip, not at the bubble's final spot
 img = rr.frame(0.06, 640, 360)
 bx, by = int((0.5 + F(sp).transform.x) * 640), int((0.5 + F(sp).transform.y) * 360)
-tx, ty = int((0.5 + st.tail_x) * 640), int((0.5 + st.tail_y) * 360)
+tx = int((0.5 + F(sp).transform.x + st.tail_x) * 640)     # tail = offset from the bubble
+ty = int((0.5 + F(sp).transform.y + st.tail_y) * 360)
 near_tip = white_count(img, (max(0, tx - 60), max(0, ty - 60), min(640, tx + 60), min(360, ty + 60)))
 at_final = white_count(img, (max(0, bx - 25), max(0, by - 12), bx + 25, by + 12))
 check(near_tip > 0 and near_tip >= at_final, f"it starts out at the tail tip (tip {near_tip} px, final spot {at_final} px)")

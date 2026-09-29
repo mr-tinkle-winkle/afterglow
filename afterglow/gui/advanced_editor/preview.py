@@ -241,8 +241,10 @@ class PreviewCanvas(QWidget):
         p = self.ctl.project
         local = self.ctl.playhead - seg.start
         kf = seg.keyframes
-        tx = nle_render.eval_keyframes(kf.get("tail_x"), local, part.text.tail_x)
-        ty = nle_render.eval_keyframes(kf.get("tail_y"), local, part.text.tail_y)
+        tx = nle_render.eval_keyframes(kf.get("tail_x"), local, part.text.tail_x) \
+            + nle_render.eval_keyframes(kf.get("x"), local, seg.transform.x)
+        ty = nle_render.eval_keyframes(kf.get("tail_y"), local, part.text.tail_y) \
+            + nle_render.eval_keyframes(kf.get("y"), local, seg.transform.y)
         return self.canvas_to_widget().map(QPointF(p.width / 2 + tx * p.width, p.height / 2 + ty * p.height))
 
     def _handles(self, geo, seg: "Segment | None" = None):

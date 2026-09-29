@@ -35,7 +35,7 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass, field, fields, asdict
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 EPS = 1e-6
 
 # Part kinds. "av" = a media file's video and/or audio (has_video /
@@ -94,9 +94,12 @@ class TextStyle:
     type_out: float = 0.0
     type_cursor: bool = False
     # Comic bubbles: "" (plain text) | "speech" | "thought". The tail's tip
-    # (tail_x, tail_y) is a canvas position (fraction of width/height from
-    # the canvas center, like Transform.x/y), independent of where the
-    # bubble itself is -- and keyframable ("tail_x"/"tail_y").
+    # (tail_x, tail_y) is an OFFSET from the bubble's own position (same
+    # units as Transform.x/y: fractions of the canvas width/height), so a
+    # bubble that is moved -- or keyframed to follow something -- takes its
+    # tail along; the tip can still be dragged/keyframed on its own
+    # ("tail_x"/"tail_y" keyframes are offsets too). Schema 1 stored it as
+    # an absolute canvas position (converted in Project.from_dict).
     bubble: str = ""
     bubble_fill: str = "#ffffff"
     bubble_outline: str = "#000000"
@@ -320,6 +323,8 @@ class Project:
         if version > SCHEMA_VERSION:
             raise ValueError(f"Project was saved by a newer version (schema {version} > {SCHEMA_VERSION}).")
         # (migrations for older schema versions go here)
+        if version < 2:
+            d = _migrate_tail_to_offset(d)
         tracks = []
         for td in d.get("tracks", []):
             segs = []
@@ -336,6 +341,43 @@ class Project:
                 }))
             tracks.append(_build(Track, {**td, "segments": segs}))
         return _build(cls, {**d, "tracks": tracks, "schema_version": SCHEMA_VERSION})
+
+
+def _lerp_keys(keys: list, t: float, default: float) -> float:
+    ks = sorted(keys or [], key=lambda k: k["t"])
+    if not ks:
+        return default
+    if t <= ks[0]["t"]:
+        return ks[0]["value"]
+    if t >= ks[-1]["t"]:
+        return ks[-1]["value"]
+    for a, b in zip(ks, ks[1:]):
+        if a["t"] <= t <= b["t"]:
+            u = (t - a["t"]) / max(b["t"] - a["t"], 1e-9)
+            return a["value"] + (b["value"] - a["value"]) * u
+    return default
+
+
+def _migrate_tail_to_offset(d: dict) -> dict:
+    """Schema 1 -> 2: bubble tail tips were absolute canvas positions; they're
+    now offsets from the bubble's position (so the tail follows the bubble)."""
+    import copy as _copy
+    d = _copy.deepcopy(d)
+    for td in d.get("tracks", []):
+        for sd in td.get("segments", []):
+            tr = sd.get("transform") or {}
+            kfs = sd.get("keyframes") or {}
+            x0, y0 = tr.get("x", 0.0), tr.get("y", 0.0)
+            for pd in sd.get("parts", []):
+                st = pd.get("text")
+                if not st or not st.get("bubble"):
+                    continue
+                st["tail_x"] = st.get("tail_x", -0.1) - _lerp_keys(kfs.get("x"), 0.0, x0)
+                st["tail_y"] = st.get("tail_y", 0.25) - _lerp_keys(kfs.get("y"), 0.0, y0)
+            for axis, pos_key, base in (("tail_x", "x", x0), ("tail_y", "y", y0)):
+                for k in kfs.get(axis, []) or []:
+                    k["value"] = k["value"] - _lerp_keys(kfs.get(pos_key), k["t"], base)
+    return d
 
 
 def _build(cls, data: dict):

@@ -299,11 +299,11 @@ class Renderer:
                 tip = None
                 st = part.text
                 if st is not None and st.bubble:
-                    # Tail tip is a canvas position; bring it into this
-                    # segment's local (translated/rotated/scaled) space.
-                    tx = cw / 2 + eval_keyframes(kf.get("tail_x"), local, st.tail_x) * cw
-                    ty = ch / 2 + eval_keyframes(kf.get("tail_y"), local, st.tail_y) * ch
-                    dx, dy = tx - (cw / 2 + x * cw), ty - (ch / 2 + y * ch)
+                    # The tail tip is an offset from the bubble's (animated)
+                    # position, in canvas units; bring it into this segment's
+                    # local (rotated/scaled) space.
+                    dx = eval_keyframes(kf.get("tail_x"), local, st.tail_x) * cw
+                    dy = eval_keyframes(kf.get("tail_y"), local, st.tail_y) * ch
                     a = -math.radians(rotation)
                     lx = (dx * math.cos(a) - dy * math.sin(a)) / max(scale, 1e-6)
                     ly = (dx * math.sin(a) + dy * math.cos(a)) / max(scale, 1e-6)
@@ -526,6 +526,8 @@ def text_layout(st, ch: float) -> dict:
 
 
 TEXT_IN_AT = 0.55     # text transitions start when a bubble's grow-in is this far along
+THOUGHT_TEXT_IN_AT = 0.75   # thought clouds: once the cloud is complete (see bubble_shape)
+THOUGHT_CLOUD_START, THOUGHT_CLOUD_END = 0.3, THOUGHT_TEXT_IN_AT
 TEXT_OUT_AT = 0.4     # ...and finish when its grow-out is this far along
 
 
@@ -541,7 +543,7 @@ def text_timing(st, duration: float) -> dict:
     if gi + go > duration > 0:
         k = duration / (gi + go)
         gi, go = gi * k, go * k
-    ts = gi * TEXT_IN_AT
+    ts = gi * (THOUGHT_TEXT_IN_AT if st.bubble == "thought" else TEXT_IN_AT)
     te = max(ts, duration - go * TEXT_OUT_AT)
     win = te - ts
     ti, to = st.type_in, st.type_out
@@ -802,7 +804,13 @@ def bubble_shape(kind: str, body: QRectF, tip: "QPointF | None", g: float = 1.0,
         # wedge from the center out to the bump), so the middle fills in as
         # the bumps arrive -- there's no separate center oval popping in
         # ahead of them (all the wedges together ARE the middle).
-        cg = 1.0 if g >= 1 else _window(g, 0.35 if n_tr else 0.0, 0.65 if n_tr else 1.0)
+        # The whole cloud is complete by THOUGHT_CLOUD_END -- the point where
+        # the text starts -- so no side (the far one especially) is still
+        # puffing up behind the words.
+        if n_tr:
+            cg = 1.0 if g >= 1 else _window(g, THOUGHT_CLOUD_START, THOUGHT_CLOUD_END - THOUGHT_CLOUD_START)
+        else:
+            cg = 1.0 if g >= 1 else _window(g, 0.0, THOUGHT_CLOUD_END)
         if cg > 0.001:
             c = c_full
             nb = 11
@@ -812,7 +820,7 @@ def bubble_shape(kind: str, body: QRectF, tip: "QPointF | None", g: float = 1.0,
             for i in range(nb):
                 a = 2 * math.pi * i / nb
                 d = abs(math.atan2(math.sin(a - ang), math.cos(a - ang))) / math.pi if tail is not None else i / nb
-                u = _window(cg, 0.6 * d, 0.4) if cg < 1 else 1.0
+                u = _window(cg, 0.45 * d, 0.55) if cg < 1 else 1.0
                 kb = ease_back(u) if u < 1 else 1.0
                 reach = ease_cubic(u) if u < 1 else 1.0
                 if kb <= 0.01:
