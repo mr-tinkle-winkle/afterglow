@@ -50,7 +50,7 @@ def new_project_for_file(path: str, library_video_id: "int | None" = None, outpu
 
 
 def save_library_clip(project: Project, progress: "Callable[[float], None] | None" = None,
-                      cancel: "threading.Event | None" = None):
+                      cancel: "threading.Event | None" = None, **export_opts):
     """Render over the library clip. Returns the updated library.Video."""
     video = library.get_video(project.library_video_id)
     backup = store.stabilize_sources(project, video.path, video.has_edit, video.backup_path)
@@ -58,12 +58,12 @@ def save_library_clip(project: Project, progress: "Callable[[float], None] | Non
     # the project already points at the stable sources (the live file is
     # untouched on failure because export writes a temp file first).
     store.save_project(project, store.project_path_for_video(video.id))
-    export(project, str(video.path), progress=progress, cancel=cancel)
+    export(project, str(video.path), progress=progress, cancel=cancel, **export_opts)
     return library.record_advanced_edit(video.id, backup)
 
 
-def save_import(project: Project, source_path: str, progress=None, cancel=None) -> Path:
+def save_import(project: Project, source_path: str, progress=None, cancel=None, **export_opts) -> Path:
     out = Path(project.output_path or store.edited_copy_path(source_path))
-    export(project, str(out), progress=progress, cancel=cancel)
+    export(project, str(out), progress=progress, cancel=cancel, **export_opts)
     store.save_project(project, store.project_path_for_import(source_path))
     return out

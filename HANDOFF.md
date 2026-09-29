@@ -1,20 +1,21 @@
 # afterglow -- handoff
 
 ## What this app does
-OBS-triggered clip capture, a local clip library (PySide6 GUI), a trim
-editor (embedded mpv), and YouTube upload (unlisted-library metadata
+OBS-triggered clip capture, a local clip library (PySide6 GUI), quick
+trimming in the video previewer (embedded mpv), a track-based Advanced
+Editor (the Editor page; afterglow/nle engine + afterglow/gui/
+advanced_editor UI), and YouTube upload (unlisted-library metadata
 cached locally, upload flow itself not yet implemented). Settings and
-Library pages are solid and confirmed working across multiple
-machines. Recent sessions have focused on Library filtering/display
-features and app-wide appearance tuning rather than the Editor itself.
+Library pages are solid and confirmed working across multiple machines.
 
 ## MAJOR EPIC: UI Update + Editor Update (multi-session, in progress)
 A huge combined spec arrived for a UI overhaul AND a full
 Editor rebuild (tracks, segments, filters, transitions -- effectively
 a new NLE). Explicitly told to expect "many sessions with minor
 changes." **The UI Update came first and is largely done. The Editor
-Update is now in progress: its engine (afterglow/nle/) is built and
-tested; the timeline UI is next -- see its "Phase plan".** Read this whole section before touching
+Update's engine (afterglow/nle/) and its full UI (afterglow/gui/
+advanced_editor/, the Editor page) are built and tested; phase 4
+(polish) is next -- see its "Phase plan".** Read this whole section before touching
 anything in this epic -- it's the actual spec plus every clarifying
 decision made so far, not just a changelog.
 
@@ -221,7 +222,7 @@ hamburger-menu icon, a drag-handle icon (for reordering something
 draggable -- see Editor Update's track reordering), a lock icon (for
 the future Editor's segment-locking).
 
-### Editor Update -- full spec (IN PROGRESS: engine built + tested, timeline UI next)
+### Editor Update -- full spec (phases 1-3 DONE; phase 4 polish next)
 A complete Editor rebuild into a track-based NLE, opened via a
 bottom-right "Advanced Editor" entry point (with a "Always Open
 Advanced Editor" General setting to skip straight to it). Kept in full
@@ -352,34 +353,29 @@ otherwise:
 
 #### Phase plan
 1. **Engine (DONE):** model, ops, undo, renderer, export, save/reopen,
-   library integration. 121 checks in `tests/test_nle_*.py`.
-2. **Timeline UI (NEXT):** the Advanced Editor page (Filmora layout) and
-   its bottom-right entry button in the basic Editor; "Always Open
-   Advanced Editor" (General) and the "Editor" header with the
-   track-handle-side setting; tracks with 3-line reorder handles,
-   collapse; segments (film-strip thumbnails, waveforms with the draggable
-   volume line + type-a-percent), playhead (red, bulky head; drag/click/
-   wheel/Space), selection (click/Ctrl/Shift incl. cross-track ranges),
-   drag-move with snapping + kick, edge trims, S/C/L/M/V/Ctrl+C/Ctrl+V/
-   Ctrl+D/Delete/Shift+Delete, gap trash can, context menus, split
-   markers; preview panel playing through the renderer with audio
-   output (QAudioSink); properties panel (fades, volume, speed).
-3. **Additions:** browser panel contents, text/pictures/GIFs, added
-   audio, transitions (crossfade, blur/focus, slide/fade x target x
-   direction), zoom filter UI, transform/crop handles in the preview,
-   keyframe UI, Import button, drag-and-drop into the timeline.
-4. **Polish:** pitch-preserving speed, streaming audio for very long
-   sources, proxy decoding if 4K sources preview too slowly.
+   library integration.
+2. **Timeline UI (DONE):** see "This session" below.
+3. **Additions (DONE):** see "This session" below.
+4. **Polish (NEXT, not started):** pitch-preserving speed, streaming
+   audio for very long sources, proxy decoding if 4K sources preview too
+   slowly, rendering in a worker thread if heavy transitions drop
+   preview frames.
 
-#### Open questions (not yet answered)
-- "Scroll to adjust the timestep": interpreted as mouse wheel = step the
-  playhead one frame (Shift+wheel = 1 s), Ctrl+wheel = zoom the timeline.
-  Confirm.
-- Export settings: currently canvas = the first clip's size/fps, H.264
-  CRF 18. Whether an export-settings dialog (resolution/quality) is
-  wanted.
-- Speed changes audio pitch like a tape for now; pitch-preserving
-  stretch is planned (phase 4) unless wanted sooner.
+#### Open questions -- answered
+- "Scroll to adjust the timestep": confirmed -- wheel over the timeline
+  steps one frame, Shift+wheel one second, Ctrl+wheel zooms.
+- Export settings: confirmed -- the canvas is the first clip's size/fps;
+  Save opens a small dialog (resolution: original or smaller presets;
+  quality: CRF 18/23/28).
+- Speed changes pitch like a tape for now (phase 4 item).
+- **Editor entry point (decided):** the Editor page IS the Advanced
+  Editor; the old basic editor was removed (quick trim lives in the
+  previewer). "Always Open Advanced Editor" is therefore moot and was not
+  added. Entry points: Library Edit / double-click, and the previewer's
+  bottom-right "Advanced Editor" button.
+- **J/K/L shuttle (dropped):** L is Lock in the spec, so shuttle keys
+  would collide. Frame stepping is , and . (and Left/Right); Shift steps
+  one second.
 
 All files compile and import cleanly as of this handoff. This
 session covered a lot of ground and corrected three of its own earlier
@@ -427,7 +423,102 @@ plain QSS rule is unavoidable.
 Seven consecutive batches of Library/Settings/appearance
 features/bug fixes, given together each time. Newest first.
 
-### This session (newest -- previewer restyle, Editor features, fullscreen fix)
+### This session (newest -- Advanced Editor built, previewer fixes)
+1. **Esc from previewer fullscreen still shrank a maximized window --
+   fixed for real.** Root cause (reproduced under a Wayland compositor,
+   weston headless, not visible under X11/openbox): going fullscreen ->
+   maximized in one step (`showMaximized()` or
+   `setWindowState(Maximized)`) lands UN-maximized at the default
+   restored size on Wayland. Fix: entering fullscreen only ADDS the
+   FullScreen bit to the existing state (`windowState() | FullScreen`),
+   leaving Maximized set; leaving fullscreen only removes that bit, so
+   the compositor hands back the maximized window. Verified on both
+   Wayland (weston) and X11 (openbox) for normal/maximized/fullscreen
+   startup modes (`tests/test_previewer_fullscreen_filters.py`).
+2. **Previewer header:** Favorite and Filters are now circular icon
+   buttons side by side on the right of the info line (Filters reuses
+   the card quick-action `filters_icon.png`; Favorite uses new
+   `favorite_star_icon.png` / `favorite_star_off_icon.png`, gold when
+   favorited). A bottom-right "Advanced Editor" button opens the clip in
+   the Editor.
+3. **The Advanced Editor (phases 2 + 3 of the Editor Update).**
+   `afterglow/gui/advanced_editor/`:
+   - `page.py` -- Filmora layout (browser | preview | properties over a
+     toolbar + timeline, splitters), header (Import, name field =
+     rename, unsaved marker, Save), all keyboard shortcuts, Save
+     (dialog -> worker-thread render with progress + cancel), Import.
+   - `controller.py` -- project, History, selection (click/Ctrl/Shift
+     incl. cross-track ranges), playhead, clipboard, snapping, autosave
+     (3 s after an edit, to the per-clip project file, with
+     `Project.unsaved_changes`), `remap_sources()` (re-points the live
+     project AND undo snapshots after a save or a file rename).
+   - `timeline.py` -- ruler, red playhead with a bulky head, tracks with
+     3-line reorder handles + collapse arrows (header side per the new
+     General > Editor setting), segments (film strips centered on each
+     tile's time, waveforms, the 0-200% volume line with type-a-percent
+     while held, fade handles, split markers, transition badges,
+     keyframe diamonds, lock/mute/hidden states), rounded corners except
+     where a segment touches a neighbor, drag-move with snapping + kick
+     + new tracks from the buffer lanes, edge trims, gap line + hover
+     trash can, rubber-band selection, wheel/zoom, context menus,
+     drag-and-drop (files from outside, library clips/text/transitions
+     from the browser). Static layer cached to a pixmap; playback only
+     redraws the playhead.
+   - `preview.py` -- plays through the SAME renderer Save uses, audio
+     via QAudioSink (stream kept open between plays, fed silence while
+     paused, closed after 20 s idle; the clock follows the device's
+     processed count so picture and sound stay in sync), transform
+     handles (move/scale/rotate, keyframe-aware), Crop mode handles.
+   - `properties.py` -- name, time, speed, fades, volume/mute, detach
+     audio, transform + opacity, crop, zoom filter, transition in
+     (kind/duration/moves/from), text (words, font, size, colors,
+     outline, bold/italic), keyframes (per property: add at playhead,
+     jump, easing, delete). Spin-box bursts are one undo step.
+   - `browser.py` -- Media (library clips with thumbnails, Add File,
+     Picture/GIF), Text styles, Audio (add file, detach, project audio
+     list), Transitions (with duration/moves/from options), Effects
+     presets (zooms, fades, speeds).
+   - `visuals.py` -- worker thread for film-strip thumbnails and
+     waveform peaks; `icons.py` -- painted icons.
+4. **Engine additions:** transitions rendered (crossfade, blur/focus,
+   slide and directional fade for destination/original/both x 4 sides;
+   the outgoing segment keeps playing past its end from source handles;
+   audio crossfades over the same span), GIFs loop, export takes
+   width/height/crf, `media.waveform_peaks()` and
+   `media.ThumbnailReader`, `Project.unsaved_changes`,
+   `store.repoint_video_sources()` (called by `library.rename_video`,
+   since renaming a video renames its file and an unrendered project
+   still reads from it). New render tests for each transition kind, GIF
+   looping and export size.
+5. **Removed:** the old basic `EditorPage` implementation
+   (`editor_page.py` is now a one-line re-export of the Advanced Editor
+   page) and the now-unused `volume_bar.py`. `trim_timeline.py` stays
+   (the previewer's trim bar subclasses it).
+6. **Tests:** `tests/test_advanced_editor.py` -- 78 checks through real
+   mouse/keyboard/wheel/drag-and-drop events on the real widgets, plus a
+   real Save render, reopen, rename-safe sources, and Import. Needs Xvfb +
+   openbox (window focus for shortcuts; headless weston gives no focus so
+   shortcut checks can't run there). Audio playback verified separately
+   against a PulseAudio null sink (start latency ~0.1 s after warm-up,
+   A/V clock locked to the device).
+
+Known limits / judgment calls:
+- `flake.nix`: `qt6.qtmultimedia` added (package buildInputs + dev shell,
+  plugin path) for the preview's audio output, plus `av`/`numpy` in the
+  dev shell. Not verified with a real Nix build in the sandbox -- run
+  `nix build` first. If QtMultimedia is unavailable the preview plays
+  silently on the wall clock.
+- Exports are H.264/AAC in an MP4 container even when the clip's file
+  extension is .mkv (players sniff content, but the extension then
+  mismatches). Worth deciding: keep, or remux/rename to .mp4.
+- Preview rendering runs on the UI thread (~5-10 ms/frame at 960x540);
+  transitions composite extra layers and may drop frames on slow CPUs.
+- Crop follows the engine's crop-then-fit rule, so cropping enlarges the
+  remaining picture to fit the frame.
+- Colors of segment types: video = accent, audio-only = darkened
+  highlight/turquoise, text/pictures = translucent accent.
+
+### Previous session (previewer restyle, Editor features, fullscreen fix)
 1. **Themed trim bar in the previewer.** New `gui/preview_trim_bar.py`
    (`PreviewTrimBar`) subclasses `TrimTimeline` and overrides only
    painting, so seek/drag/handle behavior and signals are one shared

@@ -129,3 +129,25 @@ def discard_for_video(video_id: int, live_path: "str | Path | None" = None) -> N
                 src = Path(p.source) if p.source else None
                 if src and src.parent == backups and ".src" in src.stem and src.exists():
                     src.unlink()
+
+
+def repoint_video_sources(video_id: int, old_path: "str | Path", new_path: "str | Path") -> None:
+    """The clip's file was renamed (renaming a video renames its file):
+    point the stored project at the new name, so unsaved/unrendered
+    edits that still read from the live file aren't lost as "missing"."""
+    path = project_path_for_video(video_id)
+    project = load_project(path)
+    if project is None:
+        return
+    old_s, new_s = str(old_path), str(new_path)
+    changed = False
+    for seg in project.all_segments():
+        for part in seg.parts:
+            if part.source == old_s:
+                part.source = new_s
+                changed = True
+    if project.output_path == old_s:
+        project.output_path = new_s
+        changed = True
+    if changed:
+        save_project(project, path)

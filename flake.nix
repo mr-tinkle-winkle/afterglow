@@ -122,6 +122,9 @@
             pkgs.qt6.qtwayland
             pkgs.xcb-util-cursor
             pkgs.mpv-unwrapped
+            # Advanced Editor preview audio (QAudioSink). Without it the
+            # preview still plays, just silently.
+            pkgs.qt6.qtmultimedia
           ];
 
           propagatedBuildInputs = with python.pkgs; [
@@ -229,11 +232,14 @@
                 ps.python-mpv
                 ps.pyopengl
                 ps.setuptools
+                ps.av
+                ps.numpy
               ]))
               pkgs.ffmpeg
               pkgs.pipewire
               pkgs.qt6.qtbase
               pkgs.qt6.qtwayland
+              pkgs.qt6.qtmultimedia
               pkgs.mpv-unwrapped
               pkgs.kdotool
             ];
@@ -242,7 +248,7 @@
             # way wrapQtAppsHook gives the built package, so the plugin
             # paths need setting by hand here too. Same for libmpv.
             shellHook = ''
-              export QT_PLUGIN_PATH="${pkgs.qt6.qtbase}/lib/qt-6/plugins:${pkgs.qt6.qtwayland}/lib/qt-6/plugins''${QT_PLUGIN_PATH:+:$QT_PLUGIN_PATH}"
+              export QT_PLUGIN_PATH="${pkgs.qt6.qtbase}/lib/qt-6/plugins:${pkgs.qt6.qtwayland}/lib/qt-6/plugins:${pkgs.qt6.qtmultimedia}/lib/qt-6/plugins''${QT_PLUGIN_PATH:+:$QT_PLUGIN_PATH}"
               export LD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath [ pkgs.mpv-unwrapped ]}''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
               echo "afterglow dev shell (via flake). Try: python -m afterglow.cli settings show"
             '';

@@ -258,6 +258,9 @@ class AppearanceSettings:
     # choice: a checkbox pair for fullscreen+maximized could produce a
     # contradictory both-checked state, so this is one combo box instead.
     startup_window_mode: str = "normal"
+    # Advanced Editor: which side the track headers (with the 3-line
+    # reorder handle) sit on -- "left" | "right".
+    editor_track_handle_side: str = "left"
 
 
 @dataclass

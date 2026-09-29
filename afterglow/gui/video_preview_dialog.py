@@ -1,11 +1,10 @@
 """
-A larger, playable preview of a Library video -- title, filters, and
-info alongside a real embedded player (play/pause, volume, a seek
-scrubber, fullscreen, watch speed), opened via a plain left-click on a
-card's thumbnail. Distinct from the Editor: this is read-only
-playback, no trimming -- reuses MpvVideoWidget (the same embedding
-editor_page.py uses) directly rather than re-solving mpv embedding
-here.
+A larger, playable preview of a Library video -- title, favorite,
+filters and info alongside a real embedded player (play/pause, volume,
+the trim bar, fullscreen, watch speed), opened via a plain left-click
+on a card's thumbnail. This is where quick trimming lives; the
+"Advanced Editor" button opens the clip in the track editor (the
+Editor page). Uses MpvVideoWidget for playback.
 
 Embedded INSIDE MainWindow's own central widget as an overlay
 (VideoPreviewOverlay), NOT a separate top-level QDialog -- that was
@@ -46,6 +45,7 @@ from .preview_trim_bar import PreviewTrimBar
 from .preview_filters_panel import PreviewFiltersPanel
 from .mpv_widget import MpvVideoWidget
 from .rounded_rect import rounded_rect_path
+from .resources import resource_qpixmap
 from .video_card import _format_duration, _format_file_size, _format_date, FAVORITE_STAR
 
 # Same tolerance the Editor uses around the trim-end clamp: mpv's last
@@ -53,7 +53,7 @@ from .video_card import _format_duration, _format_file_size, _format_date, FAVOR
 _EOF_EPSILON_SEC = 0.15
 
 _TRANSPORT_BTN_SIZE = 40
-_HEADER_BTN_WIDTH = 120
+_HEADER_BTN_SIZE = 44
 # Fixed content size -- reverted per the direct request, after the
 # proportional CONTENT_SIZE_FRACTION approach was tried. Same value as
 # the last fixed-size version before that (1581x1035, itself 1.15x an
@@ -396,19 +396,24 @@ class VideoPreviewContent(QWidget):
         self._info_label = OutlinedLabel("")
         self._info_label.setStyleSheet("font-size: 13px;")
         self._info_label.setAlignment(Qt.AlignCenter)
-        # Info line flanked by two equal-width buttons (so the info text
-        # stays centered): Favorite on the left, Filters on the right --
-        # the Editor's favorite toggle and filter editing, in the previewer.
+        # Info line with Favorite + Filters side by side on the right, as
+        # the same circular icon buttons a Library card's quick actions
+        # use (Filters reuses that exact filters_icon.png). An equal-width
+        # spacer on the left keeps the info text centered.
         info_row = QHBoxLayout()
-        self.favorite_btn = CustomButton("Favorite")
-        self.favorite_btn.setFixedWidth(_HEADER_BTN_WIDTH)
-        self.favorite_btn.setToolTip("Favorite this clip")
+        info_row.addSpacing(2 * _HEADER_BTN_SIZE + 8)
+        info_row.addWidget(self._info_label, stretch=1)
+        self.favorite_btn = CustomButton()
+        self.favorite_btn.set_circular(_HEADER_BTN_SIZE)
+        self.favorite_btn.set_fill_color(appearance.card_text_color)
         self.favorite_btn.clicked.connect(self._toggle_favorite)
         info_row.addWidget(self.favorite_btn)
-        info_row.addWidget(self._info_label, stretch=1)
-        self.filters_btn = CustomButton("Filters")
-        self.filters_btn.setFixedWidth(_HEADER_BTN_WIDTH)
-        self.filters_btn.setToolTip("Change this clip's filters")
+        info_row.addSpacing(8)
+        self.filters_btn = CustomButton()
+        self.filters_btn.set_circular(_HEADER_BTN_SIZE)
+        self.filters_btn.set_fill_color(appearance.card_text_color)
+        self.filters_btn.set_icon_pixmap(resource_qpixmap("filters_icon.png"))
+        self.filters_btn.setToolTip("Filters")
         self.filters_btn.clicked.connect(self._toggle_filters_panel)
         info_row.addWidget(self.filters_btn)
         header_layout.addLayout(info_row)
@@ -550,6 +555,11 @@ class VideoPreviewContent(QWidget):
         self.save_trim_btn.setToolTip("Trim this clip to the selected range (keeps a backup for Undo).")
         self.save_trim_btn.clicked.connect(self._save_trim)
         trim_row.addWidget(self.save_trim_btn)
+        # Bottom-right entry point to the full track editor for this clip.
+        self.advanced_edit_btn = CustomButton("Advanced Editor")
+        self.advanced_edit_btn.setToolTip("Open this clip in the Advanced Editor (tracks, text, transitions...)")
+        self.advanced_edit_btn.clicked.connect(lambda: self.advanced_edit_requested.emit(self._video.id))
+        trim_row.addWidget(self.advanced_edit_btn)
         transport_outer.addWidget(trim_row_widget)
 
         outer.addWidget(self._transport_box)
@@ -615,7 +625,9 @@ class VideoPreviewContent(QWidget):
         self._info_label.setText(" \u2022 ".join(info_parts))
         self._info_label.set_colors(appearance.card_text_color, appearance.card_text_outline_color,
                                      outline_width=appearance.card_text_outline_width * 0.5)
-        self.favorite_btn.setText(f"{FAVORITE_STAR} Favorited" if video.favorite else "Favorite")
+        self.favorite_btn.set_icon_pixmap(resource_qpixmap(
+            "favorite_star_icon.png" if video.favorite else "favorite_star_off_icon.png"))
+        self.favorite_btn.setToolTip("Unfavorite" if video.favorite else "Favorite")
         if self._filters_panel is not None:
             self._filters_panel.set_video(video.id)
 
@@ -708,8 +720,8 @@ class VideoPreviewContent(QWidget):
     def _on_position_changed(self, position: float) -> None:
         # Ignore stale positions still arriving from before a restart
         # seek (async seek race -- the Editor has the same guard).
-        if self._awaiting_restart_seek:
-            return
+        if self._awaiting_restart_seek or self._shut_down:
+            return  # (or late position reports arriving after the player was shut down)
         self._current_pos = position
         # Clamp playback to the trimmed range: stop at the end handle.
         if (
@@ -827,7 +839,9 @@ class VideoPreviewContent(QWidget):
     # listens for this and resizes the content box to fill essentially
     # the whole overlay (vs. the normal CONTENT_SIZE_FRACTION) instead.
     fullscreen_toggled = Signal(bool)
+    advanced_edit_requested = Signal(int)
     _is_expanded = False
+    _shut_down = False
 
     def _toggle_fullscreen(self) -> None:
         self._close_filters_panel()
@@ -838,13 +852,15 @@ class VideoPreviewContent(QWidget):
         # embedded inside it), so this fullscreens the whole app.
         window = self.window()
         if self._is_expanded:
-            # Remember exactly how the window was BEFORE, so leaving
-            # fullscreen puts it back that way. A bare showNormal() on
-            # exit was the "Esc resizes the app" bug: if the app had
-            # been maximized/fullscreen (startup mode) or moved/resized,
-            # showNormal() dropped it to the default restored size.
-            self._prior_window_state = (window.isFullScreen(), window.isMaximized(), window.geometry())
-            window.showFullScreen()
+            # Only the FullScreen bit is toggled; every other state bit
+            # (Maximized in particular) is kept, so leaving fullscreen
+            # hands the window back in exactly the state it was in.
+            # showFullScreen()/showMaximized() were the "Esc drops the
+            # app to a small window" bug: on Wayland, fullscreen ->
+            # maximized in one step lands un-maximized at the default
+            # restored size (reproduced under a Wayland compositor).
+            self._prior_window_state = (window.windowState(), window.geometry())
+            window.setWindowState(window.windowState() | Qt.WindowFullScreen)
             self._enter_overlay_controls_mode()
         else:
             self._exit_overlay_controls_mode()
@@ -855,21 +871,18 @@ class VideoPreviewContent(QWidget):
 
     def _restore_window(self) -> None:
         state, self._prior_window_state = self._prior_window_state, None
-        window = self.window()
         if state is None:
             return
-        was_fullscreen, was_maximized, geometry = state
-        if was_fullscreen:
-            return  # the app itself was fullscreen already -- stay that way
-        if was_maximized:
-            window.showMaximized()
-            return
-        window.showNormal()
-        # The window manager can apply the restore asynchronously and
-        # pick its own size; re-assert the exact prior geometry.
-        window.setGeometry(geometry)
-        QTimer.singleShot(0, lambda: window.setGeometry(geometry) if not window.isFullScreen()
-                          and not window.isMaximized() else None)
+        prior_state, geometry = state
+        window = self.window()
+        if prior_state & Qt.WindowFullScreen:
+            return  # the app itself was already fullscreen -- stay that way
+        window.setWindowState(window.windowState() & ~Qt.WindowFullScreen)
+        if not (prior_state & Qt.WindowMaximized):
+            # Floating window: re-assert its exact size once the
+            # compositor has applied the un-fullscreen.
+            QTimer.singleShot(150, lambda: window.resize(geometry.size())
+                              if not (window.windowState() & (Qt.WindowFullScreen | Qt.WindowMaximized)) else None)
 
     def _enter_overlay_controls_mode(self) -> None:
         """While actually fullscreen, the header/transport boxes float
@@ -1075,6 +1088,7 @@ class VideoPreviewContent(QWidget):
         QDialog's closeEvent used to. Also leaves fullscreen (restoring
         the prior window state) if the overlay is torn down while
         expanded, e.g. replaced by another preview."""
+        self._shut_down = True
         if self._is_expanded:
             self._is_expanded = False
             self._restore_window()

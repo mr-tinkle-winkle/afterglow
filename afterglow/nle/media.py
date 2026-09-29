@@ -239,3 +239,69 @@ def fps_fraction(fps: float) -> Fraction:
         if abs(fps - num / den) < 0.01:
             return Fraction(num, den)
     return Fraction(fps).limit_denominator(1001)
+
+
+# ---- timeline visuals ------------------------------------------------------
+
+PEAK_RATE = 200                  # waveform bins per second of source
+_peaks_cache: "OrderedDict[tuple, np.ndarray]" = OrderedDict()
+
+
+def waveform_peaks(path: str) -> np.ndarray:
+    """Max |sample| per 1/PEAK_RATE s of the source (float32, 0..1), for
+    drawing a waveform. Index 0 = source t 0. Empty if no audio."""
+    try:
+        key = (path, os.stat(path).st_mtime_ns)
+    except OSError:
+        return np.zeros(0, np.float32)
+    with _audio_lock:
+        hit = _peaks_cache.get(key)
+        if hit is not None:
+            return hit
+    data = load_audio(path)
+    if data.shape[0] == 0:
+        peaks = np.zeros(0, np.float32)
+    else:
+        mono = np.abs(data).max(axis=1)
+        step = AUDIO_RATE // PEAK_RATE
+        n = int(np.ceil(mono.shape[0] / step))
+        padded = np.zeros(n * step, np.float32)
+        padded[:mono.shape[0]] = mono
+        peaks = padded.reshape(n, step).max(axis=1)
+    with _audio_lock:
+        _peaks_cache[key] = peaks
+        while len(_peaks_cache) > 64:
+            _peaks_cache.popitem(last=False)
+    return peaks
+
+
+class ThumbnailReader:
+    """Frames for the timeline film strip (one per thread). Keeps one
+    decoder per file so neighboring tiles decode forward cheaply."""
+
+    def __init__(self):
+        self._sources: dict[str, VideoSource] = {}
+
+    def thumbnail(self, path: str, t: float, height: int):
+        from PySide6.QtGui import QImage
+        ext = os.path.splitext(path)[1].lower()
+        if ext in IMAGE_EXTS:
+            img = QImage(path)
+            return None if img.isNull() else img.scaledToHeight(max(2, height))
+        src = self._sources.get(path)
+        if src is None:
+            try:
+                src = VideoSource(path)
+            except Exception:
+                return None
+            self._sources[path] = src
+        frame = src.frame_at(t)
+        if frame is None:
+            return None
+        w = max(2, int(round(src.width * height / max(src.height, 1))))
+        return frame_to_qimage(frame, w, height)
+
+    def close(self) -> None:
+        for s in self._sources.values():
+            s.close()
+        self._sources.clear()

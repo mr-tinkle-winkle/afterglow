@@ -459,6 +459,14 @@ def rename_video(video_id: int, title: str | None = None, description: str | Non
     # has actually exited/committed, so this has to happen after it,
     # not inside it.
     write_library_manifest()
+    if new_path_str != row["path"]:
+        # Keep an Advanced Editor project for this clip pointing at the
+        # renamed file (its unrendered edits read from the live file).
+        from .nle import store  # lazy: avoids an import cycle
+        try:
+            store.repoint_video_sources(video_id, row["path"], new_path_str)
+        except OSError:
+            pass
     return result
 
 

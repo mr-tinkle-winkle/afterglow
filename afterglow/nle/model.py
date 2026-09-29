@@ -231,6 +231,9 @@ class Project:
     # "<name>-edited.<ext>" copy next to it.
     output_path: str = ""
     library_video_id: "int | None" = None
+    # True while the project holds edits that haven't been rendered to the
+    # output file yet (autosave keeps them; the editor shows a marker).
+    unsaved_changes: bool = False
     schema_version: int = SCHEMA_VERSION
 
     # ---- queries ---------------------------------------------------------

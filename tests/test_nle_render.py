@@ -285,6 +285,68 @@ except ExportCancelled:
 check(ok and not os.path.exists(cancelled_out) and not os.path.exists(cancelled_out + ".render_tmp.mp4"),
       "cancelled export leaves no files behind")
 
+
+# ---- transitions ---------------------------------------------------------------------
+from afterglow.nle.model import Transition
+def pair(kind, target="both", direction="left"):
+    a_ = seg_of(BLOCKS, start=0.0, src_in=0.0, src_out=2.0)          # red, green
+    b_ = seg_of(BLOCKS, start=2.0, src_in=4.0, src_out=6.0)          # magenta, cyan
+    b_.transition_in = Transition(kind=kind, duration=1.0, target=target, direction=direction)
+    return project_with((1, a_), (1, b_))
+p = pair("crossfade"); r = Renderer(p)
+mid = px(r.frame(2.5), 160, 90)
+check(abs(mid[0] - 128) < 40 and mid[1] < 40 and mid[2] > 200,
+      f"crossfade midway: outgoing keeps playing (blue, from its handle) mixed 50/50 with magenta {mid}")
+check(near(px(r.frame(1.5), 160, 90), "green") and near(px(r.frame(3.2), 160, 90), "cyan"),
+      "crossfade: before = outgoing, after = incoming")
+r.close()
+p = pair("slide", "destination", "left"); r = Renderer(p)
+f = r.frame(2.5)
+check(near(px(f, 60, 90), "magenta") and near(px(f, 260, 90), "blue"),
+      "slide destination from left: incoming covers the left half at 50%")
+r.close()
+p = pair("slide", "both", "right"); r = Renderer(p)
+f = r.frame(2.5)
+check(near(px(f, 260, 90), "magenta") and near(px(f, 60, 90), "blue"), "slide both (push) from right")
+r.close()
+p = pair("fade", "destination", "top"); r = Renderer(p)
+f = r.frame(2.5)
+top_, bot_ = px(f, 160, 5), px(f, 160, 175)
+check(near(top_, "magenta") and near(bot_, "blue"), f"fade (wipe) destination from top: top revealed first {top_} {bot_}")
+r.close()
+p = pair("blur"); r = Renderer(p)
+f0 = r.frame(1.99, 160, 90); f1 = r.frame(2.45, 160, 90)
+check(f1 != f0, "blur transition renders a distinct blended frame")
+r.close()
+ta = seg_of(TONE, start=0.0, src_in=0.0, src_out=3.0)
+tb = seg_of(TONE, start=3.0, src_in=3.0, src_out=6.0)
+tb.transition_in = Transition(kind="crossfade", duration=1.0)
+p = project_with((2, ta), (2, tb)); r = Renderer(p)
+lv = [rms(r.audio(3.0 + i * 0.2, RATE // 20)) for i in range(5)]
+check(all(abs(v - 0.354) < 0.03 for v in lv), f"audio crossfade between continuous tone halves keeps a steady level {['%.3f' % v for v in lv]}")
+r.close()
+
+# ---- GIF looping ---------------------------------------------------------------------
+GIF = os.path.join(TMP, "loop.gif")
+ff("-f", "lavfi", "-i", "color=c=red:s=64x64:r=10:d=0.5", "-f", "lavfi", "-i", "color=c=blue:s=64x64:r=10:d=0.5",
+   "-filter_complex", "[0:v][1:v]concat=n=2:v=1[v]", "-map", "[v]", GIF)
+gi = media.probe(GIF)
+p = default_project(320, 180, 30)
+g = ops.add_media(p, gi, start=0.0, track_index=1)
+check(g.parts[0].kind == "gif" and not g.has_audio, "GIF added as a gif part without audio")
+ops.trim_end(p, g.id, 3.0)
+r = Renderer(p)
+check(abs(g.end - 3.0) < 1e-6 and near(px(r.frame(2.2), 160, 90), "red") and near(px(r.frame(2.7), 160, 90), "blue"),
+      "GIF stretched past its length loops (2.2s red, 2.7s blue)")
+r.close()
+
+# ---- export size / quality -----------------------------------------------------------
+p = project_with((1, seg_of(BLOCKS, src_out=1.0)))
+small = os.path.join(TMP, "small.mp4")
+export(p, small, width=160, height=90, crf=28)
+si = media.probe(small)
+check((si["width"], si["height"]) == (160, 90), f"export at a chosen resolution ({si['width']}x{si['height']})")
+
 # ---- performance (informational) ----------------------------------------------------
 BIG = os.path.join(TMP, "big.mp4")
 ff("-f", "lavfi", "-i", "testsrc2=s=1920x1080:r=60:d=5", "-f", "lavfi", "-i", "sine=d=5",

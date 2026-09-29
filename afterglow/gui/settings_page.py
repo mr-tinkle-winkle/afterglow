@@ -121,6 +121,7 @@ class SettingsPage(QWidget):
         general_page = QWidget()
         general_layout = QVBoxLayout(general_page)
         general_layout.addWidget(self._build_appearance_group())
+        general_layout.addWidget(self._build_editor_group())
         general_layout.addStretch(1)
         _add_settings_tab("General", general_page)
 
@@ -570,6 +571,25 @@ class SettingsPage(QWidget):
 
         return group
 
+    def _build_editor_group(self) -> QWidget:
+        """The "Editor" header: Advanced Editor preferences."""
+        a = self._settings.appearance
+        group = CustomGroupBox("Editor")
+        form = group.make_layout(QFormLayout)
+        self.editor_handle_side_combo = QComboBox()
+        self.editor_handle_side_combo.setStyleSheet(combo_box_stylesheet(a))
+        self.editor_handle_side_combo.addItem("Left", "left")
+        self.editor_handle_side_combo.addItem("Right", "right")
+        index = self.editor_handle_side_combo.findData(a.editor_track_handle_side)
+        self.editor_handle_side_combo.setCurrentIndex(index if index >= 0 else 0)
+        form.addRow("Track Handle Side:", self.editor_handle_side_combo)
+        note = QLabel("Which side of the timeline the track headers (with the 3-line reorder handle) sit on. "
+                      "Applies next launch.")
+        note.setStyleSheet("color: gray;")
+        note.setWordWrap(True)
+        form.addRow("", note)
+        return group
+
     def _browse_clips_dir(self) -> None:
         path = QFileDialog.getExistingDirectory(self, "Choose Clips Folder", self.clips_dir_edit.text())
         if path:
@@ -894,6 +914,7 @@ class SettingsPage(QWidget):
         a.saved_videos_icon_size = self.saved_videos_icon_size_spin.value()
         a.uploaded_videos_icon_size = self.uploaded_videos_icon_size_spin.value()
         a.startup_window_mode = self.startup_window_mode_combo.currentData()
+        a.editor_track_handle_side = self.editor_handle_side_combo.currentData()
 
         for label, edit in (
             ("Accent", self.afterglow_accent_edit),

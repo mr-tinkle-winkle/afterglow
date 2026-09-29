@@ -208,12 +208,25 @@ class MainWindow(QMainWindow):
         overlay = VideoPreviewOverlay(video, neighbor_provider=neighbor_provider, parent=self.centralWidget())
         overlay.setGeometry(self.centralWidget().rect())
         overlay.closed.connect(self._on_preview_overlay_closed)
+        overlay.content.advanced_edit_requested.connect(self._open_from_preview)
         overlay.show()
         overlay.raise_()
         self._preview_overlay = overlay
 
     def _on_preview_overlay_closed(self) -> None:
         self._preview_overlay = None
+
+    def _open_from_preview(self, video_id: int) -> None:
+        """The previewer's "Advanced Editor" button: close the preview and
+        open that clip in the Editor."""
+        if self._preview_overlay is not None:
+            self._preview_overlay.close_overlay(immediate=True)
+        self._open_in_editor(video_id)
+
+    def closeEvent(self, event) -> None:
+        # Flush the editor's autosave and stop its worker/audio.
+        self.editor_page.shutdown()
+        super().closeEvent(event)
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
@@ -277,15 +290,6 @@ class MainWindow(QMainWindow):
             # blocking this one, so Qt gets a chance to actually PAINT
             # the already-switched page first.
             QTimer.singleShot(0, self.settings_page.refresh_dynamic_lists)
-
-        if index == _EDITOR_INDEX and self.editor_page.current_video_id is None:
-            # Nothing has ever been loaded into the Editor -- go to the
-            # Library instead and prompt there, rather than showing the
-            # Editor's own empty state. Re-check Library so the nav
-            # buttons stay in sync with what's actually on screen.
-            self.library_nav_btn.setChecked(True)
-            index = _LIBRARY_INDEX
-            self.library_page.show_status_message("Select a video.")
 
         crossfade_to_index(self.stack, index)
         # Switching TO Library does refresh it (this is what picks up clips
