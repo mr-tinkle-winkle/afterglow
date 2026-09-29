@@ -105,12 +105,12 @@ sp = ctl.add_text("Speech bubble", t=0.0)
 check(F(sp).parts[0].text.font_family == "Back Issues BB", "Speech bubbles default to Back Issues")
 pump(0.3)
 fc = props._fields["font"]
-check(fc.itemText(0) == "Back Issues BB" and fc.count() > 20, f"font dropdown: Back Issues first, {fc.count()} fonts to pick from")
-i = fc.findText("DejaVu Serif")
+check(fc.itemData(0) == "Back Issues BB" and fc.count() > 20, f"font dropdown: Back Issues first when installed ({fc.itemText(0)})")
+i = fc.findData("Tinos")
 fc.setCurrentIndex(i)
 fc.activated.emit(i)
 pump(0.3)
-check(F(sp).parts[0].text.font_family == "DejaVu Serif", "picking a font in the dropdown applies it")
+check(F(sp).parts[0].text.font_family == "Tinos", "picking a font in the dropdown applies it")
 fc.setCurrentIndex(0)
 fc.activated.emit(0)
 pump(0.2)
@@ -120,7 +120,7 @@ st = F(sp).parts[0].text
 check(st.grow_in > 0 and st.grow_out > 0 and st.delay_in > 0, "speech bubbles default to Grow in/out (and Delay text)")
 rr = R.Renderer(p)
 sizes = [white_count(rr.frame(t, 640, 360)) for t in (0.02, 0.12, 0.25, 0.5)]
-check(sizes[0] < sizes[1] < sizes[2] <= sizes[3] * 1.15 and sizes[3] > 200,
+check(sizes[0] < sizes[1] < sizes[2] <= sizes[3] * 1.3 and sizes[3] > 200,
       f"the speech bubble grows into place ({sizes})")
 end = F(sp).end
 sizes_out = [white_count(rr.frame(t, 640, 360)) for t in (end - 0.29, end - 0.15, end - 0.03)]

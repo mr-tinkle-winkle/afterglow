@@ -32,4 +32,4 @@ include = ["afterglow*"]
 # icon-theme install (system tray/dock/taskbar) handled directly by
 # flake.nix's postInstall, not by the Python package.
 [tool.setuptools.package-data]
-afterglow = ["gui/resources/*.png"]
+afterglow = ["gui/resources/*.png", "gui/resources/fonts/*.ttf", "gui/resources/fonts/*.md", "gui/resources/fonts/licenses/*"]

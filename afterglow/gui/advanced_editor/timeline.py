@@ -804,6 +804,18 @@ class TimelineView(QWidget):
             area = pill.adjusted(8, 0, -4, 0)
         p.setPen(QColor(part.text.color))
         p.drawText(area, Qt.AlignVCenter | Qt.AlignLeft, text)
+        st = part.text
+        if st.delay_keyed:
+            # keyed word times as small markers along the bottom
+            p.setPen(Qt.NoPen)
+            p.setBrush(SNAP_COLOR)
+            for k in (st.delay_word_times or []):
+                if k is None:
+                    continue
+                x = self.t_to_x(seg.start + part.offset + k)
+                if r.left() <= x <= r.right():
+                    p.drawPolygon(QPolygonF([QPointF(x, r.bottom() - 9), QPointF(x + 4, r.bottom() - 2),
+                                             QPointF(x - 4, r.bottom() - 2)]))
 
     # ---------------------------------------------------------------- headers / ruler / playhead
     def _paint_headers(self, p: QPainter) -> None:

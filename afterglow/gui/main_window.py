@@ -84,8 +84,9 @@ class _Sidebar(QWidget):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        from . import wheel_guard
-        wheel_guard.install()   # the wheel never changes combo boxes anywhere in the app
+        from . import wheel_guard, fonts
+        wheel_guard.install()
+        fonts.load_bundled_fonts()    # the editor's bundled text fonts   # the wheel never changes combo boxes anywhere in the app
         self.setWindowTitle("afterglow")
         # 16:9-ish and reasonably large by default, matching the
         # 1920x1080 reference-scale baseline in scaling.py -- the
@@ -101,6 +102,17 @@ class MainWindow(QMainWindow):
 
         central = QWidget()
         self.setCentralWidget(central)
+        # The video previewer's player is a QOpenGLWidget. The first time a
+        # GL widget joins a window, Qt has to destroy and re-create the
+        # window's native surface to make it GL-capable -- the whole app
+        # visibly vanished and came back the first time a preview opened.
+        # A 1x1 GL widget present from the start makes the window GL-capable
+        # before it's ever shown, so that never happens.
+        from PySide6.QtOpenGLWidgets import QOpenGLWidget
+        self._gl_warmup = QOpenGLWidget(central)
+        self._gl_warmup.setGeometry(0, 0, 0, 0)
+        self._gl_warmup.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        self._gl_warmup.lower()
         # App-wide background -- always wired in (same pattern as
         # VideoCard's card_background()/accent(): Theme itself decides
         # whether this is Afterglow's fixed color or a live KDE-palette

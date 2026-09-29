@@ -115,6 +115,12 @@ class TextStyle:
     # When the bubble grows, the delay starts once it has grown.
     delay_in: float = 0.0
     delay_out: float = 0.0
+    # Per-word Delay timing ("captions as they're said"): with delay_keyed on,
+    # delay_word_times[i] is when word i starts to appear (seconds from the
+    # element's start) or None; unkeyed words are spread evenly between the
+    # nearest keyed ones (or the start/end of the text's time).
+    delay_keyed: bool = False
+    delay_word_times: list = field(default_factory=list)
 
 
 @dataclass

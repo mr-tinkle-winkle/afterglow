@@ -23,45 +23,20 @@ from ...nle.model import (
 )
 
 AUTOSAVE_DELAY_MS = 3000
-COMIC_FONT_PREFS = ("Back Issues BB", "Back Issues", "Comic Sans MS", "Comic Neue", "Comic Relief",
-                    "Chalkboard SE", "Bangers", "Patrick Hand", "Architects Daughter")
-
-
-def installed_font_families() -> list:
-    try:
-        from PySide6.QtGui import QFontDatabase
-        return list(QFontDatabase.families())
-    except Exception:
-        return []
-
-
 def comic_font() -> str:
-    """THE comic lettering font, Back Issues (Blambot), when installed --
-    matched loosely since it installs under a few names ("Back Issues BB",
-    "BackIssues BB"...). Otherwise another comic-style font, otherwise a
-    plain sans (Qt's own fallback for a missing comic font can land on a
-    script font)."""
-    fams = installed_font_families()
-    norm = {f.lower().replace(" ", ""): f for f in fams}
-    for f in fams:
-        if "backissue" in f.lower().replace(" ", ""):
-            return f
-    for name in COMIC_FONT_PREFS:
-        hit = norm.get(name.lower().replace(" ", ""))
-        if hit:
-            return hit
-    for name in ("Noto Sans", "DejaVu Sans"):
-        if name.lower().replace(" ", "") in norm:
-            return norm[name.lower().replace(" ", "")]
-    return "Sans Serif"
+    """THE comic lettering font, Back Issues (Blambot), when installed on the
+    system (it can't be bundled); otherwise the bundled Comic Neue."""
+    from ..fonts import installed_back_issues, load_bundled_fonts
+    load_bundled_fonts()
+    return installed_back_issues() or "Comic Neue"
 
 
 COMIC_FONT = "Comic Sans MS"     # replaced with comic_font() when a bubble is created
 TEXT_PRESETS = {
-    "Title": TextStyle(text="Title", font_size=0.12, bold=True, outline_width=3.0),
-    "Subtitle": TextStyle(text="Subtitle", font_size=0.06, outline_width=2.0),
-    "Caption": TextStyle(text="Caption", font_size=0.045, outline_width=2.0),
-    "Plain text": TextStyle(text="Text", font_size=0.08),
+    "Title": TextStyle(text="Title", font_family="Montserrat", font_size=0.12, bold=True, outline_width=3.0),
+    "Subtitle": TextStyle(text="Subtitle", font_family="Roboto", font_size=0.06, outline_width=2.0),
+    "Caption": TextStyle(text="Caption", font_family="Roboto", font_size=0.045, outline_width=2.0),
+    "Plain text": TextStyle(text="Text", font_family="Roboto", font_size=0.08),
     "Speech bubble": TextStyle(text="Speech!", font_family=COMIC_FONT, font_size=0.055,
                                color="#111111", bubble="speech", tail_x=0.02, tail_y=0.05,
                                grow_in=0.35, grow_out=0.3, delay_in=0.6),

@@ -308,7 +308,8 @@ class Renderer:
                     lx = (dx * math.cos(a) - dy * math.sin(a)) / max(scale, 1e-6)
                     ly = (dx * math.sin(a) + dy * math.cos(a)) / max(scale, 1e-6)
                     tip = QPointF(lx, ly)
-                self._draw_text(painter, part, ch, local=local - part.offset, duration=part.duration, tip=tip)
+                self._draw_text(painter, part, ch, local=max(0.0, min(local - part.offset, part.duration)),
+                                duration=part.duration, tip=tip)
             else:
                 self._draw_picture(painter, part, local, tr, cw, ch, scale * k)
             painter.restore()
@@ -345,7 +346,13 @@ class Renderer:
         text_alpha = 1.0
         if st.bubble:
             g = grow_progress(st, local, duration)
-            path, center, scale, text_alpha = bubble_shape(st.bubble, bubble_body(lay), tip, g)
+            path, center, scale, text_alpha = bubble_shape(st.bubble, bubble_body(lay), tip, g,
+                                                           shrinking=grow_phase_out(st, local, duration))
+            # When a text transition covers this phase it decides what shows,
+            # instead of the plain fade that goes with the grow.
+            in_phase = local < duration / 2
+            if (in_phase and has_text_in(st)) or (not in_phase and (st.type_out > EPS or st.delay_out > EPS)):
+                text_alpha = 1.0 if scale > 0 else 0.0
             if not path.isEmpty():
                 fill = QColor(st.bubble_fill)
                 fill.setAlphaF(fill.alphaF() * (1.0 - max(0.0, min(1.0, st.bubble_fill_transparency))))
@@ -518,17 +525,56 @@ def text_layout(st, ch: float) -> dict:
             "rect": QRectF(-max(widths or [0]) / 2, -total_h / 2, max(widths or [0]), total_h)}
 
 
+TEXT_IN_AT = 0.55     # text transitions start when a bubble's grow-in is this far along
+TEXT_OUT_AT = 0.4     # ...and finish when its grow-out is this far along
+
+
+def text_timing(st, duration: float) -> dict:
+    """Every in/out effect of a text element, fitted inside its own time
+    (`duration` = the element's length on the timeline): if the ins and
+    outs don't fit they're scaled down together, so nothing runs past the
+    element's end. Text transitions (type, delay) overlap the latter part
+    of a bubble's grow-in and the early part of its grow-out."""
+    duration = max(duration, 0.0)
+    gi = st.grow_in if st.bubble else 0.0
+    go = st.grow_out if st.bubble else 0.0
+    if gi + go > duration > 0:
+        k = duration / (gi + go)
+        gi, go = gi * k, go * k
+    ts = gi * TEXT_IN_AT
+    te = max(ts, duration - go * TEXT_OUT_AT)
+    win = te - ts
+    ti, to = st.type_in, st.type_out
+    if ti + to > win > 0:
+        k = win / (ti + to)
+        ti, to = ti * k, to * k
+    di, do = st.delay_in, st.delay_out
+    if di + do > win > 0:
+        k = win / (di + do)
+        di, do = di * k, do * k
+    return {"gi": gi, "go": go, "ts": ts, "te": te, "ti": ti, "to": to, "di": di, "do": do,
+            "duration": duration}
+
+
+def has_text_in(st) -> bool:
+    return st.type_in > EPS or st.delay_in > EPS or st.delay_keyed
+
+
 def typed_state(st, local: float, duration: float) -> "tuple[int, bool]":
-    """(characters shown, whether the "|" cursor is drawn) at part-local
+    """(characters shown, whether the "|" cursor is drawn) at element-local
     time `local`. Newlines count as characters."""
+    tm = text_timing(st, duration)
+    local = max(0.0, min(local, tm["duration"]))
+    tl = local - tm["ts"]
+    tend = tm["te"] - tm["ts"]
     total = len(st.text)
     shown = total
     typing = False
-    if st.type_in > EPS and local < st.type_in:
-        shown = int(total * max(0.0, local) / st.type_in)
+    if tm["ti"] > EPS and tl < tm["ti"]:
+        shown = int(total * max(0.0, tl) / tm["ti"])
         typing = True
-    if st.type_out > EPS and duration > 0 and local > duration - st.type_out:
-        shown = min(shown, int(math.ceil(total * max(0.0, duration - local) / st.type_out)))
+    if tm["to"] > EPS and tl > tend - tm["to"]:
+        shown = min(shown, int(math.ceil(total * max(0.0, tend - tl) / tm["to"])))
         typing = True
     cursor = st.type_cursor and (typing or int(local * 2) % 2 == 0)   # blinks once typed
     return shown, cursor
@@ -558,30 +604,28 @@ def _window(g: float, start: float, length: float) -> float:
     return max(0.0, min(1.0, (g - start) / max(length, 1e-6)))
 
 
+def grow_phase_out(st, local: float, duration: float) -> bool:
+    """True while the element is in its second half (the grow-out side)."""
+    return local > max(duration, 0.0) / 2
+
+
 def grow_progress(st, local: float, duration: float) -> float:
-    """1.0 = fully formed; 0 = collapsed into the tail tip."""
+    """1.0 = fully formed; 0 = collapsed into the tail tip. Always within
+    the element's own time (see text_timing)."""
+    tm = text_timing(st, duration)
+    local = max(0.0, min(local, tm["duration"]))
     g = 1.0
-    if st.grow_in > EPS:
-        g = min(g, max(0.0, local) / st.grow_in)
-    if st.grow_out > EPS and duration > 0:
-        g = min(g, max(0.0, duration - local) / st.grow_out)
+    if tm["gi"] > EPS:
+        g = min(g, local / tm["gi"])
+    if tm["go"] > EPS and duration > 0:
+        g = min(g, (tm["duration"] - local) / tm["go"])
     return max(0.0, min(1.0, g))
 
 
-def delay_alphas(st, local: float, duration: float) -> "list[float] | None":
-    """Per-character opacity for the "Delay" text transition: words fade in
-    one after another and, within a word, letters left to right (out = the
-    reverse). Starts after a bubble's grow-in, ends before its grow-out."""
-    din, dout = st.delay_in, st.delay_out
-    if din <= EPS and dout <= EPS:
-        return None
-    start = st.grow_in if st.bubble else 0.0
-    end = duration - (st.grow_out if st.bubble else 0.0)
-    text = st.text
-    # word index + position inside the word for every character
-    words = []                      # list of (first_index, length)
-    i = 0
-    n = len(text)
+def text_words(text: str) -> list:
+    """[(first_char_index, length)] for every whitespace-separated word."""
+    words = []
+    i, n = 0, len(text)
     while i < n:
         if text[i].isspace():
             i += 1
@@ -591,15 +635,76 @@ def delay_alphas(st, local: float, duration: float) -> "list[float] | None":
             j += 1
         words.append((i, j - i))
         i = j
+    return words
+
+
+WORD_FADE_MAX = 0.35
+
+
+def word_start_times(st, duration: float) -> "list[tuple[float, float]]":
+    """(start, fade length) per word for the Delay-in, in element-local
+    seconds. Keyed words start at their keyframe; the rest are spread
+    evenly between their nearest keyed neighbours -- or the start / end of
+    the text's time where there's none on that side."""
+    tm = text_timing(st, duration)
+    words = text_words(st.text)
+    W = len(words)
+    if W == 0:
+        return []
+    ts, te, di = tm["ts"], tm["te"], tm["di"]
+    keys = list(st.delay_word_times or [])[:W]
+    keys += [None] * (W - len(keys))
+    if st.delay_keyed:
+        anchors = {}
+        if keys[0] is None:
+            anchors[0] = ts
+        for i, k in enumerate(keys):
+            if k is not None:
+                anchors[i] = float(k)
+        anchors.setdefault(W, te)               # virtual word after the last one
+        idx = sorted(anchors)
+        starts = []
+        for i in range(W):
+            if i in anchors:
+                starts.append(anchors[i])
+                continue
+            lo = max(j for j in idx if j < i)
+            hi = min(j for j in idx if j > i)
+            starts.append(anchors[lo] + (anchors[hi] - anchors[lo]) * (i - lo) / (hi - lo))
+        out = []
+        for i, st_ in enumerate(starts):
+            nxt = starts[i + 1] if i + 1 < W else te
+            out.append((st_, max(0.05, min(WORD_FADE_MAX, nxt - st_ if nxt > st_ else WORD_FADE_MAX))))
+        return out
+    wd = di if W == 1 else di * 0.35
+    return [(ts + (0.0 if W == 1 else (di - wd) * i / (W - 1)), wd) for i in range(W)]
+
+
+def delay_alphas(st, local: float, duration: float) -> "list[float] | None":
+    """Per-character opacity for the "Delay" text transition: words fade in
+    one after another (evenly, or at their own keyframes) and, within a
+    word, letters left to right; Delay out fades them away in reading
+    order. Fitted into the element's time with the other effects (see
+    text_timing)."""
+    tm = text_timing(st, duration)
+    din = tm["di"] if not st.delay_keyed else 1.0
+    dout = tm["do"]
+    if (st.delay_in <= EPS and not st.delay_keyed) and dout <= EPS:
+        return None
+    local = max(0.0, min(local, tm["duration"]))
+    text = st.text
+    n = len(text)
+    words = text_words(text)
     alphas = [1.0] * n
     if not words:
         return alphas
-    if din > EPS:
-        a_in = _fade_chars(words, False, local - start, din, n)
-        alphas = [min(x, y) for x, y in zip(alphas, a_in)]
+    if st.delay_in > EPS or st.delay_keyed:
+        for (first, L), (ws, wd) in zip(words, word_start_times(st, duration)):
+            for k in range(L):
+                ls = ws + wd * 0.6 * (k / max(L - 1, 1))
+                alphas[first + k] = max(0.0, min(1.0, (local - ls) / max(wd * 0.4, 1e-6)))
     if dout > EPS and duration > 0:
-        # the mirror image: last word first, and its letters right to left
-        a_out = _fade_chars(list(reversed(words)), True, end - local, dout, n)
+        a_out = _fade_chars(list(reversed(words)), True, tm["te"] - local, dout, n)
         alphas = [min(x, y) for x, y in zip(alphas, a_out)]
     return alphas
 
@@ -653,14 +758,26 @@ def _thought_trail(body: QRectF, tip: QPointF):
     return out, edge, ang
 
 
-def bubble_shape(kind: str, body: QRectF, tip: "QPointF | None", g: float = 1.0):
+def bubble_shape(kind: str, body: QRectF, tip: "QPointF | None", g: float = 1.0, shrinking: bool = False):
     """Bubble outline at grow progress g (1 = fully formed), plus where the
     text goes: (path, text_center, text_scale, text_alpha).
 
     Speech grows out of the tail tip: the body flies from the tip to its
     place while scaling up (with a little overshoot) and the tail stretches
     between them. Thought sprouts its trail circles from the tip outward,
-    then the cloud puffs up bump by bump starting on the trail's side."""
+    then the cloud puffs up bump by bump starting on the trail's side.
+    shrinking=True runs the motion back into the tip with its own easing:
+    running the grow-in's overshoot easing backwards kept the bubble near
+    full size until the last couple of frames and then it vanished, so the
+    shrink uses a smooth ease that ends right at the element's end."""
+    if shrinking:
+        # starts gently, then collapses steadily into the tip -- reaching
+        # (nearly) nothing on the last frame, never popping off at full size
+        def ease_back(u):
+            return math.sin(max(0.0, min(1.0, u)) * math.pi / 2)
+        ease_cubic = ease_back
+    else:
+        ease_back, ease_cubic = _ease_out_back, _ease_out_cubic
     c_full = body.center()
     rx, ry = body.width() / 2, body.height() / 2
     tail = tip
@@ -675,38 +792,46 @@ def bubble_shape(kind: str, body: QRectF, tip: "QPointF | None", g: float = 1.0)
         # phase 1: circles sprout from the tip toward the cloud
         for idx, (pc, r) in enumerate(trail):
             order = n_tr - 1 - idx                    # tip-most first
-            k = _ease_out_back(_window(g, 0.4 * order / max(n_tr, 1), 0.18)) if g < 1 else 1.0
+            k = ease_back(_window(g, 0.4 * order / max(n_tr, 1), 0.18)) if g < 1 else 1.0
             if k > 0.01:
                 dot = QPainterPath()
                 dot.addEllipse(pc, r * k, r * k)
                 path = path.united(dot)
-        # phase 2: the cloud forms
+        # phase 2: the cloud puffs up, bump by bump, starting on the trail's
+        # side. Each bump brings its own slice of the interior with it (a
+        # wedge from the center out to the bump), so the middle fills in as
+        # the bumps arrive -- there's no separate center oval popping in
+        # ahead of them (all the wedges together ARE the middle).
         cg = 1.0 if g >= 1 else _window(g, 0.35 if n_tr else 0.0, 0.65 if n_tr else 1.0)
         if cg > 0.001:
-            e = _ease_out_cubic(cg)
-            origin = edge if tail is not None else c_full
-            cc = QPointF(origin.x() + (c_full.x() - origin.x()) * e, origin.y() + (c_full.y() - origin.y()) * e)
-            core = QPainterPath()
-            core.addEllipse(cc, rx * 0.9 * e, ry * 0.86 * e)
-            path = path.united(core)
+            c = c_full
             nb = 11
             circ = 2 * math.pi * math.sqrt((rx * rx + ry * ry) / 2)
             br = circ / nb * 0.62
+            slot = 2 * math.pi / nb
             for i in range(nb):
                 a = 2 * math.pi * i / nb
-                # bumps nearest the trail pop first
                 d = abs(math.atan2(math.sin(a - ang), math.cos(a - ang))) / math.pi if tail is not None else i / nb
-                kb = _ease_out_back(_window(cg, 0.15 + 0.5 * d, 0.35)) if cg < 1 else 1.0
+                u = _window(cg, 0.6 * d, 0.4) if cg < 1 else 1.0
+                kb = ease_back(u) if u < 1 else 1.0
+                reach = ease_cubic(u) if u < 1 else 1.0
                 if kb <= 0.01:
                     continue
+                wedge = QPainterPath()
+                wedge.moveTo(c)
+                for j in range(7):
+                    aa = a - slot * 0.56 + slot * 1.12 * j / 6
+                    wedge.lineTo(QPointF(c.x() + rx * 0.86 * math.cos(aa) * reach, c.y() + ry * 0.8 * math.sin(aa) * reach))
+                wedge.closeSubpath()
+                path = path.united(wedge)
                 bump = QPainterPath()
-                bump.addEllipse(QPointF(cc.x() + rx * 0.86 * math.cos(a) * e, cc.y() + ry * 0.8 * math.sin(a) * e),
-                                br * kb, br * 0.9 * kb)
+                bc = QPointF(c.x() + rx * 0.86 * math.cos(a) * reach, c.y() + ry * 0.8 * math.sin(a) * reach)
+                bump.addEllipse(bc, br * kb, br * 0.9 * kb)
                 path = path.united(bump)
-        return path, QPointF(0.0, 0.0), 1.0, (1.0 if g >= 1 else _window(cg, 0.55, 0.45))
+        return path, QPointF(0.0, 0.0), 1.0, (1.0 if g >= 1 else _window(cg, 0.7, 0.3))
     # speech
-    e_pos = _ease_out_cubic(g)
-    e_size = max(0.0, _ease_out_back(g)) if g < 1 else 1.0
+    e_pos = ease_cubic(g)
+    e_size = max(0.0, ease_back(g)) if g < 1 else 1.0
     origin = tail if tail is not None else c_full
     cc = QPointF(origin.x() + (c_full.x() - origin.x()) * e_pos, origin.y() + (c_full.y() - origin.y()) * e_pos)
     if e_size <= 0.01:

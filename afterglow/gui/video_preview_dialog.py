@@ -28,7 +28,8 @@ from PySide6.QtCore import Qt, QRectF, QRect, Signal, QTimer, QPropertyAnimation
 from PySide6.QtGui import QPainter, QColor, QPainterPath, QPen, QRegion
 from PySide6.QtWidgets import (
     QVBoxLayout, QHBoxLayout, QLabel, QSlider, QAbstractButton,
-    QSizePolicy, QWidget, QGraphicsOpacityEffect, QStyle,
+    QSizePolicy, QWidget, QGraphicsOpacityEffect, QStyle, QApplication,
+    QLineEdit, QAbstractSpinBox, QPlainTextEdit, QTextEdit,
 )
 
 from .press_pulse import PressPulse
@@ -53,6 +54,8 @@ from .video_card import _format_duration, _format_file_size, _format_date, FAVOR
 _EOF_EPSILON_SEC = 0.15
 
 _TRANSPORT_BTN_SIZE = 40
+SEEK_STEP_SEC = 5.0
+VOLUME_STEP = 5
 _HEADER_BTN_SIZE = 44
 # Fixed content size -- reverted per the direct request, after the
 # proportional CONTENT_SIZE_FRACTION approach was tried. Same value as
@@ -866,6 +869,10 @@ class VideoPreviewContent(QWidget):
             self._exit_overlay_controls_mode()
             self._restore_window()
         self.fullscreen_toggled.emit(self._is_expanded)
+        overlay = self.parentWidget()
+        if overlay is not None:
+            overlay.setFocus()
+            QTimer.singleShot(200, overlay.setFocus)
 
     _prior_window_state = None
 
@@ -1059,6 +1066,15 @@ class VideoPreviewContent(QWidget):
         # exiting the "expanded" state first if that's active).
         if event.key() == Qt.Key_Space:
             self._toggle_play_pause()
+        elif event.key() in (Qt.Key_Left, Qt.Key_Right):
+            # Left/Right: jump 5 s back/forward
+            step = -SEEK_STEP_SEC if event.key() == Qt.Key_Left else SEEK_STEP_SEC
+            target = max(0.0, min(self._duration or 0.0, self._current_pos + step))
+            self._on_trim_seek_requested(target)
+        elif event.key() in (Qt.Key_Up, Qt.Key_Down):
+            # Up/Down: volume +/- 5 %
+            step = VOLUME_STEP if event.key() == Qt.Key_Up else -VOLUME_STEP
+            self.volume_slider.setValue(max(0, min(100, self.volume_slider.value() + step)))
         elif event.key() in (Qt.Key_Comma, Qt.Key_Less):
             # Holding the key "nudges many frames in quick succession
             # until let go" comes entirely for free here -- the OS/Qt's
@@ -1225,6 +1241,29 @@ class VideoPreviewOverlay(QWidget):
         self._layout_content()
         self.setFocus()
         self._animate_opacity(0.0, 1.0, self.FADE_IN_MS)
+        # While the preview is open, every key goes to it -- not to whatever
+        # widget happens to hold focus (after leaving fullscreen, focus used
+        # to land back on the page behind, so Space/arrows drove that).
+        QApplication.instance().installEventFilter(self)
+
+    def eventFilter(self, obj, event) -> bool:
+        et = event.type()
+        if et not in (QEvent.ShortcutOverride, QEvent.KeyPress) or not self.isVisible():
+            return False
+        if not self.window().isActiveWindow():
+            return False                    # a dialog opened from the preview has the keys
+        fw = QApplication.focusWidget()
+        if fw is not None and self.isAncestorOf(fw) and isinstance(
+                fw, (QLineEdit, QAbstractSpinBox, QPlainTextEdit, QTextEdit)):
+            return False                    # typing into the title / speed box
+        if et == QEvent.ShortcutOverride:
+            event.accept()                  # keep app shortcuts from firing; the KeyPress follows
+            return True
+        if obj is not self:
+            self.keyPressEvent(event)
+        else:
+            return False
+        return True
 
     def paintEvent(self, event) -> None:
         painter = QPainter(self)
@@ -1289,6 +1328,7 @@ class VideoPreviewOverlay(QWidget):
         self._animate_opacity(self._opacity_effect.opacity(), 0.0, self.FADE_OUT_MS, on_finished=self._finish_close)
 
     def _finish_close(self) -> None:
+        QApplication.instance().removeEventFilter(self)
         self.content.shutdown()
         # hide() immediately, not just deleteLater() -- deleteLater()'s
         # deletion is deferred to the next event-loop pass, so without

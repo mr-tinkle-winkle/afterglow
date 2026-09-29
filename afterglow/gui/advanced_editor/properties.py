@@ -302,7 +302,6 @@ class PropertiesPanel(QWidget):
             edit.textChanged.connect(lambda: self._edit("Edit text", lambda p: self._set_text(p, text=edit.toPlainText())))
             font = self._font_combo(text_part.text.font_family)
             font.activated.connect(lambda _i, c=font: self._pick_font(c))
-            font.lineEdit().editingFinished.connect(lambda c=font: self._pick_font(c))
             size = _spin(0.5, 50, 0.5, 1, " %")
             size.valueChanged.connect(lambda v: self._edit("Text size", lambda p: self._set_text(p, font_size=v / 100)))
             color = CustomButton("Color")
@@ -348,6 +347,27 @@ class PropertiesPanel(QWidget):
             form2.addRow(self._lbl(""), cur)
             form2.addRow(self._lbl("Delay in"), din)
             form2.addRow(self._lbl("Delay out"), dout)
+            keyed = CustomCheckBox("Per-word timing (keyframes)")
+            keyed.setToolTip("Time each word yourself: move the playhead to when a word is said and click it below")
+            keyed.clicked.connect(lambda: self._set_word_keyed(keyed.isChecked()))
+            form2.addRow(self._lbl(""), keyed)
+            words_box = QWidget()
+            from .flow_layout import FlowLayout
+            from PySide6.QtWidgets import QSizePolicy
+            FlowLayout(words_box)
+            pol = words_box.sizePolicy()
+            pol.setHeightForWidth(True)
+            words_box.setSizePolicy(pol)
+            words_note = QLabel("Click a word to make it appear at the playhead; right-click to clear. "
+                                "Words without a key are spread evenly between their neighbours.")
+            words_note.setWordWrap(True)
+            words_note.setStyleSheet(self._label_qss + "QLabel { font-size: 11px; }")
+            form2.addRow(words_box)
+            form2.addRow(words_note)
+            clear_keys = CustomButton("Clear Word Keys")
+            clear_keys.clicked.connect(lambda: self._once("Clear word keys", lambda p: self._set_text(p, delay_word_times=[])))
+            form2.addRow(self._lbl(""), clear_keys)
+            self._fields.update(delay_keyed=keyed, words_box=words_box, words_note=words_note, clear_keys=clear_keys)
 
             g3, form3 = self._group(lay, "Bubble")
             bub = self._combo([("None", ""), ("Speech", "speech"), ("Thought", "thought")])
@@ -542,19 +562,19 @@ class PropertiesPanel(QWidget):
             self._set("bubble_outline_width", st.bubble_outline_width)
             self._set("delay_in", st.delay_in)
             self._set("delay_out", st.delay_out)
+            self._set("delay_keyed", st.delay_keyed)
+            self._refresh_word_chips(s, tp)
             self._set("bubble_fill_transparency", st.bubble_fill_transparency * 100)
             self._set("bubble_outline_transparency", st.bubble_outline_transparency * 100)
             self._set("grow_in", st.grow_in)
             self._set("grow_out", st.grow_out)
             fc = self._fields.get("font")
-            if fc is not None and not fc.hasFocus() and fc.currentText() != st.font_family:
-                fc.blockSignals(True)
-                i = fc.findText(st.font_family)
+            if fc is not None and fc.currentData() != st.font_family:
+                i = fc.findData(st.font_family)
                 if i >= 0:
+                    fc.blockSignals(True)
                     fc.setCurrentIndex(i)
-                else:
-                    fc.setEditText(st.font_family)
-                fc.blockSignals(False)
+                    fc.blockSignals(False)
             self._fields["bubble_fill_btn"].set_fill_color(st.bubble_fill)
             self._fields["bubble_outline_btn"].set_fill_color(st.bubble_outline)
             self._fields["outline_btn"].set_fill_color(st.outline_color)
@@ -697,38 +717,44 @@ class PropertiesPanel(QWidget):
                     s.name = values["text"].split("\n")[0][:40] or "Text"
 
     def _font_combo(self, current: str) -> QComboBox:
-        """Every installed font (type to search), comic lettering fonts first."""
-        from .controller import COMIC_FONT_PREFS, installed_font_families
-        from PySide6.QtWidgets import QCompleter
-        fams = sorted(set(installed_font_families()), key=str.lower)
-        comic = [f for f in fams if "backissue" in f.lower().replace(" ", "")
-                 or f.lower() in {n.lower() for n in COMIC_FONT_PREFS}]
+        """A plain dropdown of the bundled fonts (see gui/fonts.py), grouped by
+        style, each shown in its own typeface. Back Issues comes first when
+        it's installed; a font the text already uses that isn't in the list
+        is kept at the top so it isn't silently replaced."""
+        from ..fonts import DISPLAY_NAMES, FONT_CHOICES, installed_back_issues, load_bundled_fonts
+        load_bundled_fonts()
         c = QComboBox()
         c.setStyleSheet(self._combo_qss)
-        c.setEditable(True)
-        c.setInsertPolicy(QComboBox.NoInsert)
-        c.setMaxVisibleItems(18)
-        for f in comic:
-            c.addItem(f)
-        if comic:
+        c.setEditable(False)
+        c.setMaxVisibleItems(26)
+
+        def add(label, family):
+            c.addItem(label, family)
+            f = QFont(family)
+            f.setPointSizeF(max(9.0, self.font().pointSizeF() * 1.05))
+            c.setItemData(c.count() - 1, f, Qt.FontRole)
+        known = {fam for _cat, fam in FONT_CHOICES}
+        bi = installed_back_issues()
+        if bi:
+            known.add(bi)
+        if current and current not in known:
+            add(f"{current} (current)", current)
             c.insertSeparator(c.count())
-        for f in fams:
-            if f not in comic:
-                c.addItem(f)
-        comp = QCompleter([c.itemText(i) for i in range(c.count()) if c.itemText(i)], c)
-        comp.setCaseSensitivity(Qt.CaseInsensitive)
-        comp.setFilterMode(Qt.MatchContains)
-        c.setCompleter(comp)
-        i = c.findText(current)
-        if i >= 0:
-            c.setCurrentIndex(i)
-        else:
-            c.setEditText(current)
-        c.setToolTip("Font -- pick from the list or type to search")
+        if bi:
+            add(f"{bi} (comic lettering)", bi)
+        last_cat = None
+        for cat, fam in FONT_CHOICES:
+            if cat != last_cat and c.count():
+                c.insertSeparator(c.count())
+            last_cat = cat
+            add(f"{DISPLAY_NAMES.get(fam, fam)}  \u2014  {cat}", fam)
+        i = c.findData(current)
+        c.setCurrentIndex(max(0, i))
+        c.setToolTip("Font")
         return c
 
     def _pick_font(self, combo: QComboBox) -> None:
-        name = combo.currentText().strip()
+        name = combo.currentData()
         if not name or self._refreshing:
             return
         segs = self._segments()
@@ -752,6 +778,76 @@ class PropertiesPanel(QWidget):
         c = QColorDialog.getColor(QColor(segs[0].shadow_color), self, "Shadow color")
         if c.isValid():
             self._once("Shadow color", lambda p: self._set_seg(p, shadow_color=c.name()))
+
+    # ---- per-word Delay keyframes -----------------------------------------------
+    def _set_word_keyed(self, on: bool) -> None:
+        self._once("Per-word timing", lambda p: self._set_text(p, delay_keyed=on))
+
+    def _refresh_word_chips(self, seg: Segment, part) -> None:
+        box = self._fields.get("words_box")
+        if box is None:
+            return
+        from ...nle.render import text_words, word_start_times
+        st = part.text
+        on = st.delay_keyed
+        for k in ("words_box", "words_note", "clear_keys"):
+            self._fields[k].setVisible(on)
+        words = [st.text[f:f + n] for f, n in text_words(st.text)]
+        keys = list(st.delay_word_times or [])[:len(words)]
+        keys += [None] * (len(words) - len(keys))
+        times = [t for t, _w in word_start_times(st, part.duration)] if on else []
+        sig = (on, tuple(words), tuple(keys), tuple(round(t, 3) for t in times), round(seg.start + part.offset, 4))
+        if sig == getattr(self, "_chips_sig", None) and box.layout().count() == (len(words) if on else 0):
+            return
+        self._chips_sig = sig
+        lay = box.layout()
+        while lay.count():
+            it = lay.takeAt(0)
+            if it.widget() is not None:
+                it.widget().hide()
+                it.widget().setParent(None)
+                it.widget().deleteLater()
+        if not on:
+            return
+        fps = self.ctl.project.fps if self.ctl.project else 30
+        for i, word in enumerate(words):
+            b = CustomButton(word)
+            b.setMinimumHeight(26)
+            keyed_ = keys[i] is not None
+            if keyed_:
+                b.set_fill_color(self._theme.turquoise())
+            at = seg.start + part.offset + (keys[i] if keyed_ else times[i])
+            b.setToolTip(("Keyed at " if keyed_ else "Auto: ") + format_time(at, fps, True)
+                         + (" -- right-click to clear" if keyed_ else " -- click to key it at the playhead"))
+            b.clicked.connect(lambda _=False, i=i: self._key_word(i))
+            b.setContextMenuPolicy(Qt.CustomContextMenu)
+            b.customContextMenuRequested.connect(lambda _pos, i=i: self._key_word(i, clear=True))
+            lay.addWidget(b)
+        box.setMinimumHeight(lay.heightForWidth(max(box.width(), 240)))
+
+    def _key_word(self, index: int, clear: bool = False) -> None:
+        if not self._ids:
+            return
+        sid = self._ids[0]
+        playhead = self.ctl.playhead
+
+        def fn(p):
+            _, s = p.find_segment(sid)
+            if s is None or s.locked:
+                return
+            from ...nle.render import text_words
+            for part in s.parts:
+                st = part.text
+                if part.kind != KIND_TEXT or st is None:
+                    continue
+                n = len(text_words(st.text))
+                keys = list(st.delay_word_times or [])[:n]
+                keys += [None] * (n - len(keys))
+                if 0 <= index < n:
+                    keys[index] = None if clear else max(0.0, min(part.duration, playhead - s.start - part.offset))
+                st.delay_word_times = keys
+                st.delay_keyed = True
+        self._once("Clear word key" if clear else "Key word", fn)
 
     def _set_bubble(self, kind: str) -> None:
         if self._refreshing or not self._ids:

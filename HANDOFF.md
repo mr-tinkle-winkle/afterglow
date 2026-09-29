@@ -423,7 +423,60 @@ plain QSS rule is unavoidable.
 Seven consecutive batches of Library/Settings/appearance
 features/bug fixes, given together each time. Newest first.
 
-### This session (newest -- Advanced Editor feedback round 2)
+### This session (newest -- feedback round 3)
+1. **"The app closes and reopens the first time the previewer opens" --
+   fixed.** The previewer's player is a QOpenGLWidget; the first GL widget
+   to join a window makes Qt destroy and re-create the window's native
+   surface (reproduced under X11 and Wayland: Hide + two surface
+   re-creations + a new window id). MainWindow now holds a 0x0
+   QOpenGLWidget from construction, so the window is GL-capable before it
+   is first shown; opening a preview no longer touches the window.
+2. **Keys follow the previewer after fullscreen.** While the preview is
+   open it installs an application event filter that routes every key
+   (and swallows shortcut overrides) to it, except when a text/spin field
+   inside it is being typed in or a dialog is active. Focus is also put
+   back on the overlay after entering/leaving fullscreen.
+3. **Previewer arrows:** Left/Right seek -/+5 s, Up/Down volume +/-5 %.
+4. **Fonts:** 21 varied OFL/Apache fonts bundled in
+   `gui/resources/fonts/` (README + licenses there; package-data in
+   pyproject), registered at startup (`gui/fonts.py`). The font picker is a
+   plain (non-editable) dropdown of just those, grouped by style, each
+   entry drawn in its own typeface: Comic Neue, Bangers, Luckiest Guy,
+   Patrick Hand, Permanent Marker, Tinos (Times New Roman metrics),
+   Playfair Display, Cinzel, Roboto, Montserrat, Oswald, Anton, Bebas
+   Neue, Courier Prime, Special Elite, Pacifico, Caveat, Lobster, Press
+   Start 2P, Creepster, Orbitron. Back Issues can't be bundled (Blambot
+   license); when installed it's listed first and is the bubble default,
+   otherwise bubbles default to Comic Neue (the previous fallback landed
+   on Noto Sans). Title/subtitle/caption presets use Montserrat/Roboto.
+5. **Effects fitted to the element** (`render.text_timing`): grow, type
+   and delay in/out are scaled down together when they don't fit the
+   element, and time is clamped to it. The shrink now has its own easing
+   (the grow-in's overshoot easing run backwards stayed near full size
+   until the last frames, then popped); it collapses smoothly into the tip
+   by the last frame. Interpretation note: the request mentioned the grow
+   "going past the end of the segment" -- this is the fix for the
+   pop-at-the-end behavior; revisit if something else was meant.
+6. **Text effects overlap the grow:** type/delay start at 55 % of a
+   bubble's grow-in and finish by 40 % into its grow-out
+   (`TEXT_IN_AT`/`TEXT_OUT_AT`); when a text effect covers a phase, the
+   plain text fade that goes with the grow is off.
+7. **Per-word Delay keys:** `TextStyle.delay_keyed` + `delay_word_times`
+   (seconds from the element start per word, None = auto).
+   `render.word_start_times()`: keyed words start at their key, unkeyed
+   ones spread evenly between the nearest keyed neighbours, or the text's
+   start / end. Properties > Text Transitions > "Per-word timing
+   (keyframes)" shows each word as a button (flow layout): click = key it
+   at the playhead, right-click = clear; "Clear Word Keys". Keyed times
+   show as small markers on the timeline segment.
+8. **Thought cloud:** no center oval any more. Each bump grows together
+   with a wedge from the cloud's center out to it, so the middle fills in
+   as the bumps arrive (the wedges together are the middle); bumps nearest
+   the trail first.
+
+Tests: `tests/test_round4.py` (43 checks); all earlier suites pass.
+
+### Previous session (Advanced Editor feedback round 2)
 1. **Fonts.** Speech/thought bubbles default to Back Issues (Blambot's comic
    lettering font) when it's installed -- matched loosely ("Back Issues BB",
    "BackIssues BB"...), else another comic font, else a plain sans
