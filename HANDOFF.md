@@ -427,7 +427,43 @@ plain QSS rule is unavoidable.
 Seven consecutive batches of Library/Settings/appearance
 features/bug fixes, given together each time. Newest first.
 
-### This session
+### This session (newest -- previewer restyle, Editor features, fullscreen fix)
+1. **Themed trim bar in the previewer.** New `gui/preview_trim_bar.py`
+   (`PreviewTrimBar`) subclasses `TrimTimeline` and overrides only
+   painting, so seek/drag/handle behavior and signals are one shared
+   implementation. Drawn from `Theme`/appearance: rounded pill track in
+   `library_background()`, `accent()` selected range, rounded grip
+   handles and a round playhead in the card text/outline colors;
+   rounding follows the Rounded Corners setting. `TrimTimeline` itself
+   (used by the Editor page, which is being rebuilt) is unchanged.
+2. **Editor features in the previewer.** Favorite toggle and filter
+   editing added to the header info row (Favorite left, Filters right).
+   Filters opens `gui/preview_filters_panel.py`, an in-window child
+   panel (categories, tag icons, "+ Add Filter" via `AddFilterDialog`,
+   applies the new filter to the clip). It is a child widget rather than
+   a popup/menu because those never stayed open reliably while toggling
+   (see `filters_popup.py`). Esc closes the panel before closing the
+   preview. Already present from earlier: rename, prev/next, speed,
+   trim, Frame Perfect, Undo Edits. Not ported: Save & Upload
+   (upload unimplemented), Clear Edit Backup.
+3. **Fullscreen exit no longer resizes the app.** Exiting previewer
+   fullscreen called a bare `showNormal()`, which dropped a maximized
+   or fullscreen-at-startup app to the default 1300x820-style restored
+   size. The prior state (fullscreen/maximized/geometry) is now saved on
+   entry and restored on exit and on overlay teardown. Reproduced on the
+   previous code under a window manager (maximized and fullscreen
+   startup modes), passes now.
+4. **Tests.** `tests/test_previewer_fullscreen_filters.py` (needs Xvfb +
+   openbox + libmpv; covers all three window modes, favorite, filters,
+   Esc ordering, writes screenshots). `tests/test_previewer_trim.py`
+   still passes unchanged. Screenshots come from software GL, so video
+   content looks garbled; chrome/layout is representative.
+
+Judgment calls: trim bar handle/selection contrast depends on the
+palette (accent vs library background); Favorite/Filters button width is
+a fixed 120px.
+
+### Previous session (before restyle)
 **Editor Update started; trimming added to the video previewer.**
 
 1. **Previewer trimming.** The previewer's scrubber is replaced by the

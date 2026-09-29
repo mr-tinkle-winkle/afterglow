@@ -42,7 +42,8 @@ from .custom_line_edit import CustomLineEdit
 from .custom_spinbox import CustomDoubleSpinBox
 from .custom_checkbox import CustomCheckBox
 from .custom_message_dialog import show_message
-from .trim_timeline import TrimTimeline
+from .preview_trim_bar import PreviewTrimBar
+from .preview_filters_panel import PreviewFiltersPanel
 from .mpv_widget import MpvVideoWidget
 from .rounded_rect import rounded_rect_path
 from .video_card import _format_duration, _format_file_size, _format_date, FAVORITE_STAR
@@ -52,6 +53,7 @@ from .video_card import _format_duration, _format_file_size, _format_date, FAVOR
 _EOF_EPSILON_SEC = 0.15
 
 _TRANSPORT_BTN_SIZE = 40
+_HEADER_BTN_WIDTH = 120
 # Fixed content size -- reverted per the direct request, after the
 # proportional CONTENT_SIZE_FRACTION approach was tried. Same value as
 # the last fixed-size version before that (1581x1035, itself 1.15x an
@@ -394,7 +396,23 @@ class VideoPreviewContent(QWidget):
         self._info_label = OutlinedLabel("")
         self._info_label.setStyleSheet("font-size: 13px;")
         self._info_label.setAlignment(Qt.AlignCenter)
-        header_layout.addWidget(self._info_label)
+        # Info line flanked by two equal-width buttons (so the info text
+        # stays centered): Favorite on the left, Filters on the right --
+        # the Editor's favorite toggle and filter editing, in the previewer.
+        info_row = QHBoxLayout()
+        self.favorite_btn = CustomButton("Favorite")
+        self.favorite_btn.setFixedWidth(_HEADER_BTN_WIDTH)
+        self.favorite_btn.setToolTip("Favorite this clip")
+        self.favorite_btn.clicked.connect(self._toggle_favorite)
+        info_row.addWidget(self.favorite_btn)
+        info_row.addWidget(self._info_label, stretch=1)
+        self.filters_btn = CustomButton("Filters")
+        self.filters_btn.setFixedWidth(_HEADER_BTN_WIDTH)
+        self.filters_btn.setToolTip("Change this clip's filters")
+        self.filters_btn.clicked.connect(self._toggle_filters_panel)
+        info_row.addWidget(self.filters_btn)
+        header_layout.addLayout(info_row)
+        self._filters_panel = None
 
         outer.addWidget(self._header_box)
 
@@ -459,8 +477,8 @@ class VideoPreviewContent(QWidget):
         # identical interactions: left-click/drag seeks, right-click grabs
         # and drags the nearest trim handle (live-seeking to it), and
         # playback is clamped to the trimmed range.
-        self.trim_timeline = TrimTimeline()
-        self.trim_timeline.set_scale(0.75)
+        self.trim_timeline = PreviewTrimBar()
+        self.trim_timeline.set_scale(1.0)
         self.trim_timeline.range_changed.connect(self._on_trim_range_changed)
         self.trim_timeline.seek_requested.connect(self._on_trim_seek_requested)
         self.trim_timeline.drag_started.connect(self._on_trim_drag_started)
@@ -545,20 +563,7 @@ class VideoPreviewContent(QWidget):
         appearance = config_module.load_readonly().appearance
         self.setWindowTitle(video.title or "Preview")
 
-        display_title = f"{FAVORITE_STAR} {video.title}" if video.favorite else (video.title or "(untitled)")
-        self._title_label.setText(display_title)
-        self._title_label.set_colors(appearance.card_text_color, appearance.card_text_outline_color,
-                                      outline_width=appearance.card_text_outline_width)
-
-        info_parts = []
-        if video.tags:
-            info_parts.append(", ".join(video.tags))
-        info_parts.extend(p for p in (
-            _format_duration(video.duration_sec), _format_file_size(video.path), _format_date(video.created_at),
-        ) if p)
-        self._info_label.setText(" \u2022 ".join(info_parts))
-        self._info_label.set_colors(appearance.card_text_color, appearance.card_text_outline_color,
-                                     outline_width=appearance.card_text_outline_width * 0.5)
+        self._refresh_header()
 
         self._duration = 0.0
         self._current_pos = 0.0
@@ -591,6 +596,66 @@ class VideoPreviewContent(QWidget):
         self.play_pause_btn.setChecked(True)
         self._update_time_label()
         self._update_neighbor_buttons()
+
+    def _refresh_header(self) -> None:
+        """Title (with favorite star), info line (tags + duration/size/
+        date) and the Favorite button's state, all from self._video."""
+        video = self._video
+        appearance = config_module.load_readonly().appearance
+        display_title = f"{FAVORITE_STAR} {video.title}" if video.favorite else (video.title or "(untitled)")
+        self._title_label.setText(display_title)
+        self._title_label.set_colors(appearance.card_text_color, appearance.card_text_outline_color,
+                                      outline_width=appearance.card_text_outline_width)
+        info_parts = []
+        if video.tags:
+            info_parts.append(", ".join(video.tags))
+        info_parts.extend(p for p in (
+            _format_duration(video.duration_sec), _format_file_size(video.path), _format_date(video.created_at),
+        ) if p)
+        self._info_label.setText(" \u2022 ".join(info_parts))
+        self._info_label.set_colors(appearance.card_text_color, appearance.card_text_outline_color,
+                                     outline_width=appearance.card_text_outline_width * 0.5)
+        self.favorite_btn.setText(f"{FAVORITE_STAR} Favorited" if video.favorite else "Favorite")
+        if self._filters_panel is not None:
+            self._filters_panel.set_video(video.id)
+
+    def _toggle_favorite(self) -> None:
+        self._video = library.set_favorite(self._video.id, not self._video.favorite)
+        self._refresh_header()
+
+    def _toggle_filters_panel(self) -> None:
+        if self._filters_panel is not None:
+            self._close_filters_panel()
+            return
+        panel = PreviewFiltersPanel(self._video.id, parent=self)
+        panel.tags_changed.connect(self._on_tags_changed)
+        panel.close_requested.connect(self._close_filters_panel)
+        self._filters_panel = panel
+        self._position_filters_panel()
+        panel.show()
+        panel.raise_()
+
+    def _position_filters_panel(self) -> None:
+        panel = self._filters_panel
+        if panel is None:
+            return
+        panel.adjustSize()
+        anchor = self.filters_btn.mapTo(self, self.filters_btn.rect().bottomRight())
+        x = max(0, min(anchor.x() - panel.width(), self.width() - panel.width()))
+        panel.move(x, anchor.y() + 6)
+
+    def _close_filters_panel(self) -> None:
+        if self._filters_panel is not None:
+            self._filters_panel.hide()
+            self._filters_panel.deleteLater()
+            self._filters_panel = None
+
+    def _on_tags_changed(self) -> None:
+        self._video = library.get_video(self._video.id)
+        panel, self._filters_panel = self._filters_panel, None  # avoid rebuilding the panel mid-toggle
+        self._refresh_header()
+        self._filters_panel = panel
+        self._position_filters_panel()
 
     def _update_neighbor_buttons(self) -> None:
         if self._neighbor_provider is None:
@@ -765,23 +830,46 @@ class VideoPreviewContent(QWidget):
     _is_expanded = False
 
     def _toggle_fullscreen(self) -> None:
+        self._close_filters_panel()
         self._is_expanded = not self._is_expanded
         self.fullscreen_btn.setChecked(self._is_expanded)
-        # ACTUAL OS-level fullscreen now, not just filling most of the
-        # overlay -- reported directly that it wasn't genuinely
-        # fullscreen before. self.window() is MainWindow itself (this
-        # widget is embedded inside it, not a separate top-level
-        # window), so this fullscreens the whole app window (hiding
-        # its own title bar/taskbar presence), with the video content
-        # then filling essentially all of that.
+        # ACTUAL OS-level fullscreen, not just filling most of the
+        # overlay. self.window() is MainWindow itself (this widget is
+        # embedded inside it), so this fullscreens the whole app.
         window = self.window()
         if self._is_expanded:
+            # Remember exactly how the window was BEFORE, so leaving
+            # fullscreen puts it back that way. A bare showNormal() on
+            # exit was the "Esc resizes the app" bug: if the app had
+            # been maximized/fullscreen (startup mode) or moved/resized,
+            # showNormal() dropped it to the default restored size.
+            self._prior_window_state = (window.isFullScreen(), window.isMaximized(), window.geometry())
             window.showFullScreen()
             self._enter_overlay_controls_mode()
         else:
-            window.showNormal()
             self._exit_overlay_controls_mode()
+            self._restore_window()
         self.fullscreen_toggled.emit(self._is_expanded)
+
+    _prior_window_state = None
+
+    def _restore_window(self) -> None:
+        state, self._prior_window_state = self._prior_window_state, None
+        window = self.window()
+        if state is None:
+            return
+        was_fullscreen, was_maximized, geometry = state
+        if was_fullscreen:
+            return  # the app itself was fullscreen already -- stay that way
+        if was_maximized:
+            window.showMaximized()
+            return
+        window.showNormal()
+        # The window manager can apply the restore asynchronously and
+        # pick its own size; re-assert the exact prior geometry.
+        window.setGeometry(geometry)
+        QTimer.singleShot(0, lambda: window.setGeometry(geometry) if not window.isFullScreen()
+                          and not window.isMaximized() else None)
 
     def _enter_overlay_controls_mode(self) -> None:
         """While actually fullscreen, the header/transport boxes float
@@ -919,6 +1007,7 @@ class VideoPreviewContent(QWidget):
         super().resizeEvent(event)
         if self._is_expanded and self._overlay_visible:
             self._position_overlay_controls()
+        self._position_filters_panel()
 
     def changeEvent(self, event) -> None:
         # Hides the controls immediately on losing window focus (not
@@ -983,7 +1072,12 @@ class VideoPreviewContent(QWidget):
     def shutdown(self) -> None:
         """Called by VideoPreviewOverlay right before it closes --
         stops mpv playback/cleans up its resources, same as the old
-        QDialog's closeEvent used to."""
+        QDialog's closeEvent used to. Also leaves fullscreen (restoring
+        the prior window state) if the overlay is torn down while
+        expanded, e.g. replaced by another preview."""
+        if self._is_expanded:
+            self._is_expanded = False
+            self._restore_window()
         self.video_widget.shutdown()
 
     def eventFilter(self, obj, event) -> bool:
@@ -1149,7 +1243,9 @@ class VideoPreviewOverlay(QWidget):
 
     def keyPressEvent(self, event) -> None:
         if event.key() == Qt.Key_Escape:
-            if self.content._is_expanded:
+            if self.content._filters_panel is not None:
+                self.content._close_filters_panel()
+            elif self.content._is_expanded:
                 self.content._toggle_fullscreen()
             else:
                 self.close_overlay()
