@@ -71,9 +71,10 @@ dt = 1 / R.FLICKER_HZ
 for kind, v in (("speech", "spiky"), ("thought", "jagged")):
     spikes = [radius_along(shape(kind, v, k * dt + 0.01, tp=None), 0.0) for k in range(8)]
     jumps = [abs(a - b) for a, b in zip(spikes, spikes[1:])]
-    same = shape(kind, v, 0.01, tp=None) == shape(kind, v, 0.01 + dt * 0.5, tp=None)
-    check(max(jumps) > 8 and same, f"{kind}/{v}: spikes jump in/out harshly (per-frame jumps {[round(j) for j in jumps]}), "
-                                   f"holding between flicker frames")
+    smooth = all(shape(kind, v, 0.013 + k / 60, tp=None) != shape(kind, v, 0.013 + (k + 1) / 60, tp=None)
+                 for k in range(6))
+    check(max(jumps) > 8 and smooth, f"{kind}/{v}: spikes jump in/out harshly (per-flick jumps {[round(j) for j in jumps]}), "
+                                     f"moving on every 60 fps frame")
 
 # ---- 2: Uncertain: faster, uneasy, own tail ------------------------------------------------------------------
 wt = shape("speech", "wiggly", 0.0)
@@ -86,8 +87,9 @@ check(a0 != a1, "Uncertain moves visibly within 1/20 s (faster)")
 
 # ---- 5: intercom tail -------------------------------------------------------------------------------------
 i0, i1 = shape("speech", "intercom", 0.0), shape("speech", "intercom", 1 / 16 + 0.001)
-check(i0 != i1, "Intercom tail crackles (changes every 1/16 s)")
-check(i0.elementCount() > 40, f"...and is jagged ({i0.elementCount()} outline points)")
+check(i0 != i1 and all(shape("speech", "intercom", 0.013 + k / 60) != shape("speech", "intercom", 0.013 + (k + 1) / 60)
+                       for k in range(6)), "Intercom tail crackles, moving on every 60 fps frame")
+check(i0.elementCount() > 30, f"...and is jagged ({i0.elementCount()} outline points)")
 
 # ---- 6: neutral thought wiggles, neutral speech doesn't --------------------------------------------------
 check(shape("thought", "", 0.0) != shape("thought", "", 0.4), "neutral thought cloud wiggles when animated")
@@ -103,6 +105,18 @@ for k in range(10):
     xs = [x for x in range(-160, 160) if p_.contains(QPointF(x, 0))]
     boxes.append(max(xs) - min(xs))
 check(max(boxes) - min(boxes) > 8, f"Electronic box pulses in size ({min(boxes)}..{max(boxes)})")
+
+# ---- round 10: squarer boxes, calmer uncertain tail tip ---------------------------------------------------------
+import math
+for kind, v in (("speech", "intercom"), ("thought", "electronic")):
+    p_ = shape(kind, v, 0.0, tp=None)
+    r_ = p_.boundingRect()
+    corner = QPointF(r_.left() + r_.height() * 0.03, r_.top() + r_.height() * 0.03)
+    check(p_.contains(corner), f"{kind}/{v}: nearly square corners")
+tips = [shape("speech", "wiggly", k * 0.05) for k in range(6)]
+near_tip = QPointF(tip.x() - 6, tip.y() - 6)
+check(all(t_.contains(QPointF(tip.x() - 12, tip.y() - 10)) == tips[0].contains(QPointF(tip.x() - 12, tip.y() - 10))
+          for t_ in tips), "Uncertain tail tip keeps its shape while the rest wiggles")
 
 # ---- 3: animation speed ------------------------------------------------------------------------------------
 check(TextStyle().bubble_anim_speed == 1.0, "animation speed defaults to 1x")

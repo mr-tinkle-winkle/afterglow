@@ -423,10 +423,25 @@ plain QSS rule is unavoidable.
 Seven consecutive batches of Library/Settings/appearance
 features/bug fixes, given together each time. Newest first.
 
-### This session (newest -- feedback round 7)
-1. **Harsh spike flicker.** Spiky speech and Angry (jagged) thought: every
-   FLICKER_HZ=14 frames/s (at 1x) each spike jumps to a new length
-   (`_hash01(frame, k)`), in/out from the center, holding between frames.
+### This session (newest -- feedback round 8)
+1. **Smoother harsh motion.** Spiky speech, Angry thought and the Intercom
+   tail used to step (a new random shape 14-16x/s, held in between). Now
+   `_jitter(t, rate, *key)` picks new random targets (FLICKER_HZ=20 for
+   spikes, 16 for the tail) and snaps to each with a smoothstep, so the
+   shape changes on every rendered frame while staying jittery. The tail's
+   "reversed kink" is now a jittered amplitude that can dip below zero.
+2. **Uncertain wiggle ~70% speed:** phase 7.7*t (was 11) for body and tail.
+3. **Squarer boxes:** Intercom corner radius 0.04*min(w,h) (was 0.12),
+   Electronic 0.027 (was 0.08).
+4. **Uncertain tail tip holds its shape:** the tail's edge wobble fades to
+   nothing over the half nearest the tip (`min(1, to_tip/0.5)**1.5`).
+Tests: tests/test_round9.py updated (every-frame motion, square corners,
+steady tail tip).
+
+### Previous session (feedback round 7)
+1. **Harsh spike flicker.** Spiky speech and Angry (jagged) thought: each
+   spike jumps to new lengths in/out from the center (superseded in round 8:
+   smoothed per-frame via `_jitter`).
 2. **Uncertain (wiggly):** faster (phase 11*t), uneasier outline
    (`_wiggle`: three clashing waves, 72-point polygon), and its own wobbly
    tail (both tail edges wave, pinned at base and tip).

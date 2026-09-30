@@ -821,7 +821,19 @@ def _ellipse_pt(c: QPointF, rx: float, ry: float, a: float, f: float = 1.0) -> Q
     return QPointF(c.x() + rx * f * math.cos(a), c.y() + ry * f * math.sin(a))
 
 
-FLICKER_HZ = 14.0      # harsh flicker: new spike lengths this many times a second (at speed 1)
+FLICKER_HZ = 20.0      # harsh flicker: new random spike lengths this many times a second (at speed 1)
+
+
+def _jitter(t: float, rate: float, *key) -> float:
+    """Random 0..1 that picks a new value `rate` times a second and snaps to
+    it quickly (smoothstep between picks), so the motion is harsh and
+    jittery yet changes on every rendered frame instead of stepping."""
+    x = t * rate
+    f = math.floor(x)
+    u = x - f
+    u = u * u * (3 - 2 * u)
+    a, b = _hash01(int(f), *key), _hash01(int(f) + 1, *key)
+    return a + (b - a) * u
 
 
 def _wiggle(theta: float, ph: float) -> float:
@@ -833,21 +845,20 @@ def _wiggle(theta: float, ph: float) -> float:
 def _speech_body(variant: str, cc: QPointF, rx: float, ry: float, t: float, animated: bool) -> QPainterPath:
     if variant == "spiky":
         n = 16
-        frame = int(t * FLICKER_HZ) if animated else 0
         pts = []
         for k in range(2 * n):
             a = math.pi * k / n
             if k % 2 == 0:
                 # each spike jumps to a new length every flicker frame --
                 # in and out from the center, not a smooth wave
-                jump = 0.24 * (_hash01(frame, k) - 0.4) if animated else 0.0
+                jump = 0.24 * (_jitter(t, FLICKER_HZ, k) - 0.4) if animated else 0.0
                 f = 1.2 + 0.05 * math.sin(k * 2.7) + jump
             else:
                 f = 0.9
             pts.append(_ellipse_pt(cc, rx, ry, a, f))
         return _polygon(pts)
     if variant == "wiggly":
-        ph = t * 11.0 if animated else 0.0
+        ph = t * 7.7 if animated else 0.0
         n = 72                 # fewer points: slightly angular, less smooth
         pts = [_ellipse_pt(cc, rx, ry, 2 * math.pi * k / n, 1.0 + _wiggle(2 * math.pi * k / n, ph))
                for k in range(n)]
@@ -855,7 +866,7 @@ def _speech_body(variant: str, cc: QPointF, rx: float, ry: float, t: float, anim
     path = QPainterPath()
     if variant == "intercom":
         w, h = rx * 1.84, ry * 1.6
-        rr = min(w, h) * 0.12
+        rr = min(w, h) * 0.04       # squarer than the usual rounding
         path.addRoundedRect(QRectF(cc.x() - w / 2, cc.y() - h / 2, w, h), rr, rr)
         return path
     path.addEllipse(cc, rx, ry)
@@ -888,14 +899,13 @@ def _speech_tail(variant: str, cc: QPointF, rx: float, ry: float, tail: QPointF,
         nx, ny = -uy, ux
         n = max(5, int(L / max(ry * 0.26, 1.0)))
         amp = ry * 0.32
-        frame = int(t * 16) if animated else 0
+        rate = 16.0
         line = QPainterPath(start)
         for i in range(1, n):
-            f = (i + (0.35 * (_hash01(frame, i, 7) - 0.5) if animated else 0.0)) / n
-            j = (0.35 + 1.3 * _hash01(frame, i)) if animated else (0.7 + 0.6 * _hash01(0, i, 3))
+            f = (i + (0.35 * (_jitter(t, rate, i, 7) - 0.5) if animated else 0.0)) / n
+            # amplitude can dip below zero now and then: the odd kink the other way
+            j = (-0.25 + 1.85 * _jitter(t, rate, i)) if animated else (0.7 + 0.6 * _hash01(0, i, 3))
             side = 1 if i % 2 else -1
-            if animated and _hash01(frame, i, 11) < 0.15:
-                side = -side               # the odd kink the other way
             line.lineTo(QPointF(start.x() + ux * L * f + nx * amp * side * j,
                                 start.y() + uy * L * f + ny * amp * side * j))
         line.lineTo(tail)
@@ -919,7 +929,7 @@ def _speech_tail(variant: str, cc: QPointF, rx: float, ry: float, tail: QPointF,
     c2 = QPointF((b2.x() + tail.x()) / 2, (b2.y() + tail.y()) / 2)
     if variant == "wiggly":
         # its own wobbly tail: both edges wave (and travel, when animated)
-        ph = t * 11.0 if animated else 0.0
+        ph = t * 7.7 if animated else 0.0
         amp = ry * 0.07
         side1 = _quad_pts(s1, c1, tail, 14)
         side2 = _quad_pts(tail, c2, s2, 14)
@@ -932,7 +942,9 @@ def _speech_tail(variant: str, cc: QPointF, rx: float, ry: float, tail: QPointF,
                 tx, ty = a_.x() - b_.x(), a_.y() - b_.y()
                 ln = math.hypot(tx, ty) or 1.0
                 s_ = i / (len(seq) - 1)
-                fade = math.sin(math.pi * s_)              # pinned at the base and the tip
+                # pinned at the base; calm near the tip so it keeps its point
+                to_tip = (1 - s_) if sign == 1 else s_
+                fade = math.sin(math.pi * s_) * min(1.0, to_tip / 0.5) ** 1.5
                 off = amp * fade * (math.sin(s_ * 9.0 + ph * sign) + 0.5 * math.sin(s_ * 17.0 - ph * 1.6))
                 pts.append(QPointF(q.x() - ty / ln * off, q.y() + tx / ln * off))
         return _polygon(pts)
@@ -1025,7 +1037,7 @@ def bubble_shape(kind: str, body: QRectF, tip: "QPointF | None", g: float = 1.0,
                     sc *= 1.0 + 0.07 * max(0.0, math.sin(2 * math.pi * 1.2 * t - n_tr * 0.9))
                 if sc > 0.01:
                     w, h = rx * 1.84 * sc, ry * 1.6 * sc
-                    rr = min(w, h) * 0.08
+                    rr = min(w, h) * 0.027      # squarer than the usual rounding
                     box = QPainterPath()
                     box.addRoundedRect(QRectF(c.x() - w / 2, c.y() - h / 2, w, h), rr, rr)
                     path = path.united(box)
@@ -1035,7 +1047,6 @@ def bubble_shape(kind: str, body: QRectF, tip: "QPointF | None", g: float = 1.0,
                 br = circ / nb * 0.62
                 slot = 2 * math.pi / nb
                 ph = (7.0 * t if animated else 0.0)
-                frame = int(t * FLICKER_HZ) if animated else 0
                 for i in range(nb):
                     a = 2 * math.pi * i / nb
                     d = abs(math.atan2(math.sin(a - ang), math.cos(a - ang))) / math.pi if tail is not None else 0.0
@@ -1063,7 +1074,7 @@ def bubble_shape(kind: str, body: QRectF, tip: "QPointF | None", g: float = 1.0,
                     bc = QPointF(c.x() + ex * math.cos(a), c.y() + ey * math.sin(a))
                     if variant == "jagged":
                         # harsh flicker: each spike jumps to a new length
-                        flick = (0.55 + 0.9 * _hash01(frame, i)) if animated else 1.0
+                        flick = (0.55 + 0.9 * _jitter(t, FLICKER_HZ, i)) if animated else 1.0
                         spike = br * 1.15 * kb * (1.0 + 0.2 * math.sin(i * 1.3)) * flick
                         tipp = QPointF(bc.x() + spike * math.cos(a) * (rx / max(rx, ry)),
                                        bc.y() + spike * math.sin(a) * (ry / max(rx, ry)))
