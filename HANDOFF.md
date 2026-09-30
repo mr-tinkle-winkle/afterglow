@@ -423,7 +423,34 @@ plain QSS rule is unavoidable.
 Seven consecutive batches of Library/Settings/appearance
 features/bug fixes, given together each time. Newest first.
 
-### This session (newest -- feedback round 6)
+### This session (newest -- feedback round 7)
+1. **Harsh spike flicker.** Spiky speech and Angry (jagged) thought: every
+   FLICKER_HZ=14 frames/s (at 1x) each spike jumps to a new length
+   (`_hash01(frame, k)`), in/out from the center, holding between frames.
+2. **Uncertain (wiggly):** faster (phase 11*t), uneasier outline
+   (`_wiggle`: three clashing waves, 72-point polygon), and its own wobbly
+   tail (both tail edges wave, pinned at base and tip).
+3. **Animation speed:** `TextStyle.bubble_anim_speed` (default 1.0);
+   render uses `anim_t = local * speed` for shapes and dash offsets.
+   Properties > Bubble > "Animation speed" (0.1-5x; greyed when there's
+   nothing to animate or Animated is off).
+4. **Wheel never changes a number box, app-wide:** wheel_guard now covers
+   QAbstractSpinBox (and the line edit inside spin/combo boxes), forwarding
+   the wheel to the enclosing scroll area.
+5. **Intercom tail:** more, sharper zig-zags (random amplitude, jittered
+   along the line, the odd reversed kink), re-rolled 16x/s when animated.
+6. **Neutral thought** gets a gentle slow wiggle when Animated (the
+   Animated box is enabled for neutral thought, not neutral speech).
+7. **Electronic** box pulses when the pulse running up its square trail
+   arrives (same phase sequence, next "order" after the last square).
+8. **Discard Changes** (header, left of Save): `ctl.discard_changes()`
+   restores `<project>.saved.json` (written by `mark_rendered`, i.e. every
+   Save; kept in sync by repoint/discard in store.py), or, if never saved
+   from the editor, a fresh project from the clip/import as it is. Asks to
+   confirm (`custom_message_dialog.ask_confirm`); enabled only when unsaved.
+Tests: tests/test_round9.py (new).
+
+### Previous session (feedback round 6)
 1. **Thought cloud waits for its trail, then grows outward.** Trail circles
    sprout tip-first (circle k starts at TRAIL_STEP=0.25*k/n of the grow,
    lasts TRAIL_LEN=0.14); the cloud starts at `thought_cloud_start(n)` (the

@@ -41,7 +41,7 @@ from ...nle.model import Project
 from ..custom_button import CustomButton
 from ..custom_combo_style import combo_box_stylesheet
 from ..custom_line_edit import CustomLineEdit
-from ..custom_message_dialog import show_message
+from ..custom_message_dialog import ask_confirm, show_message
 from ..page_outline import BORDER_WIDTH, paint_page_outline
 from ..rounded_rect import rounded_rect_path
 from ..theme import Theme
@@ -263,6 +263,12 @@ class AdvancedEditorPage(QWidget):
         self.unsaved_label.setStyleSheet("QLabel { color: #ffb347; font-weight: bold; }")
         header.addWidget(self.unsaved_label)
         header.addSpacing(12)
+        self.discard_btn = CustomButton("Discard Changes")
+        self.discard_btn.setToolTip("Throw away every change since the last Save")
+        self.discard_btn.setMinimumWidth(130)
+        self.discard_btn.clicked.connect(self.discard_changes)
+        header.addWidget(self.discard_btn)
+        header.addSpacing(6)
         self.save_btn = CustomButton("Save")
         self.save_btn.setToolTip("Render the edit (Ctrl+S)")
         self.save_btn.setMinimumWidth(90)
@@ -488,6 +494,35 @@ class AdvancedEditorPage(QWidget):
         self.ctl.flush_edits()
         self.ctl.autosave_now()
 
+    # ================================================================ discard
+    def discard_changes(self, confirm: bool = True) -> None:
+        if not self.ctl.has_project or not self.ctl.unsaved:
+            return
+        if confirm and not ask_confirm(
+                self, "Discard Changes?",
+                "Every change since the last Save will be lost (this can't be undone).", "Discard"):
+            return
+        self.preview.stop()
+        mode = self.ctl.mode
+        playhead = self.ctl.playhead
+
+        def fresh():
+            if mode == "library" and self.current_video_id is not None:
+                video = library.get_video(self.current_video_id)
+                return nle_save.new_project_for_file(str(video.path), library_video_id=video.id,
+                                                     output_path=str(video.path))
+            src = self.ctl.import_source
+            out = self.ctl.project.output_path
+            return nle_save.new_project_for_file(src, output_path=out)
+        try:
+            self.ctl.discard_changes(fresh)
+        except Exception as e:
+            show_message(self, "Can't Discard", str(e))
+            return
+        self.ctl.set_playhead(min(playhead, self.ctl.project.duration))
+        self.timeline.view.request_fit()
+        self._flash("Changes discarded")
+
     # ================================================================ save
     def save(self) -> None:
         if not self.ctl.has_project:
@@ -630,6 +665,7 @@ class AdvancedEditorPage(QWidget):
         self.undo_btn.setToolTip(f"Undo {h.undo_label()} (Ctrl+Z)" if h and h.can_undo() else "Undo (Ctrl+Z)")
         self.redo_btn.setToolTip(f"Redo {h.redo_label()} (Ctrl+Shift+Z)" if h and h.can_redo() else "Redo")
         self.save_btn.setEnabled(has)
+        self.discard_btn.setEnabled(has and self.ctl.unsaved)
         self.unsaved_label.setText("● Unsaved changes" if self.ctl.unsaved else "")
         if not has:
             self.name_edit.setText("")

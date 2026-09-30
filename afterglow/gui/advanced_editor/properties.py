@@ -390,6 +390,11 @@ class PropertiesPanel(QWidget):
                 p, bubble_animated=banim.isChecked())))
             form3.addRow(self._lbl("Style"), bvar)
             form3.addRow(self._lbl(""), banim)
+            bspeed = _spin(0.1, 5, 0.1, 2, "x")
+            bspeed.setToolTip("How fast the style's animation runs (1 = normal)")
+            bspeed.valueChanged.connect(lambda v: self._edit("Bubble animation speed", lambda p: self._set_text(
+                p, bubble_anim_speed=v)))
+            form3.addRow(self._lbl("Animation speed"), bspeed)
             brow = QHBoxLayout()
             brow.addWidget(bfill)
             brow.addWidget(bline)
@@ -421,7 +426,8 @@ class PropertiesPanel(QWidget):
             self._fields.update(type_in=tin, type_out=tout, type_cursor=cur, bubble=bub, bubble_fill_btn=bfill,
                                 bubble_outline_btn=bline, bubble_outline_width=bwidth, delay_in=din, delay_out=dout,
                                 bubble_fill_transparency=bft, bubble_outline_transparency=bot, grow_in=gin,
-                                grow_out=gout, bubble_variant=bvar, bubble_animated=banim)
+                                grow_out=gout, bubble_variant=bvar, bubble_animated=banim,
+                                bubble_anim_speed=bspeed)
             self._fields.update(text=edit, font=font, text_size=size, color_btn=color, outline_btn=ocolor,
                                 outline_width=owidth, bold=bold, italic=italic)
 
@@ -583,8 +589,12 @@ class PropertiesPanel(QWidget):
             var = valid_variant(st.bubble, st.bubble_variant)
             self._set("bubble_variant", var)
             self._set("bubble_animated", st.bubble_animated)
+            self._set("bubble_anim_speed", st.bubble_anim_speed)
             if "bubble_animated" in self._fields:
-                self._fields["bubble_animated"].setEnabled(bool(st.bubble) and bool(var))
+                # everything but the neutral speech bubble has something to animate
+                can = bool(st.bubble) and (bool(var) or st.bubble == "thought")
+                self._fields["bubble_animated"].setEnabled(can)
+                self._fields["bubble_anim_speed"].setEnabled(can and st.bubble_animated)
             fc = self._fields.get("font")
             if fc is not None and fc.currentData() != st.font_family:
                 i = fc.findData(st.font_family)

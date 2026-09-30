@@ -52,6 +52,13 @@ def edited_copy_path(source_path: "str | Path") -> Path:
     return p.with_name(f"{p.stem}-edited{p.suffix}")
 
 
+def saved_state_path(path: Path) -> Path:
+    """Where the project as of its last Save (render) is kept, next to the
+    autosaved project -- what "Discard Changes" goes back to."""
+    path = Path(path)
+    return path.with_name(path.stem + ".saved.json")
+
+
 def save_project(project: Project, path: Path) -> None:
     """Atomic write: a crash mid-save never leaves a half-written project."""
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -122,6 +129,9 @@ def discard_for_video(video_id: int, live_path: "str | Path | None" = None) -> N
         project = None
     if path.exists():
         path.unlink()
+    saved = saved_state_path(path)
+    if saved.exists():
+        saved.unlink()
     if project is not None and live_path is not None:
         backups = Path(live_path).parent / EDIT_BACKUPS_DIRNAME
         for s in project.all_segments():
@@ -136,10 +146,16 @@ def repoint_video_sources(video_id: int, old_path: "str | Path", new_path: "str 
     point the stored project at the new name, so unsaved/unrendered
     edits that still read from the live file aren't lost as "missing"."""
     path = project_path_for_video(video_id)
+    saved = saved_state_path(path)
+    if saved.exists():
+        _repoint_file(saved, str(old_path), str(new_path))
+    _repoint_file(path, str(old_path), str(new_path))
+
+
+def _repoint_file(path: Path, old_s: str, new_s: str) -> None:
     project = load_project(path)
     if project is None:
         return
-    old_s, new_s = str(old_path), str(new_path)
     changed = False
     for seg in project.all_segments():
         for part in seg.parts:

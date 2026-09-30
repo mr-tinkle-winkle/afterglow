@@ -161,7 +161,45 @@ class EditorController(QObject):
         path = self.project_file()
         if path is not None:
             store.save_project(self.project, path)
+            store.save_project(self.project, store.saved_state_path(path))   # for Discard Changes
         self.state_changed.emit()
+
+    def discard_changes(self, fresh_project) -> bool:
+        """Throw away every edit since the last Save: back to the project as
+        it was saved, or -- if it was never saved from here -- to
+        `fresh_project()` (the clip as it is). Returns True if something
+        was reloaded."""
+        if self.project is None:
+            return False
+        self._flush()
+        if self.history is not None and self.history.in_gesture:
+            self.history.cancel()
+        path = self.project_file()
+        saved = store.saved_state_path(path) if path is not None else None
+        project = None
+        if saved is not None and saved.exists():
+            try:
+                project = store.load_project(saved)
+            except Exception:
+                project = None
+            if project is not None and store.missing_sources(project):
+                project = None
+        had_saved = project is not None
+        if project is None:
+            project = fresh_project()
+        project.unsaved_changes = False
+        self._autosave.stop()
+        self.history = None                    # don't autosave the discarded edits on the way out
+        if path is not None:
+            try:
+                if had_saved:
+                    store.save_project(project, path)
+                elif path.exists():
+                    path.unlink()
+            except OSError:
+                pass
+        self.set_project(project, self.mode, self.import_source)
+        return True
 
     def remap_sources(self, mapping: dict) -> None:
         """Re-point every part reading from a key path at its value, in the

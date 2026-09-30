@@ -18,7 +18,7 @@ from .custom_button import CustomButton
 
 
 class CustomMessageDialog(QDialog):
-    def __init__(self, title: str, text: str, parent=None):
+    def __init__(self, title: str, text: str, parent=None, confirm_label: "str | None" = None):
         super().__init__(parent)
         self.setWindowTitle(title)
         appearance = config_module.load_readonly().appearance
@@ -41,8 +41,14 @@ class CustomMessageDialog(QDialog):
 
         button_row = QHBoxLayout()
         button_row.addStretch(1)
-        ok_btn = CustomButton("OK")
+        if confirm_label:
+            cancel_btn = CustomButton("Cancel")
+            cancel_btn.clicked.connect(self.reject)
+            cancel_btn.setMinimumWidth(90)
+            button_row.addWidget(cancel_btn)
+        ok_btn = CustomButton(confirm_label or "OK")
         ok_btn.clicked.connect(self.accept)
+        ok_btn.setMinimumWidth(90)
         button_row.addWidget(ok_btn)
         layout.addLayout(button_row)
 
@@ -67,3 +73,9 @@ def show_message(parent, title: str, text: str) -> None:
     custom-styled dialog for all three."""
     dialog = CustomMessageDialog(title, text, parent=parent)
     dialog.exec()
+
+
+def ask_confirm(parent, title: str, text: str, confirm_label: str) -> bool:
+    """Same styled dialog with Cancel + a confirm button; True if confirmed."""
+    dialog = CustomMessageDialog(title, text, parent=parent, confirm_label=confirm_label)
+    return dialog.exec() == QDialog.Accepted

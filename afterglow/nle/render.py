@@ -347,9 +347,10 @@ class Renderer:
         if st.bubble:
             g = grow_progress(st, local, duration)
             variant = valid_variant(st.bubble, st.bubble_variant)
+            anim_t = local * max(0.0, st.bubble_anim_speed)
             path, center, scale, text_alpha = bubble_shape(st.bubble, bubble_body(lay), tip, g,
                                                            shrinking=grow_phase_out(st, local, duration),
-                                                           variant=variant, t=local,
+                                                           variant=variant, t=anim_t,
                                                            animated=st.bubble_animated)
             # When a text transition covers this phase it decides what shows,
             # instead of the plain fade that goes with the grow.
@@ -365,7 +366,7 @@ class Renderer:
                     line.setAlphaF(line.alphaF() * (1.0 - max(0.0, min(1.0, st.bubble_outline_transparency))))
                     pen = QPen(line, st.bubble_outline_width * ch / 1080)
                     pen.setJoinStyle(Qt.MiterJoin if variant in ("spiky", "jagged") else Qt.RoundJoin)
-                    dash = bubble_dash(variant, local, st.bubble_animated)
+                    dash = bubble_dash(variant, anim_t, st.bubble_animated)
                     if dash is not None:
                         pattern, offset, cap = dash
                         pen.setCapStyle(cap)
@@ -820,23 +821,36 @@ def _ellipse_pt(c: QPointF, rx: float, ry: float, a: float, f: float = 1.0) -> Q
     return QPointF(c.x() + rx * f * math.cos(a), c.y() + ry * f * math.sin(a))
 
 
+FLICKER_HZ = 14.0      # harsh flicker: new spike lengths this many times a second (at speed 1)
+
+
+def _wiggle(theta: float, ph: float) -> float:
+    """Uneasy, uneven wobble of a radius (a few clashing waves)."""
+    return (0.034 * math.sin(10 * theta + ph) + 0.02 * math.sin(17 * theta - 1.7 * ph + 1.3)
+            + 0.012 * math.sin(27 * theta + 2.3 * ph + 0.4))
+
+
 def _speech_body(variant: str, cc: QPointF, rx: float, ry: float, t: float, animated: bool) -> QPainterPath:
     if variant == "spiky":
         n = 16
+        frame = int(t * FLICKER_HZ) if animated else 0
         pts = []
         for k in range(2 * n):
             a = math.pi * k / n
             if k % 2 == 0:
-                wob = 0.07 * math.sin(2 * math.pi * 1.6 * t + k * 1.9) if animated else 0.0
-                f = 1.2 + 0.05 * math.sin(k * 2.7) + wob
+                # each spike jumps to a new length every flicker frame --
+                # in and out from the center, not a smooth wave
+                jump = 0.24 * (_hash01(frame, k) - 0.4) if animated else 0.0
+                f = 1.2 + 0.05 * math.sin(k * 2.7) + jump
             else:
                 f = 0.9
             pts.append(_ellipse_pt(cc, rx, ry, a, f))
         return _polygon(pts)
     if variant == "wiggly":
-        ph = t * 5.0 if animated else 0.0
-        pts = [_ellipse_pt(cc, rx, ry, 2 * math.pi * k / 120,
-                           1.0 + 0.045 * math.sin(10 * 2 * math.pi * k / 120 + ph)) for k in range(120)]
+        ph = t * 11.0 if animated else 0.0
+        n = 72                 # fewer points: slightly angular, less smooth
+        pts = [_ellipse_pt(cc, rx, ry, 2 * math.pi * k / n, 1.0 + _wiggle(2 * math.pi * k / n, ph))
+               for k in range(n)]
         return _polygon(pts)
     path = QPainterPath()
     if variant == "intercom":
@@ -848,6 +862,15 @@ def _speech_body(variant: str, cc: QPointF, rx: float, ry: float, t: float, anim
     return path
 
 
+def _quad_pts(p0: QPointF, c: QPointF, p1: QPointF, n: int):
+    out = []
+    for i in range(n + 1):
+        s = i / n
+        out.append(QPointF((1 - s) ** 2 * p0.x() + 2 * (1 - s) * s * c.x() + s * s * p1.x(),
+                           (1 - s) ** 2 * p0.y() + 2 * (1 - s) * s * c.y() + s * s * p1.y()))
+    return out
+
+
 def _speech_tail(variant: str, cc: QPointF, rx: float, ry: float, tail: QPointF, t: float,
                  animated: bool) -> "QPainterPath | None":
     dx, dy = tail.x() - cc.x(), tail.y() - cc.y()
@@ -855,7 +878,7 @@ def _speech_tail(variant: str, cc: QPointF, rx: float, ry: float, tail: QPointF,
         return None
     ang = math.atan2(dy / max(ry, 1e-6), dx / max(rx, 1e-6))
     if variant == "intercom":
-        # a zig-zag "connection" line from the box to the tip
+        # a jagged, crackling "connection" line from the box to the tip
         from PySide6.QtGui import QPainterPathStroker
         start = _ellipse_pt(cc, rx, ry, ang, 0.8)
         L = math.hypot(tail.x() - start.x(), tail.y() - start.y())
@@ -863,20 +886,23 @@ def _speech_tail(variant: str, cc: QPointF, rx: float, ry: float, tail: QPointF,
             return None
         ux, uy = (tail.x() - start.x()) / L, (tail.y() - start.y()) / L
         nx, ny = -uy, ux
-        n = max(3, int(L / max(ry * 0.45, 1.0)))
-        amp = ry * 0.24
-        frame = int(t * 12) if animated else 0
+        n = max(5, int(L / max(ry * 0.26, 1.0)))
+        amp = ry * 0.32
+        frame = int(t * 16) if animated else 0
         line = QPainterPath(start)
         for i in range(1, n):
-            f = i / n
-            j = (0.6 + 0.8 * _hash01(frame, i)) if animated else 1.0
+            f = (i + (0.35 * (_hash01(frame, i, 7) - 0.5) if animated else 0.0)) / n
+            j = (0.35 + 1.3 * _hash01(frame, i)) if animated else (0.7 + 0.6 * _hash01(0, i, 3))
             side = 1 if i % 2 else -1
+            if animated and _hash01(frame, i, 11) < 0.15:
+                side = -side               # the odd kink the other way
             line.lineTo(QPointF(start.x() + ux * L * f + nx * amp * side * j,
                                 start.y() + uy * L * f + ny * amp * side * j))
         line.lineTo(tail)
         st = QPainterPathStroker()
         st.setWidth(max(ry * 0.14, 2.0))
         st.setJoinStyle(Qt.MiterJoin)
+        st.setMiterLimit(4.0)
         st.setCapStyle(Qt.FlatCap)
         return st.createStroke(line).simplified()
     if variant == "spiky":
@@ -886,12 +912,34 @@ def _speech_tail(variant: str, cc: QPointF, rx: float, ry: float, tail: QPointF,
     spread = 0.32
     b1, b2 = _ellipse_pt(cc, rx, ry, ang - spread), _ellipse_pt(cc, rx, ry, ang + spread)
     mid = _ellipse_pt(cc, rx, ry, ang)
+    s1 = QPointF(cc.x() + (b1.x() - cc.x()) * 0.85, cc.y() + (b1.y() - cc.y()) * 0.85)
+    s2 = QPointF(cc.x() + (b2.x() - cc.x()) * 0.85, cc.y() + (b2.y() - cc.y()) * 0.85)
+    c1 = QPointF((b1.x() + tail.x()) / 2 + (mid.x() - cc.x()) * 0.05,
+                 (b1.y() + tail.y()) / 2 + (mid.y() - cc.y()) * 0.05)
+    c2 = QPointF((b2.x() + tail.x()) / 2, (b2.y() + tail.y()) / 2)
+    if variant == "wiggly":
+        # its own wobbly tail: both edges wave (and travel, when animated)
+        ph = t * 11.0 if animated else 0.0
+        amp = ry * 0.07
+        side1 = _quad_pts(s1, c1, tail, 14)
+        side2 = _quad_pts(tail, c2, s2, 14)
+        pts = []
+        for seq, sign in ((side1, 1), (side2, -1)):
+            for i in range(len(seq)):
+                q = seq[i]
+                a_ = seq[min(i + 1, len(seq) - 1)]
+                b_ = seq[max(i - 1, 0)]
+                tx, ty = a_.x() - b_.x(), a_.y() - b_.y()
+                ln = math.hypot(tx, ty) or 1.0
+                s_ = i / (len(seq) - 1)
+                fade = math.sin(math.pi * s_)              # pinned at the base and the tip
+                off = amp * fade * (math.sin(s_ * 9.0 + ph * sign) + 0.5 * math.sin(s_ * 17.0 - ph * 1.6))
+                pts.append(QPointF(q.x() - ty / ln * off, q.y() + tx / ln * off))
+        return _polygon(pts)
     tp = QPainterPath()
-    tp.moveTo(QPointF(cc.x() + (b1.x() - cc.x()) * 0.85, cc.y() + (b1.y() - cc.y()) * 0.85))
-    tp.quadTo(QPointF((b1.x() + tail.x()) / 2 + (mid.x() - cc.x()) * 0.05,
-                      (b1.y() + tail.y()) / 2 + (mid.y() - cc.y()) * 0.05), tail)
-    tp.quadTo(QPointF((b2.x() + tail.x()) / 2, (b2.y() + tail.y()) / 2),
-              QPointF(cc.x() + (b2.x() - cc.x()) * 0.85, cc.y() + (b2.y() - cc.y()) * 0.85))
+    tp.moveTo(s1)
+    tp.quadTo(c1, tail)
+    tp.quadTo(c2, s2)
     tp.closeSubpath()
     return tp
 
@@ -960,6 +1008,8 @@ def bubble_shape(kind: str, body: QRectF, tip: "QPointF | None", g: float = 1.0,
             else:
                 if variant == "wobbly":
                     r = r * (1.0 + 0.1 * math.sin((9.0 * t if animated else 0.0) + idx * 2.1))
+                elif variant == "" and animated:
+                    r = r * (1.0 + 0.05 * math.sin(3.0 * t + idx * 2.1))
                 dot.addEllipse(pc, r * k, r * k)
             path = path.united(dot)
         # phase 2: the cloud, once the trail has reached it
@@ -970,6 +1020,9 @@ def bubble_shape(kind: str, body: QRectF, tip: "QPointF | None", g: float = 1.0,
             if variant == "electronic":
                 u = cg
                 sc = (ease_back(u) if u < 1 else 1.0)
+                if animated:
+                    # the pulse running up the trail of squares arrives here
+                    sc *= 1.0 + 0.07 * max(0.0, math.sin(2 * math.pi * 1.2 * t - n_tr * 0.9))
                 if sc > 0.01:
                     w, h = rx * 1.84 * sc, ry * 1.6 * sc
                     rr = min(w, h) * 0.08
@@ -982,6 +1035,7 @@ def bubble_shape(kind: str, body: QRectF, tip: "QPointF | None", g: float = 1.0,
                 br = circ / nb * 0.62
                 slot = 2 * math.pi / nb
                 ph = (7.0 * t if animated else 0.0)
+                frame = int(t * FLICKER_HZ) if animated else 0
                 for i in range(nb):
                     a = 2 * math.pi * i / nb
                     d = abs(math.atan2(math.sin(a - ang), math.cos(a - ang))) / math.pi if tail is not None else 0.0
@@ -997,13 +1051,19 @@ def bubble_shape(kind: str, body: QRectF, tip: "QPointF | None", g: float = 1.0,
                     if variant == "wobbly":
                         wob = 1.0 + 0.11 * math.sin(ph + i * 2.3)
                         rad = 1.0 + 0.035 * math.sin(ph * 1.3 + i * 1.7)
+                    elif variant == "" and animated:
+                        # neutral: a gentle, slow wiggle
+                        slow = 3.0 * t
+                        wob = 1.0 + 0.04 * math.sin(slow + i * 2.3)
+                        rad = 1.0 + 0.015 * math.sin(slow * 1.3 + i * 1.7)
                     ex, ey = rx * 0.86 * rad * reach, ry * 0.8 * rad * reach
                     arc = [QPointF(c.x() + ex * math.cos(a - slot * 0.56 + slot * 1.12 * j / 6),
                                    c.y() + ey * math.sin(a - slot * 0.56 + slot * 1.12 * j / 6)) for j in range(7)]
                     path = path.united(_polygon([c] + arc))
                     bc = QPointF(c.x() + ex * math.cos(a), c.y() + ey * math.sin(a))
                     if variant == "jagged":
-                        flick = 1.0 + (0.3 * math.sin(2 * math.pi * 2.2 * t + i * 2.9) if animated else 0.0)
+                        # harsh flicker: each spike jumps to a new length
+                        flick = (0.55 + 0.9 * _hash01(frame, i)) if animated else 1.0
                         spike = br * 1.15 * kb * (1.0 + 0.2 * math.sin(i * 1.3)) * flick
                         tipp = QPointF(bc.x() + spike * math.cos(a) * (rx / max(rx, ry)),
                                        bc.y() + spike * math.sin(a) * (ry / max(rx, ry)))
