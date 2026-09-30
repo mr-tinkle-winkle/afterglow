@@ -423,7 +423,25 @@ plain QSS rule is unavoidable.
 Seven consecutive batches of Library/Settings/appearance
 features/bug fixes, given together each time. Newest first.
 
-### This session (newest -- feedback round 10)
+### This session (newest -- feedback round 11)
+1. **Pictures in text / bubbles (any kind).** TextStyle.image_path ("" =
+   none), image_place ("above" | "below" | "left" | "right" of the words),
+   image_size (height as a share of the canvas height, default 0.18).
+   `render.text_layout` lays the picture and the words out as one centered
+   block: `rect` is the whole block (so `bubble_body`, every bubble shape
+   and the preview's selection box grow to hold it), `text_offset` is where
+   the words' center moved to, `image_rect`/`image` the picture.
+   `Renderer._draw_content` draws the picture then the words; with a
+   type/delay text effect the picture fades in (0.25 s) as the words start,
+   otherwise it follows the bubble's text fade. Picture-only elements (no
+   words) work. `bubble_image()` caches loaded images by (path, mtime)
+   behind a lock (export threads); GIFs show their first frame; a missing
+   file is ignored. Properties > Text: Picture (Add Picture… / Change… /
+   Remove), Place, Picture size. The picture is part of Copy Properties and
+   of global presets.
+Tests: tests/test_round12.py (new).
+
+### Previous session (feedback round 10)
 1. **Global text presets** (`nle/globals.py`,
    CONFIG_DIR/editor_globals/text_presets.json): {name, text, props
    (ops.copy_properties payload, JSON-safe), position}. Save from one

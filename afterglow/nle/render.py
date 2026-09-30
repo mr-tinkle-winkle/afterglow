@@ -340,7 +340,7 @@ class Renderer:
 
     def _draw_text(self, painter, part, ch, local: float = 0.0, duration: float = 0.0, tip=None) -> None:
         st = part.text
-        if st is None or not st.text:
+        if st is None or not (st.text or bubble_image(st.image_path) is not None):
             return
         lay = text_layout(st, ch)
         text_alpha = 1.0
@@ -379,10 +379,35 @@ class Renderer:
             painter.translate(center)
             painter.scale(scale, scale)
             painter.setOpacity(painter.opacity() * text_alpha)
-            self._draw_text_body(painter, st, lay, ch, local, duration)
+            self._draw_content(painter, st, lay, ch, local, duration)
             painter.restore()
             return
-        self._draw_text_body(painter, st, lay, ch, local, duration)
+        self._draw_content(painter, st, lay, ch, local, duration)
+
+    def _draw_content(self, painter, st, lay, ch, local: float, duration: float) -> None:
+        """The picture (if any) and the words, laid out by text_layout."""
+        if lay.get("image") is not None:
+            a = 1.0
+            if has_text_in(st):
+                # with a type/delay effect the picture pops in as the words start
+                tm = text_timing(st, duration)
+                a = max(0.0, min(1.0, (local - tm["ts"]) / 0.25))
+            if a > 0.001:
+                painter.save()
+                painter.setOpacity(painter.opacity() * a)
+                painter.setRenderHint(QPainter.SmoothPixmapTransform)
+                painter.drawImage(lay["image_rect"], lay["image"])
+                painter.restore()
+        if not st.text:
+            return
+        off = lay.get("text_offset")
+        if off is not None and (off.x() or off.y()):
+            painter.save()
+            painter.translate(off)
+            self._draw_text_body(painter, st, lay, ch, local, duration)
+            painter.restore()
+        else:
+            self._draw_text_body(painter, st, lay, ch, local, duration)
 
     def _draw_text_body(self, painter, st, lay, ch, local: float, duration: float) -> None:
         shown, cursor = typed_state(st, local, duration)
@@ -530,9 +555,62 @@ def text_layout(st, ch: float) -> dict:
     lines = st.text.split("\n")
     widths = [fm.horizontalAdvance(line) for line in lines]
     total_h = fm.lineSpacing() * len(lines)
-    return {"font": font, "fm": fm, "lines": lines, "widths": widths, "total_h": total_h,
-            "spacing": fm.lineSpacing(), "ascent": fm.ascent(),
-            "rect": QRectF(-max(widths or [0]) / 2, -total_h / 2, max(widths or [0]), total_h)}
+    tw = max(widths or [0])
+    th = total_h if st.text else 0.0
+    lay = {"font": font, "fm": fm, "lines": lines, "widths": widths, "total_h": total_h,
+           "spacing": fm.lineSpacing(), "ascent": fm.ascent(),
+           "rect": QRectF(-tw / 2, -th / 2, tw, th), "text_offset": QPointF(0.0, 0.0),
+           "image": None, "image_rect": None}
+    img = bubble_image(getattr(st, "image_path", ""))
+    if img is not None:
+        # the picture sits beside the words; the whole block stays centered
+        ih = max(2.0, getattr(st, "image_size", 0.18) * ch)
+        iw = ih * img.width() / max(img.height(), 1)
+        gap = fm.height() * 0.35 if st.text else 0.0
+        place = getattr(st, "image_place", "above")
+        if place in ("left", "right"):
+            W, H = iw + gap + tw, max(ih, th)
+            if place == "left":
+                ir = QRectF(-W / 2, -ih / 2, iw, ih)
+                off = QPointF(-W / 2 + iw + gap + tw / 2, 0.0)
+            else:
+                ir = QRectF(W / 2 - iw, -ih / 2, iw, ih)
+                off = QPointF(-W / 2 + tw / 2, 0.0)
+        else:
+            W, H = max(iw, tw), ih + gap + th
+            if place == "below":
+                ir = QRectF(-iw / 2, H / 2 - ih, iw, ih)
+                off = QPointF(0.0, -H / 2 + th / 2)
+            else:
+                ir = QRectF(-iw / 2, -H / 2, iw, ih)
+                off = QPointF(0.0, -H / 2 + ih + gap + th / 2)
+        lay.update(rect=QRectF(-W / 2, -H / 2, W, H), text_offset=off, image=img, image_rect=ir)
+    return lay
+
+
+_image_cache: dict = {}
+_image_lock = threading.Lock()      # export renders on several threads
+
+
+def bubble_image(path: str) -> "QImage | None":
+    """The picture for a text element (cached; reloaded if the file changes).
+    GIFs show their first frame."""
+    if not path:
+        return None
+    try:
+        key = (path, os.stat(path).st_mtime_ns)
+    except OSError:
+        return None
+    with _image_lock:
+        img = _image_cache.get(key)
+        if img is None:
+            img = QImage(path)
+            if img.isNull():
+                return None
+            if len(_image_cache) > 64:
+                _image_cache.clear()
+            _image_cache[key] = img
+        return img
 
 
 TEXT_IN_AT = 0.2      # speech: text transitions start this far into the grow-in (the

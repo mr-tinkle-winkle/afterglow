@@ -118,6 +118,13 @@ class TextStyle:
     # Name of the global text preset this element was made from / given
     # (nle/globals.py), "" = none. Updating that preset restyles it.
     global_preset: str = ""
+    # A picture inside the text / bubble (a reaction image, an avatar...):
+    # image_path "" = none; image_place = "above" | "below" | "left" |
+    # "right" of the words; image_size = its height as a fraction of the
+    # canvas height.
+    image_path: str = ""
+    image_place: str = "above"
+    image_size: float = 0.18
     # "Grow" in/out (seconds, 0 = off): a bubble grows out of its tail tip
     # into place (a thought bubble sprouts its circles first, then puffs up
     # like a cloud), and shrinks back into the tip at the end.

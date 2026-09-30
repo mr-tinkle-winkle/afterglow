@@ -352,6 +352,31 @@ class PropertiesPanel(QWidget):
             row2.addWidget(bold)
             row2.addWidget(italic)
             form.addRow(self._lbl("Style"), row2)
+            # a picture in the text / bubble
+            pic_pick = CustomButton("Add Picture…" if not text_part.text.image_path else "Change…")
+            pic_pick.setToolTip("Put a picture (PNG, JPG, GIF...) inside the text or bubble")
+            pic_pick.clicked.connect(self._pick_image)
+            pic_del = CustomButton("Remove")
+            pic_del.clicked.connect(lambda: (self._once("Remove picture", lambda p: self._set_text(p, image_path="")),
+                                             QTimer.singleShot(0, self._rebuild)))
+            prow = QHBoxLayout()
+            prow.addWidget(pic_pick)
+            prow.addWidget(pic_del)
+            form.addRow(self._lbl("Picture"), prow)
+            pic_place = self._combo([("Above the text", "above"), ("Below the text", "below"),
+                                     ("Left of the text", "left"), ("Right of the text", "right")])
+            pic_place.currentIndexChanged.connect(lambda *_: self._once(
+                "Picture place", lambda p: self._set_text(p, image_place=pic_place.currentData())))
+            form.addRow(self._lbl("Place"), pic_place)
+            pic_size = _spin(2, 100, 1, 0, " %")
+            pic_size.setToolTip("The picture's height, as a share of the video's height")
+            pic_size.valueChanged.connect(lambda v: self._edit("Picture size", lambda p: self._set_text(
+                p, image_size=v / 100)))
+            form.addRow(self._lbl("Picture size"), pic_size)
+            has_pic = bool(text_part.text.image_path)
+            for w_ in (pic_del, pic_place, pic_size):
+                w_.setEnabled(has_pic)
+            self._fields.update(image_place=pic_place, image_size=pic_size)
 
             g2, form2 = self._group(lay, "Text Transitions")
             tin = _spin(0, 600, 0.1, 2, " s")
@@ -614,6 +639,8 @@ class PropertiesPanel(QWidget):
             self._set("bubble_outline_transparency", st.bubble_outline_transparency * 100)
             self._set("grow_in", st.grow_in)
             self._set("grow_out", st.grow_out)
+            self._set("image_place", st.image_place)
+            self._set("image_size", st.image_size * 100)
             from ...nle.render import valid_variant
             var = valid_variant(st.bubble, st.bubble_variant)
             self._set("bubble_variant", var)
@@ -906,6 +933,20 @@ class PropertiesPanel(QWidget):
                 st.delay_word_times = keys
                 st.delay_keyed = True
         self._once("Clear word key" if clear else "Key word", fn)
+
+    def _pick_image(self) -> None:
+        from PySide6.QtWidgets import QFileDialog
+        from pathlib import Path
+        segs = self._segments()
+        tp = next((pt for pt in segs[0].parts if pt.kind == KIND_TEXT and pt.text), None) if segs else None
+        if tp is None:
+            return
+        start = str(Path(tp.text.image_path).parent) if tp.text.image_path else str(Path.home())
+        path, _ = QFileDialog.getOpenFileName(self, "Picture for the text", start,
+                                              "Pictures (*.png *.jpg *.jpeg *.webp *.bmp *.gif);;All files (*)")
+        if path:
+            self._once("Add picture", lambda p: self._set_text(p, image_path=path))
+            QTimer.singleShot(0, self._rebuild)      # button labels / enabled state
 
     def _copy_style(self, what: str) -> None:
         if self.ctl.copy_style(what):
