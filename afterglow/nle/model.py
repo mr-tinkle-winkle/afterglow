@@ -115,6 +115,9 @@ class TextStyle:
     bubble_variant: str = ""
     bubble_animated: bool = True
     bubble_anim_speed: float = 1.0       # multiplier for the animated effect
+    # Name of the global text preset this element was made from / given
+    # (nle/globals.py), "" = none. Updating that preset restyles it.
+    global_preset: str = ""
     # "Grow" in/out (seconds, 0 = off): a bubble grows out of its tail tip
     # into place (a thought bubble sprouts its circles first, then puffs up
     # like a cloud), and shrinks back into the tip at the end.

@@ -137,6 +137,8 @@ class BrowserPanel(QWidget):
         self._group.button(0).setChecked(True)
         self._library_loaded = False
         controller.changed.connect(self._refresh_audio_list)
+        controller.globals_changed.connect(self._refresh_audio_list)
+        controller.globals_changed.connect(self._refresh_text_list)
 
     def _on_tab(self, i: int) -> None:
         self.stack.setCurrentIndex(i)
@@ -240,6 +242,8 @@ class BrowserPanel(QWidget):
             self.ctl.add_file(payload["path"])
         elif typ == "text":
             self.ctl.add_text(payload["preset"])
+        elif typ == "global_text":
+            self.ctl.add_text_from_global(payload["name"])
         elif typ == "transition":
             if not self.ctl.selection:
                 self.ctl.error.emit("Select the segment the transition should lead into.")
@@ -250,20 +254,111 @@ class BrowserPanel(QWidget):
             self._apply_effect(payload["name"])
 
     # ---- Text --------------------------------------------------------------
+    def _header_item(self, lst, text: str) -> None:
+        it = QListWidgetItem(text)
+        it.setFlags(Qt.NoItemFlags)
+        f = it.font()
+        f.setBold(True)
+        it.setFont(f)
+        lst.addItem(it)
+
     def _text_page(self) -> QWidget:
         w = QWidget()
         lay = QVBoxLayout(w)
         lay.setContentsMargins(0, 0, 0, 0)
-        lay.addWidget(self._note("Double-click or drag a style onto the timeline. Edit the words, font and colors in "
-                                 "Properties; move and resize it in the preview."))
-        lst = _DragList()
+        lay.addWidget(self._note("Double-click or drag a style onto the timeline. Global presets are your own "
+                                 "saved looks, in every project -- right-click one for more."))
+        row = QHBoxLayout()
+        save = CustomButton("Save as Global Preset…")
+        save.setToolTip("Name the selected text's look (font, colors, bubble, effects...) so you can reuse it "
+                        "in any project -- e.g. one friend always in one color")
+        save.clicked.connect(self.save_global_preset)
+        row.addWidget(save)
+        lay.addLayout(row)
+        self.text_list = _DragList()
+        self.text_list.itemDoubleClicked.connect(self._activate_item)
+        self.text_list.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.text_list.customContextMenuRequested.connect(self._text_menu)
+        lay.addWidget(self.text_list, stretch=1)
+        self._refresh_text_list()
+        return w
+
+    def _refresh_text_list(self) -> None:
+        from ...nle import globals as gl
+        lst = self.text_list
+        lst.clear()
         for name in TEXT_PRESETS:
             it = QListWidgetItem(name)
             it.setData(Qt.UserRole, {"type": "text", "preset": name})
             lst.addItem(it)
-        lst.itemDoubleClicked.connect(self._activate_item)
-        lay.addWidget(lst, stretch=1)
-        return w
+        presets = gl.list_presets()
+        self._header_item(lst, "Global presets")
+        if not presets:
+            it = QListWidgetItem("(none yet -- select a text and Save as Global Preset)")
+            it.setFlags(Qt.NoItemFlags)
+            lst.addItem(it)
+        for pr in presets:
+            it = QListWidgetItem("★ " + pr["name"])
+            it.setToolTip(f"Global preset “{pr['name']}”")
+            it.setData(Qt.UserRole, {"type": "global_text", "name": pr["name"]})
+            lst.addItem(it)
+
+    def save_global_preset(self) -> None:
+        seg = self.ctl.selected_text_segment()
+        if seg is None:
+            self.ctl.error.emit("Select one text element to save its look as a global preset.")
+            return
+        from .page import ask_name
+        st = next(pt.text for pt in seg.parts if pt.text is not None)
+        name = ask_name(self, "Save as Global Preset",
+                        "Name this look (a friend's name, “Subtitles”...). It's saved for every "
+                        "project; using an existing name updates that preset.",
+                        st.global_preset or "")
+        if name:
+            self.ctl.save_global_preset(name)
+
+    def _text_menu(self, pos) -> None:
+        it = self.text_list.itemAt(pos)
+        payload = it.data(Qt.UserRole) if it is not None else None
+        if not payload or payload.get("type") != "global_text":
+            return
+        name = payload["name"]
+        from PySide6.QtWidgets import QMenu
+        from ..video_card import _menu_stylesheet
+        from ...nle import globals as gl
+        menu = QMenu(self)
+        menu.setStyleSheet(_menu_stylesheet(self._appearance))
+        menu.addAction("Add at Playhead", lambda: self.ctl.add_text_from_global(name))
+        a = menu.addAction("Apply to Selected", lambda: self.ctl.apply_global_preset(name))
+        a.setEnabled(any(pt.text is not None for s in self.ctl.selected_segments() for pt in s.parts))
+        a = menu.addAction("Update from Selected Text", lambda: self.ctl.save_global_preset(name))
+        a.setEnabled(self.ctl.selected_text_segment() is not None)
+        menu.addSeparator()
+        menu.addAction("Rename…", lambda: self._rename_preset(name))
+        menu.addAction("Delete Preset", lambda: (gl.delete_preset(name), self.ctl.globals_changed.emit()))
+        menu.exec(self.text_list.mapToGlobal(pos))
+
+    def _rename_preset(self, name: str) -> None:
+        from .page import ask_name
+        from ..custom_message_dialog import show_message
+        from ...nle import globals as gl
+        new = ask_name(self, "Rename Preset", "", name, "Rename")
+        if not new or new == name:
+            return
+        try:
+            gl.rename_preset(name, new)
+        except ValueError as e:
+            show_message(self, "Can't Rename", str(e))
+            return
+        if self.ctl.has_project:
+            def fn(p):
+                for sid in ops.segments_with_preset(p, name):
+                    _, sg = p.find_segment(sid)
+                    for pt in sg.parts:
+                        if pt.text is not None:
+                            pt.text.global_preset = new
+            self.ctl.perform("Rename preset", fn)
+        self.ctl.globals_changed.emit()
 
     # ---- Audio -------------------------------------------------------------
     def _audio_page(self) -> QWidget:
@@ -279,14 +374,24 @@ class BrowserPanel(QWidget):
         row.addWidget(add)
         row.addWidget(det)
         lay.addLayout(row)
-        lay.addWidget(self._note("Audio files in this project -- double-click to add another copy at the playhead. "
-                                 "Audio can go anywhere on any track."))
+        row2 = QHBoxLayout()
+        addg = CustomButton("Add Global Audio…")
+        addg.setToolTip("Keep an audio file for every project (a copy is stored with afterglow)")
+        addg.clicked.connect(self.add_global_audio)
+        row2.addWidget(addg)
+        lay.addLayout(row2)
+        lay.addWidget(self._note("Double-click or drag to add at the playhead. Global audio is there in every "
+                                 "project; right-click audio for more."))
         self.audio_list = _DragList()
         self.audio_list.itemDoubleClicked.connect(self._activate_item)
+        self.audio_list.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.audio_list.customContextMenuRequested.connect(self._audio_menu)
         lay.addWidget(self.audio_list, stretch=1)
+        self._audio_sig = None
         return w
 
     def _refresh_audio_list(self) -> None:
+        from ...nle import globals as gl
         p = self.ctl.project
         paths = []
         if p is not None:
@@ -294,15 +399,78 @@ class BrowserPanel(QWidget):
                 for part in s.parts:
                     if part.has_audio and not part.has_video and part.source and part.source not in paths:
                         paths.append(part.source)
-        current = [self.audio_list.item(i).data(Qt.UserRole)["path"] for i in range(self.audio_list.count())]
-        if current == paths:
+        glob = gl.list_audio()
+        sig = (tuple(paths), tuple((g["name"], g["file"]) for g in glob))
+        if sig == self._audio_sig:
             return
-        self.audio_list.clear()
+        self._audio_sig = sig
+        lst = self.audio_list
+        lst.clear()
+        self._header_item(lst, "In this project")
+        if not paths:
+            it = QListWidgetItem("(no audio files yet)")
+            it.setFlags(Qt.NoItemFlags)
+            lst.addItem(it)
+        global_files = {g["file"] for g in glob}
         for path in paths:
-            it = QListWidgetItem(os.path.basename(path))
+            label = os.path.basename(path)
+            if path in global_files:
+                label = "\u2605 " + next(g["name"] for g in glob if g["file"] == path)
+            it = QListWidgetItem(label)
             it.setToolTip(path)
-            it.setData(Qt.UserRole, {"type": "file", "path": path})
-            self.audio_list.addItem(it)
+            it.setData(Qt.UserRole, {"type": "file", "path": path, "audio": "project"})
+            lst.addItem(it)
+        self._header_item(lst, "Global audio")
+        if not glob:
+            it = QListWidgetItem("(none yet -- Add Global Audio, or right-click project audio)")
+            it.setFlags(Qt.NoItemFlags)
+            lst.addItem(it)
+        for g in glob:
+            it = QListWidgetItem("\u2605 " + g["name"])
+            it.setToolTip(g["file"])
+            it.setData(Qt.UserRole, {"type": "file", "path": g["file"], "audio": "global", "name": g["name"]})
+            lst.addItem(it)
+
+    def add_global_audio(self) -> None:
+        paths, _ = QFileDialog.getOpenFileNames(self, "Add global audio", str(Path.home()), AUDIO_FILTER)
+        for path in paths:
+            self.ctl.make_audio_global(path)
+
+    def _audio_menu(self, pos) -> None:
+        it = self.audio_list.itemAt(pos)
+        payload = it.data(Qt.UserRole) if it is not None else None
+        if not payload:
+            return
+        from PySide6.QtWidgets import QMenu
+        from ..video_card import _menu_stylesheet
+        from ...nle import globals as gl
+        path = payload["path"]
+        menu = QMenu(self)
+        menu.setStyleSheet(_menu_stylesheet(self._appearance))
+        a = menu.addAction("Add at Playhead", lambda: self.ctl.add_file(path))
+        a.setEnabled(self.ctl.has_project)
+        if payload.get("audio") == "global":
+            menu.addAction("Rename…", lambda: self._rename_audio(path, payload.get("name", "")))
+            menu.addAction("Remove from Global Audio",
+                           lambda: (gl.remove_audio(path), self.ctl.globals_changed.emit()))
+        elif not gl.is_global_audio(path):
+            menu.addAction("Make Global (every project)", lambda: self._make_global(path))
+        menu.exec(self.audio_list.mapToGlobal(pos))
+
+    def _make_global(self, path: str) -> None:
+        from .page import ask_name
+        name = ask_name(self, "Make Global Audio", "Name it (it's kept for every project).",
+                        Path(path).stem, "Make Global")
+        if name:
+            self.ctl.make_audio_global(path, name)
+
+    def _rename_audio(self, path: str, name: str) -> None:
+        from .page import ask_name
+        from ...nle import globals as gl
+        new = ask_name(self, "Rename Audio", "", name, "Rename")
+        if new and new != name:
+            gl.rename_audio(path, new)
+            self.ctl.globals_changed.emit()
 
     # ---- Transitions -------------------------------------------------------
     def _transitions_page(self) -> QWidget:

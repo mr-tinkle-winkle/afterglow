@@ -29,7 +29,7 @@ from dataclasses import replace
 
 from .model import (
     EPS, KIND_AV, MAX_SPEED, MAX_VOLUME, MIN_SPEED, MIN_VOLUME, Keyframe,
-    Part, Project, Segment, Track, empty_track, new_id,
+    Part, Project, Segment, Track, Transition, empty_track, new_id,
 )
 
 MIN_TRACKS = 4
@@ -756,7 +756,7 @@ TEXT_COLOR_FIELDS = ("color", "outline_color", "bubble_fill", "bubble_outline",
 SEG_COLOR_FIELDS = ("shadow_color",)
 # Properties = everything about how an element looks and behaves, except
 # what it says, where it is and when it is (text, position, timing, keys).
-TEXT_PROP_EXCLUDE = {"text", "delay_word_times", "delay_keyed"}
+TEXT_PROP_EXCLUDE = {"text", "delay_word_times", "delay_keyed", "global_preset"}
 SEG_PROP_FIELDS = ("fade_in", "fade_out", "volume", "zoom_amount", "zoom_in", "zoom_out",
                    "shadow", "shadow_color", "shadow_opacity", "shadow_distance", "shadow_angle", "shadow_blur")
 TRANSFORM_PROP_FIELDS = ("scale", "rotation", "crop_left", "crop_top", "crop_right", "crop_bottom")
@@ -822,7 +822,29 @@ def paste_style(project: Project, ids: list[str], payload: dict) -> int:
                 setattr(seg.transform, k, v)
                 changed = True
             if (st is None) == (not payload.get("is_text")):
-                seg.transition_in = copy.deepcopy(payload.get("transition"))
+                trans = payload.get("transition")
+                if isinstance(trans, dict):              # from a saved (JSON) global preset
+                    trans = Transition(**{k: v for k, v in trans.items()
+                                          if k in Transition.__dataclass_fields__})
+                seg.transition_in = copy.deepcopy(trans)
                 changed = True
         n += bool(changed)
     return n
+
+
+def apply_global_preset(project: Project, ids: list[str], name: str, props: dict) -> int:
+    """Give text elements a global preset's look (and remember its name)."""
+    n = 0
+    for sid in ids:
+        _, seg = project.find_segment(sid)
+        if seg is None or seg.locked or _text_style(seg) is None:
+            continue
+        paste_style(project, [sid], props)
+        _text_style(seg).global_preset = name
+        n += 1
+    return n
+
+
+def segments_with_preset(project: Project, name: str) -> list[str]:
+    return [s.id for s in project.all_segments()
+            if _text_style(s) is not None and _text_style(s).global_preset == name]

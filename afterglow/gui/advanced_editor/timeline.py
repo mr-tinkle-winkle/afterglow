@@ -1341,6 +1341,7 @@ class TimelineView(QWidget):
                 menu.addAction("Detach Audio", ctl.detach_audio)
             menu.addSeparator()
             add_style_actions(menu, ctl)
+            add_global_actions(menu, ctl, self)
             menu.addSeparator()
             tmenu = menu.addMenu("Transition In")
             tmenu.setStyleSheet(_menu_stylesheet(self._appearance))
@@ -1449,6 +1450,8 @@ class TimelineView(QWidget):
                     t = seg.end
         elif typ == "text":
             self.ctl.add_text(payload.get("preset", "Plain text"), t=t, track_index=ti)
+        elif typ == "global_text":
+            self.ctl.add_text_from_global(payload.get("name", ""), t=t, track_index=ti)
         elif typ == "transition":
             h = self.hit(pos)
             if h is not None and h["kind"] == "segment":
@@ -1518,3 +1521,40 @@ def add_style_actions(menu, ctl) -> None:
     a.setEnabled(one)
     a = menu.addAction("Paste Properties", lambda: ctl.paste_style("properties"))
     a.setEnabled(bool(segs) and "properties" in ctl.style_clipboard)
+
+
+def add_global_actions(menu, ctl, parent) -> None:
+    """Global text presets (save / apply) and global audio (make global)."""
+    from ...nle import globals as gl
+    from ..video_card import _menu_stylesheet
+    from ... import config as config_module
+    segs = ctl.selected_segments()
+    texts = [s for s in segs if any(pt.kind == KIND_TEXT and pt.text for pt in s.parts)]
+    if texts:
+        def save():
+            from .page import ask_name
+            st = next(pt.text for pt in texts[0].parts if pt.text is not None)
+            name = ask_name(parent, "Save as Global Preset",
+                            "Name this look -- it's saved for every project; an existing name updates it.",
+                            st.global_preset or "")
+            if name:
+                ctl.save_global_preset(name)
+        a = menu.addAction("Save as Global Preset…", save)
+        a.setEnabled(len(segs) == 1)
+        presets = gl.list_presets()
+        if presets:
+            sub = menu.addMenu("Apply Global Preset")
+            sub.setStyleSheet(_menu_stylesheet(config_module.load_readonly().appearance))
+            for pr in presets:
+                sub.addAction(pr["name"], lambda n=pr["name"]: ctl.apply_global_preset(n))
+    audio = [pt.source for s in segs for pt in s.parts
+             if pt.has_audio and not pt.has_video and pt.source and not gl.is_global_audio(pt.source)]
+    if len(segs) == 1 and audio:
+        def make():
+            from .page import ask_name
+            from pathlib import Path
+            name = ask_name(parent, "Make Global Audio", "Name it (it's kept for every project).",
+                            Path(audio[0]).stem, "Make Global")
+            if name:
+                ctl.make_audio_global(audio[0], name)
+        menu.addAction("Make Audio Global…", make)

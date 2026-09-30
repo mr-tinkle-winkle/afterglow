@@ -423,7 +423,33 @@ plain QSS rule is unavoidable.
 Seven consecutive batches of Library/Settings/appearance
 features/bug fixes, given together each time. Newest first.
 
-### This session (newest -- feedback round 9)
+### This session (newest -- feedback round 10)
+1. **Global text presets** (`nle/globals.py`,
+   CONFIG_DIR/editor_globals/text_presets.json): {name, text, props
+   (ops.copy_properties payload, JSON-safe), position}. Save from one
+   selected text element (Text tab "Save as Global Preset…", or timeline
+   right-click; `ctl.save_global_preset(name)`); an existing name updates
+   the preset AND restyles every element in the open project linked to it
+   (`TextStyle.global_preset` = preset name, set when made from / given a
+   preset; excluded from Copy Properties). Text tab lists them under
+   "Global presets" (★): double-click/drag adds one (its saved text as the
+   starting words, its position as the start), right-click = Add at
+   Playhead / Apply to Selected / Update from Selected Text / Rename /
+   Delete. Timeline right-click on text: "Save as Global Preset…" and an
+   "Apply Global Preset" submenu. Applying keeps each element's words.
+2. **Global audio** (CONFIG_DIR/editor_globals/audio/ + audio.json):
+   `gl.add_audio` stores a COPY (dedup by content) so it survives the
+   original moving; Audio tab: "Add Global Audio…", sections "In this
+   project" / "Global audio" (★), right-click = Add at Playhead, Make
+   Global (project audio), Rename / Remove (global; the stored copy is
+   kept so projects using it still work). Timeline right-click on an
+   audio-only segment: "Make Audio Global…". `ctl.globals_changed`
+   refreshes both lists.
+3. `page.NameDialog` / `page.ask_name()`: themed one-line name prompt.
+4. `ops.paste_style` accepts a transition stored as a dict (from JSON).
+Tests: tests/test_round11.py (new).
+
+### Previous session (feedback round 9)
 1. **Canvas drags don't reload the panels.** Dragging an element in the
    preview (move/scale/rotate/crop/tail -- including one that creates a
    keyframe) now goes through `ctl.live_preview()`, which emits the new

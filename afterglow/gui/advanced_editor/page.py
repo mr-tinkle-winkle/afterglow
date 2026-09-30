@@ -115,6 +115,42 @@ class _Dialog(QDialog):
         p.end()
 
 
+class NameDialog(_Dialog):
+    """Ask for a short name (global presets / audio)."""
+
+    def __init__(self, title: str, text: str, default: str = "", parent=None, ok_label: str = "Save"):
+        super().__init__(title, parent)
+        if text:
+            self.lay.addWidget(self.label(text))
+        self.edit = CustomLineEdit(default)
+        self.edit.selectAll()
+        self.edit.returnPressed.connect(self.accept)
+        self.lay.addWidget(self.edit)
+        row = QHBoxLayout()
+        row.addStretch(1)
+        cancel = CustomButton("Cancel")
+        cancel.clicked.connect(self.reject)
+        ok = CustomButton(ok_label)
+        ok.clicked.connect(self.accept)
+        for b_ in (cancel, ok):
+            b_.setMinimumWidth(90)
+            b_.setMinimumHeight(30)
+            row.addWidget(b_)
+        self.lay.addLayout(row)
+        self.setMinimumWidth(380)
+        self.edit.setFocus()
+
+    def value(self) -> str:
+        return self.edit.text().strip()
+
+
+def ask_name(parent, title: str, text: str, default: str = "", ok_label: str = "Save") -> "str | None":
+    dlg = NameDialog(title, text, default, parent, ok_label)
+    if dlg.exec() == QDialog.Accepted and dlg.value():
+        return dlg.value()
+    return None
+
+
 class SaveDialog(_Dialog):
     QUALITIES = [("High (larger file)", 18), ("Medium", 23), ("Small file", 28)]
 

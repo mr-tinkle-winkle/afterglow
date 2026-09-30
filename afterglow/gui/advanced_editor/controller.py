@@ -76,6 +76,7 @@ class EditorController(QObject):
     playhead_changed = Signal(float)
     state_changed = Signal()       # undo/redo availability, dirty marker, project loaded
     error = Signal(str)
+    globals_changed = Signal()     # global text presets / global audio list changed
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -559,6 +560,78 @@ class EditorController(QObject):
             self.set_selection([seg.id], anchor=seg.id)
             return seg
         return None
+
+    # ---- global text presets / global audio ------------------------------
+    def add_text_from_global(self, name: str, t: "float | None" = None,
+                             track_index: "int | None" = None) -> "Segment | None":
+        from ...nle import globals as gl
+        preset = gl.get_preset(name)
+        if preset is None or self.history is None:
+            return None
+        style = copy.deepcopy(TEXT_PRESETS["Plain text"])
+        style.text = preset.get("text") or name
+        part = Part(kind=KIND_TEXT, source="", src_in=0.0, src_out=5.0, has_video=True, has_audio=False,
+                    text=style)
+        seg = Segment(parts=[part], name=style.text.split("\n")[0][:40])
+        pos = preset.get("position") or [0.0, 0.0]
+        seg.transform.x, seg.transform.y = float(pos[0]), float(pos[1])
+        at = self.playhead if t is None else t
+        ti = 1 if track_index is None else track_index
+
+        def fn(p):
+            placed = ops.place(p, seg, ti, at, prefer=-1)
+            ops.apply_global_preset(p, [seg.id], name, preset.get("props") or {})
+            return placed
+        if self.perform(f"Add {name}", fn) is not None:
+            self.set_selection([seg.id], anchor=seg.id)
+            return seg
+        return None
+
+    def selected_text_segment(self) -> "Segment | None":
+        segs = self.selected_segments()
+        if len(segs) != 1 or not any(pt.kind == KIND_TEXT and pt.text for pt in segs[0].parts):
+            return None
+        return segs[0]
+
+    def save_global_preset(self, name: str) -> bool:
+        """Save the selected text element's look as the global preset `name`
+        (overwriting one with that name), link the element to it, and
+        restyle every element in this project that uses that preset."""
+        from ...nle import globals as gl
+        seg = self.selected_text_segment()
+        if seg is None or not name.strip():
+            return False
+        name = name.strip()
+        st = next(pt.text for pt in seg.parts if pt.kind == KIND_TEXT and pt.text)
+        props = ops.copy_properties(seg)
+        existing = gl.get_preset(name) is not None
+        gl.save_preset(name, st.text, props, (seg.transform.x, seg.transform.y))
+        sid = seg.id
+
+        def fn(p):
+            ids = [i for i in ops.segments_with_preset(p, name) if i != sid] if existing else []
+            ops.apply_global_preset(p, [sid] + ids, name, gl.get_preset(name)["props"])
+        self.perform(f"Save preset {name}", fn)
+        self.globals_changed.emit()
+        return True
+
+    def apply_global_preset(self, name: str) -> int:
+        from ...nle import globals as gl
+        preset = gl.get_preset(name)
+        ids = list(self.selection)
+        if preset is None or not ids:
+            return 0
+        return self.perform(f"Apply {name}", lambda p: ops.apply_global_preset(p, ids, name, preset["props"])) or 0
+
+    def make_audio_global(self, path: str, name: "str | None" = None) -> "dict | None":
+        from ...nle import globals as gl
+        try:
+            entry = gl.add_audio(path, name)
+        except (OSError, ValueError) as e:
+            self.error.emit(str(e))
+            return None
+        self.globals_changed.emit()
+        return entry
 
     def apply_transition(self, seg_ids: list[str], kind: "str | None", duration: float = 0.5,
                          target: str = "both", direction: str = "left") -> None:
