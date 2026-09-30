@@ -346,8 +346,11 @@ class Renderer:
         text_alpha = 1.0
         if st.bubble:
             g = grow_progress(st, local, duration)
+            variant = valid_variant(st.bubble, st.bubble_variant)
             path, center, scale, text_alpha = bubble_shape(st.bubble, bubble_body(lay), tip, g,
-                                                           shrinking=grow_phase_out(st, local, duration))
+                                                           shrinking=grow_phase_out(st, local, duration),
+                                                           variant=variant, t=local,
+                                                           animated=st.bubble_animated)
             # When a text transition covers this phase it decides what shows,
             # instead of the plain fade that goes with the grow.
             in_phase = local < duration / 2
@@ -361,7 +364,13 @@ class Renderer:
                     line = QColor(st.bubble_outline)
                     line.setAlphaF(line.alphaF() * (1.0 - max(0.0, min(1.0, st.bubble_outline_transparency))))
                     pen = QPen(line, st.bubble_outline_width * ch / 1080)
-                    pen.setJoinStyle(Qt.RoundJoin)
+                    pen.setJoinStyle(Qt.MiterJoin if variant in ("spiky", "jagged") else Qt.RoundJoin)
+                    dash = bubble_dash(variant, local, st.bubble_animated)
+                    if dash is not None:
+                        pattern, offset, cap = dash
+                        pen.setCapStyle(cap)
+                        pen.setDashPattern(pattern)
+                        pen.setDashOffset(offset)
                     painter.strokePath(path, pen)
             if text_alpha <= 0.001:
                 return
@@ -527,8 +536,8 @@ def text_layout(st, ch: float) -> dict:
 
 TEXT_IN_AT = 0.2      # speech: text transitions start this far into the grow-in (the
                       # body only scales, so the text can ride in with it early)
-THOUGHT_TEXT_IN_AT = 0.4    # thought: text starts while the cloud is still puffing up
-THOUGHT_CLOUD_START, THOUGHT_CLOUD_END = 0.15, 0.8   # the cloud's share of the grow
+THOUGHT_TEXT_IN_AT = 0.55   # thought: text starts while the cloud is still puffing up
+                            # (the cloud itself waits for its trail -- see thought_cloud_start)
 TEXT_OUT_AT = 0.4     # ...and finish when its grow-out is this far along
 
 
@@ -761,18 +770,162 @@ def _thought_trail(body: QRectF, tip: QPointF):
     return out, edge, ang
 
 
-def bubble_shape(kind: str, body: QRectF, tip: "QPointF | None", g: float = 1.0, shrinking: bool = False):
+BUBBLE_VARIANTS = {
+    "speech": [("Neutral", ""), ("Surprise / anger", "spiky"), ("Whisper", "whisper"),
+               ("Uncertain", "wiggly"), ("Intercom", "intercom")],
+    "thought": [("Neutral", ""), ("Worried", "wobbly"), ("Dreamy", "dreamy"),
+                ("Angry", "jagged"), ("Electronic", "electronic")],
+}
+
+
+def valid_variant(kind: str, variant: str) -> str:
+    """`variant` if the bubble kind has it, else "" (neutral)."""
+    return variant if any(v == variant for _l, v in BUBBLE_VARIANTS.get(kind, [])) else ""
+
+
+def bubble_dash(variant: str, t: float, animated: bool):
+    """(dash pattern in pen widths, dash offset, cap style) for the outline,
+    or None for a solid line. Whisper = dashes, Dreamy = dots; animated,
+    they march around the bubble."""
+    if variant == "whisper":
+        return [3.0, 2.2], (-t * 7.0 if animated else 0.0), Qt.FlatCap
+    if variant == "dreamy":
+        return [0.01, 2.2], (-t * 3.0 if animated else 0.0), Qt.RoundCap
+    return None
+
+
+def _hash01(*vals) -> float:
+    """Deterministic pseudo-random 0..1 (same frame -> same result, so the
+    preview and the export agree)."""
+    x = 0
+    for v in vals:
+        x = (x * 1000003 + int(v) * 2654435761 + 97) & 0xFFFFFFFF
+    x ^= x >> 13
+    x = (x * 1274126177) & 0xFFFFFFFF
+    x ^= x >> 16
+    return (x & 0xFFFF) / 65535.0
+
+
+def _polygon(points) -> QPainterPath:
+    path = QPainterPath()
+    if points:
+        path.moveTo(points[0])
+        for q in points[1:]:
+            path.lineTo(q)
+        path.closeSubpath()
+    return path
+
+
+def _ellipse_pt(c: QPointF, rx: float, ry: float, a: float, f: float = 1.0) -> QPointF:
+    return QPointF(c.x() + rx * f * math.cos(a), c.y() + ry * f * math.sin(a))
+
+
+def _speech_body(variant: str, cc: QPointF, rx: float, ry: float, t: float, animated: bool) -> QPainterPath:
+    if variant == "spiky":
+        n = 16
+        pts = []
+        for k in range(2 * n):
+            a = math.pi * k / n
+            if k % 2 == 0:
+                wob = 0.07 * math.sin(2 * math.pi * 1.6 * t + k * 1.9) if animated else 0.0
+                f = 1.2 + 0.05 * math.sin(k * 2.7) + wob
+            else:
+                f = 0.9
+            pts.append(_ellipse_pt(cc, rx, ry, a, f))
+        return _polygon(pts)
+    if variant == "wiggly":
+        ph = t * 5.0 if animated else 0.0
+        pts = [_ellipse_pt(cc, rx, ry, 2 * math.pi * k / 120,
+                           1.0 + 0.045 * math.sin(10 * 2 * math.pi * k / 120 + ph)) for k in range(120)]
+        return _polygon(pts)
+    path = QPainterPath()
+    if variant == "intercom":
+        w, h = rx * 1.84, ry * 1.6
+        rr = min(w, h) * 0.12
+        path.addRoundedRect(QRectF(cc.x() - w / 2, cc.y() - h / 2, w, h), rr, rr)
+        return path
+    path.addEllipse(cc, rx, ry)
+    return path
+
+
+def _speech_tail(variant: str, cc: QPointF, rx: float, ry: float, tail: QPointF, t: float,
+                 animated: bool) -> "QPainterPath | None":
+    dx, dy = tail.x() - cc.x(), tail.y() - cc.y()
+    if (dx / max(rx, 1e-6)) ** 2 + (dy / max(ry, 1e-6)) ** 2 <= 1.0:
+        return None
+    ang = math.atan2(dy / max(ry, 1e-6), dx / max(rx, 1e-6))
+    if variant == "intercom":
+        # a zig-zag "connection" line from the box to the tip
+        from PySide6.QtGui import QPainterPathStroker
+        start = _ellipse_pt(cc, rx, ry, ang, 0.8)
+        L = math.hypot(tail.x() - start.x(), tail.y() - start.y())
+        if L < 1e-3:
+            return None
+        ux, uy = (tail.x() - start.x()) / L, (tail.y() - start.y()) / L
+        nx, ny = -uy, ux
+        n = max(3, int(L / max(ry * 0.45, 1.0)))
+        amp = ry * 0.24
+        frame = int(t * 12) if animated else 0
+        line = QPainterPath(start)
+        for i in range(1, n):
+            f = i / n
+            j = (0.6 + 0.8 * _hash01(frame, i)) if animated else 1.0
+            side = 1 if i % 2 else -1
+            line.lineTo(QPointF(start.x() + ux * L * f + nx * amp * side * j,
+                                start.y() + uy * L * f + ny * amp * side * j))
+        line.lineTo(tail)
+        st = QPainterPathStroker()
+        st.setWidth(max(ry * 0.14, 2.0))
+        st.setJoinStyle(Qt.MiterJoin)
+        st.setCapStyle(Qt.FlatCap)
+        return st.createStroke(line).simplified()
+    if variant == "spiky":
+        b1 = _ellipse_pt(cc, rx, ry, ang - 0.22, 0.85)
+        b2 = _ellipse_pt(cc, rx, ry, ang + 0.22, 0.85)
+        return _polygon([b1, tail, b2])
+    spread = 0.32
+    b1, b2 = _ellipse_pt(cc, rx, ry, ang - spread), _ellipse_pt(cc, rx, ry, ang + spread)
+    mid = _ellipse_pt(cc, rx, ry, ang)
+    tp = QPainterPath()
+    tp.moveTo(QPointF(cc.x() + (b1.x() - cc.x()) * 0.85, cc.y() + (b1.y() - cc.y()) * 0.85))
+    tp.quadTo(QPointF((b1.x() + tail.x()) / 2 + (mid.x() - cc.x()) * 0.05,
+                      (b1.y() + tail.y()) / 2 + (mid.y() - cc.y()) * 0.05), tail)
+    tp.quadTo(QPointF((b2.x() + tail.x()) / 2, (b2.y() + tail.y()) / 2),
+              QPointF(cc.x() + (b2.x() - cc.x()) * 0.85, cc.y() + (b2.y() - cc.y()) * 0.85))
+    tp.closeSubpath()
+    return tp
+
+
+TRAIL_STEP, TRAIL_LEN = 0.25, 0.14   # trail circle k starts at TRAIL_STEP*k/n of the grow, takes TRAIL_LEN
+THOUGHT_CLOUD_END = 0.9
+
+
+def thought_cloud_start(n_trail: int) -> float:
+    """When the cloud starts growing: once the trail's circles have reached
+    it (the one next to the cloud is most of the way grown)."""
+    if n_trail <= 0:
+        return 0.1
+    return TRAIL_STEP * (n_trail - 1) / n_trail + TRAIL_LEN * 0.7
+
+
+def bubble_shape(kind: str, body: QRectF, tip: "QPointF | None", g: float = 1.0, shrinking: bool = False,
+                 variant: str = "", t: float = 0.0, animated: bool = False):
     """Bubble outline at grow progress g (1 = fully formed), plus where the
-    text goes: (path, text_center, text_scale, text_alpha).
+    text goes: (path, text_center, text_scale, text_alpha). `variant` picks
+    the style (BUBBLE_VARIANTS); `t` (element-local seconds) drives the
+    animated styles when `animated`.
 
     Speech grows out of the tail tip: the body flies from the tip to its
     place while scaling up (with a little overshoot) and the tail stretches
-    between them. Thought sprouts its trail circles from the tip outward
-    while the cloud grows uniformly out of its own middle.
+    between them. Thought sprouts its trail circles from the tip outward;
+    once they reach the cloud it puffs up bump by bump outward from the
+    center -- starting on the trail's side but with every bump growing at
+    once (the far side is only a little behind, never waiting).
     shrinking=True runs the motion back into the tip with its own easing:
     running the grow-in's overshoot easing backwards kept the bubble near
     full size until the last couple of frames and then it vanished, so the
     shrink uses a smooth ease that ends right at the element's end."""
+    variant = valid_variant(kind, variant)
     if shrinking:
         # starts gently, then collapses steadily into the tip -- reaching
         # (nearly) nothing on the last frame, never popping off at full size
@@ -792,42 +945,73 @@ def bubble_shape(kind: str, body: QRectF, tip: "QPointF | None", g: float = 1.0,
     if kind == "thought":
         trail, edge, ang = ([], c_full, 0.0) if tail is None else _thought_trail(body, tail)
         n_tr = len(trail)
-        # phase 1: circles sprout from the tip toward the cloud
+        # phase 1: circles (squares, for Electronic) sprout from the tip
+        # toward the cloud
         for idx, (pc, r) in enumerate(trail):
             order = n_tr - 1 - idx                    # tip-most first
-            k = ease_back(_window(g, 0.4 * order / max(n_tr, 1), 0.18)) if g < 1 else 1.0
-            if k > 0.01:
-                dot = QPainterPath()
+            k = ease_back(_window(g, TRAIL_STEP * order / max(n_tr, 1), TRAIL_LEN)) if g < 1 else 1.0
+            if k <= 0.01:
+                continue
+            dot = QPainterPath()
+            if variant == "electronic":
+                pulse = 1.0 + (0.22 * max(0.0, math.sin(2 * math.pi * 1.2 * t - order * 0.9)) if animated else 0.0)
+                side = r * 1.7 * k * pulse
+                dot.addRect(QRectF(pc.x() - side / 2, pc.y() - side / 2, side, side))
+            else:
+                if variant == "wobbly":
+                    r = r * (1.0 + 0.1 * math.sin((9.0 * t if animated else 0.0) + idx * 2.1))
                 dot.addEllipse(pc, r * k, r * k)
-                path = path.united(dot)
-        # phase 2: the cloud grows out of its middle, uniformly -- every bump
-        # moves out from the center and swells at the same pace. Each bump
-        # brings its slice of the interior with it (a wedge from the center
-        # out to the bump), so there's no separate center oval.
-        cg = 1.0 if g >= 1 else _window(g, THOUGHT_CLOUD_START, THOUGHT_CLOUD_END - THOUGHT_CLOUD_START)
+            path = path.united(dot)
+        # phase 2: the cloud, once the trail has reached it
+        cs = thought_cloud_start(n_tr)
+        cg = 1.0 if g >= 1 else _window(g, cs, THOUGHT_CLOUD_END - cs)
         if cg > 0.001:
             c = c_full
-            nb = 11
-            circ = 2 * math.pi * math.sqrt((rx * rx + ry * ry) / 2)
-            br = circ / nb * 0.62
-            slot = 2 * math.pi / nb
-            kb = ease_back(cg) if cg < 1 else 1.0
-            reach = ease_cubic(cg) if cg < 1 else 1.0
-            if kb > 0.01:
+            if variant == "electronic":
+                u = cg
+                sc = (ease_back(u) if u < 1 else 1.0)
+                if sc > 0.01:
+                    w, h = rx * 1.84 * sc, ry * 1.6 * sc
+                    rr = min(w, h) * 0.08
+                    box = QPainterPath()
+                    box.addRoundedRect(QRectF(c.x() - w / 2, c.y() - h / 2, w, h), rr, rr)
+                    path = path.united(box)
+            else:
+                nb = 11
+                circ = 2 * math.pi * math.sqrt((rx * rx + ry * ry) / 2)
+                br = circ / nb * 0.62
+                slot = 2 * math.pi / nb
+                ph = (7.0 * t if animated else 0.0)
                 for i in range(nb):
                     a = 2 * math.pi * i / nb
-                    wedge = QPainterPath()
-                    wedge.moveTo(c)
-                    for j in range(7):
-                        aa = a - slot * 0.56 + slot * 1.12 * j / 6
-                        wedge.lineTo(QPointF(c.x() + rx * 0.86 * math.cos(aa) * reach,
-                                             c.y() + ry * 0.8 * math.sin(aa) * reach))
-                    wedge.closeSubpath()
-                    path = path.united(wedge)
-                    bump = QPainterPath()
-                    bc = QPointF(c.x() + rx * 0.86 * math.cos(a) * reach, c.y() + ry * 0.8 * math.sin(a) * reach)
-                    bump.addEllipse(bc, br * kb, br * 0.9 * kb)
-                    path = path.united(bump)
+                    d = abs(math.atan2(math.sin(a - ang), math.cos(a - ang))) / math.pi if tail is not None else 0.0
+                    # the trail's side leads a little; every bump is growing
+                    # by the time a third of the cloud's time has passed
+                    u = _window(cg, 0.3 * d, 0.7) if cg < 1 else 1.0
+                    kb = ease_back(u) if u < 1 else 1.0
+                    reach = ease_cubic(u) if u < 1 else 1.0
+                    if kb <= 0.01:
+                        continue
+                    wob = 1.0
+                    rad = 1.0
+                    if variant == "wobbly":
+                        wob = 1.0 + 0.11 * math.sin(ph + i * 2.3)
+                        rad = 1.0 + 0.035 * math.sin(ph * 1.3 + i * 1.7)
+                    ex, ey = rx * 0.86 * rad * reach, ry * 0.8 * rad * reach
+                    arc = [QPointF(c.x() + ex * math.cos(a - slot * 0.56 + slot * 1.12 * j / 6),
+                                   c.y() + ey * math.sin(a - slot * 0.56 + slot * 1.12 * j / 6)) for j in range(7)]
+                    path = path.united(_polygon([c] + arc))
+                    bc = QPointF(c.x() + ex * math.cos(a), c.y() + ey * math.sin(a))
+                    if variant == "jagged":
+                        flick = 1.0 + (0.3 * math.sin(2 * math.pi * 2.2 * t + i * 2.9) if animated else 0.0)
+                        spike = br * 1.15 * kb * (1.0 + 0.2 * math.sin(i * 1.3)) * flick
+                        tipp = QPointF(bc.x() + spike * math.cos(a) * (rx / max(rx, ry)),
+                                       bc.y() + spike * math.sin(a) * (ry / max(rx, ry)))
+                        path = path.united(_polygon([arc[0], tipp, arc[-1]]))
+                    else:
+                        bump = QPainterPath()
+                        bump.addEllipse(bc, br * kb * wob, br * 0.9 * kb * wob)
+                        path = path.united(bump)
         return path, QPointF(0.0, 0.0), 1.0, (1.0 if g >= 1 else _window(g, THOUGHT_TEXT_IN_AT, 0.3))
     # speech
     e_pos = ease_cubic(g)
@@ -837,24 +1021,10 @@ def bubble_shape(kind: str, body: QRectF, tip: "QPointF | None", g: float = 1.0,
     if e_size <= 0.01:
         return path, cc, 0.0, 0.0
     rxs, rys = rx * e_size, ry * e_size
-    path.addEllipse(cc, rxs, rys)
+    path = _speech_body(variant, cc, rxs, rys, t, animated)
     if tail is not None:
-        dx, dy = tail.x() - cc.x(), tail.y() - cc.y()
-        if (dx / max(rxs, 1e-6)) ** 2 + (dy / max(rys, 1e-6)) ** 2 > 1.0:
-            ang = math.atan2(dy / max(rys, 1e-6), dx / max(rxs, 1e-6))
-
-            def on_ellipse(a):
-                return QPointF(cc.x() + rxs * math.cos(a), cc.y() + rys * math.sin(a))
-            spread = 0.32
-            b1, b2 = on_ellipse(ang - spread), on_ellipse(ang + spread)
-            mid = on_ellipse(ang)
-            tp = QPainterPath()
-            tp.moveTo(QPointF(cc.x() + (b1.x() - cc.x()) * 0.85, cc.y() + (b1.y() - cc.y()) * 0.85))
-            tp.quadTo(QPointF((b1.x() + tail.x()) / 2 + (mid.x() - cc.x()) * 0.05,
-                              (b1.y() + tail.y()) / 2 + (mid.y() - cc.y()) * 0.05), tail)
-            tp.quadTo(QPointF((b2.x() + tail.x()) / 2, (b2.y() + tail.y()) / 2),
-                      QPointF(cc.x() + (b2.x() - cc.x()) * 0.85, cc.y() + (b2.y() - cc.y()) * 0.85))
-            tp.closeSubpath()
+        tp = _speech_tail(variant, cc, rxs, rys, tail, t, animated)
+        if tp is not None:
             path = path.united(tp)
     # text rides with the body; the painter maps local (0,0) = c_full
     text_center = QPointF(cc.x() - c_full.x() * e_size, cc.y() - c_full.y() * e_size)

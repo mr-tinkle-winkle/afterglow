@@ -108,6 +108,11 @@ class TextStyle:
     tail_y: float = 0.25
     bubble_fill_transparency: float = 0.0      # 0 = solid, 1 = invisible
     bubble_outline_transparency: float = 0.0
+    # Bubble style (render.BUBBLE_VARIANTS): "" = neutral; speech: "spiky",
+    # "whisper", "wiggly", "intercom"; thought: "wobbly", "dreamy", "jagged",
+    # "electronic". bubble_animated keeps the style's effect moving.
+    bubble_variant: str = ""
+    bubble_animated: bool = True
     # "Grow" in/out (seconds, 0 = off): a bubble grows out of its tail tip
     # into place (a thought bubble sprouts its circles first, then puffs up
     # like a cloud), and shrinks back into the tip at the end.

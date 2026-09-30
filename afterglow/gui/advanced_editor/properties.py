@@ -379,6 +379,17 @@ class PropertiesPanel(QWidget):
             bwidth = _spin(0, 40, 0.5, 1, " px")
             bwidth.valueChanged.connect(lambda v: self._edit("Bubble outline", lambda p: self._set_text(p, bubble_outline_width=v)))
             form3.addRow(self._lbl("Type"), bub)
+            from ...nle.render import BUBBLE_VARIANTS
+            kind_now = text_part.text.bubble
+            bvar = self._combo(BUBBLE_VARIANTS.get(kind_now, [("Neutral", "")]))
+            bvar.setToolTip("The bubble's style")
+            bvar.currentIndexChanged.connect(lambda *_: self._set_variant(bvar.currentData()))
+            banim = CustomCheckBox("Animated")
+            banim.setToolTip("Keep the style's effect moving (spikes flicker, dashes march, lines wiggle...)")
+            banim.clicked.connect(lambda: self._once("Bubble animation", lambda p: self._set_text(
+                p, bubble_animated=banim.isChecked())))
+            form3.addRow(self._lbl("Style"), bvar)
+            form3.addRow(self._lbl(""), banim)
             brow = QHBoxLayout()
             brow.addWidget(bfill)
             brow.addWidget(bline)
@@ -405,12 +416,12 @@ class PropertiesPanel(QWidget):
             note.setWordWrap(True)
             note.setStyleSheet(self._label_qss + "QLabel { font-size: 11px; }")
             form3.addRow(note)
-            for w_ in (bfill, bline, bwidth, bft, bot, gin, gout):
+            for w_ in (bfill, bline, bwidth, bft, bot, gin, gout, bvar):
                 w_.setEnabled(bool(text_part.text.bubble))
             self._fields.update(type_in=tin, type_out=tout, type_cursor=cur, bubble=bub, bubble_fill_btn=bfill,
                                 bubble_outline_btn=bline, bubble_outline_width=bwidth, delay_in=din, delay_out=dout,
                                 bubble_fill_transparency=bft, bubble_outline_transparency=bot, grow_in=gin,
-                                grow_out=gout)
+                                grow_out=gout, bubble_variant=bvar, bubble_animated=banim)
             self._fields.update(text=edit, font=font, text_size=size, color_btn=color, outline_btn=ocolor,
                                 outline_width=owidth, bold=bold, italic=italic)
 
@@ -568,6 +579,12 @@ class PropertiesPanel(QWidget):
             self._set("bubble_outline_transparency", st.bubble_outline_transparency * 100)
             self._set("grow_in", st.grow_in)
             self._set("grow_out", st.grow_out)
+            from ...nle.render import valid_variant
+            var = valid_variant(st.bubble, st.bubble_variant)
+            self._set("bubble_variant", var)
+            self._set("bubble_animated", st.bubble_animated)
+            if "bubble_animated" in self._fields:
+                self._fields["bubble_animated"].setEnabled(bool(st.bubble) and bool(var))
             fc = self._fields.get("font")
             if fc is not None and fc.currentData() != st.font_family:
                 i = fc.findData(st.font_family)
@@ -849,6 +866,11 @@ class PropertiesPanel(QWidget):
                 st.delay_keyed = True
         self._once("Clear word key" if clear else "Key word", fn)
 
+    def _set_variant(self, variant: str) -> None:
+        if self._refreshing or not self._ids:
+            return
+        self._once("Bubble style", lambda p: self._set_text(p, bubble_variant=variant or ""))
+
     def _set_bubble(self, kind: str) -> None:
         if self._refreshing or not self._ids:
             return
@@ -874,6 +896,8 @@ class PropertiesPanel(QWidget):
                     if st.color.lower() in ("#ffffff", "#ffffffff"):
                         st.color = "#111111"
                         st.outline_width = 0.0
+                if kind != st.bubble:
+                    st.bubble_variant = ""        # styles differ per bubble kind
                 st.bubble = kind or ""
         self._once("Bubble", fn)
         QTimer.singleShot(0, self._rebuild)      # the keyframe list gains/loses "Bubble tail tip"

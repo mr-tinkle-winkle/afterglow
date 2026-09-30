@@ -423,7 +423,32 @@ plain QSS rule is unavoidable.
 Seven consecutive batches of Library/Settings/appearance
 features/bug fixes, given together each time. Newest first.
 
-### This session (newest -- feedback round 5)
+### This session (newest -- feedback round 6)
+1. **Thought cloud waits for its trail, then grows outward.** Trail circles
+   sprout tip-first (circle k starts at TRAIL_STEP=0.25*k/n of the grow,
+   lasts TRAIL_LEN=0.14); the cloud starts at `thought_cloud_start(n)` (the
+   circle next to the cloud ~70% grown) and ends at THOUGHT_CLOUD_END=0.9.
+   Bumps travel out from the center as before, the trail side leading only
+   slightly (`u = _window(cg, 0.3*d, 0.7)`), so every side is growing by a
+   third of the cloud's time. THOUGHT_TEXT_IN_AT = 0.55.
+2. **Bubble styles + Animated.** `TextStyle.bubble_variant` ("" = neutral)
+   and `bubble_animated` (default True). `render.BUBBLE_VARIANTS`:
+   speech -- spiky ("Surprise / anger": star burst, spike tips flicker),
+   whisper (dashed outline, dashes march), wiggly ("Uncertain": wavy
+   outline, wave travels), intercom (rounded box + zig-zag connection line
+   to the tip, re-jittered 12x/s); thought -- wobbly ("Worried": bumps and
+   trail circles tremble), dreamy (dotted outline, dots drift), jagged
+   ("Angry": spikes between the bumps, flicker), electronic (rounded box +
+   trail of squares that pulse in sequence). Shapes live in `bubble_shape(...,
+   variant, t, animated)` (t = element-local seconds, so preview and export
+   agree; `_hash01` gives deterministic jitter); dashes come from
+   `bubble_dash`. `valid_variant` ignores a style that isn't the kind's.
+   Properties > Bubble: "Style" dropdown (per kind) + "Animated" (greyed for
+   Neutral); switching Speech/Thought resets the style.
+3. The round-5 bubble reset turned out to be an unsaved session (no bug).
+Tests: tests/test_round8.py (new).
+
+### Previous session (feedback round 5)
 1. **Speech text starts early in the grow.** `render.TEXT_IN_AT = 0.2` (was
    0.55): the body only scales, so type/delay/fade start 20% into grow-in;
    the text's own alpha ramps over g in [0.2, 0.5].
