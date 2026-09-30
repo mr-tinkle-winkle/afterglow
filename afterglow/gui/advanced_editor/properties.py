@@ -142,8 +142,8 @@ class PropertiesPanel(QWidget):
                           "H hide layer (click a track header to select it)\n"
                           "Ctrl+C / Ctrl+V / Ctrl+D · Del · Shift+Del ripple\n"
                           "Space play · , . frame step · N snapping\n"
-                          "Wheel scrolls the timeline · Shift+wheel steps frames\n"
-                          "Ctrl+wheel zooms · middle-drag pans")
+                          "Wheel scrolls tracks · Alt+wheel scrolls time\n"
+                          "Shift+wheel steps frames · Ctrl+wheel zooms · middle-drag pans")
             hint.setWordWrap(True)
             hint.setStyleSheet(self._label_qss)
             lay.addWidget(hint)

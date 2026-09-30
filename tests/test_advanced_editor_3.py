@@ -275,9 +275,9 @@ pump(0.1)
 lane_y = int(view.track_top(len(p.tracks) - 1) + 10)
 pos = QPointF(view.lanes_left() + 200, lane_y)
 QApplication.sendEvent(view, QWheelEvent(pos, view.mapToGlobal(pos), QPoint(), QPoint(0, -240), Qt.NoButton,
-                                         Qt.NoModifier, Qt.NoScrollPhase, False))
+                                         Qt.AltModifier, Qt.NoScrollPhase, False))
 pump(0.1)
-check(view.scroll_t > 0.1, f"wheel scrolls along the timeline ({view.scroll_t:.2f}s)")
+check(view.scroll_t > 0.1, f"Alt+wheel scrolls along the timeline ({view.scroll_t:.2f}s)")
 t0, y0 = view.scroll_t, view.scroll_y
 a = QPoint(int(view.lanes_left() + 400), lane_y)
 QTest.mousePress(view, Qt.MiddleButton, Qt.NoModifier, a)

@@ -24,7 +24,7 @@ whatever window it's embedded in, rather than a fixed pixel size.
 """
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, QRectF, QRect, Signal, QTimer, QPropertyAnimation, QEvent
+from PySide6.QtCore import Qt, QRectF, QRect, QSize, Signal, QTimer, QPropertyAnimation, QEvent
 from PySide6.QtGui import QPainter, QColor, QPainterPath, QPen, QRegion
 from PySide6.QtWidgets import (
     QVBoxLayout, QHBoxLayout, QLabel, QSlider, QAbstractButton,
@@ -63,7 +63,23 @@ _HEADER_BTN_SIZE = 44
 # earlier 1.25x-of-1100x720 chain) -- clamped to fit the overlay's own
 # bounds in _layout_content so it still can't overflow a smaller window.
 CONTENT_WIDTH = 1581
-CONTENT_HEIGHT = 1035
+CONTENT_HEIGHT = 1035       # (no longer a cap: the box is as tall as the video needs)
+CONTENT_MIN_WIDTH = 760     # header/transport need this much even for a tall video
+
+
+def _video_aspect_of(path) -> float:
+    """Display aspect (width / height) of a video file; 16:9 if unknown."""
+    try:
+        import av
+        with av.open(str(path)) as c:
+            st = c.streams.video[0]
+            w, h = st.codec_context.width, st.codec_context.height
+            sar = st.sample_aspect_ratio or 1
+            if w and h:
+                return float(w * sar) / h
+    except Exception:
+        pass
+    return 16 / 9
 
 
 class _CardBox(QWidget):
@@ -106,6 +122,19 @@ class _VideoFrame(QWidget):
         border = appearance.unedited_selected_border_width
         self._layout = QVBoxLayout(self)
         self._layout.setContentsMargins(border, border, border, border)
+        self._fit = None      # QSize the previewer wants (see VideoPreviewContent._fit_video_frame)
+
+    def set_fit(self, size) -> None:
+        """Pin the frame to `size` (the video-shaped size that fits; the
+        row's spacers center it), or None to fill whatever room it gets."""
+        if size == self._fit:
+            return
+        self._fit = size
+        if size is None:
+            self.setMinimumSize(0, 0)
+            self.setMaximumSize(16777215, 16777215)
+        else:
+            self.setFixedSize(size)
 
     def paintEvent(self, event) -> None:
         painter = QPainter(self)
@@ -427,12 +456,15 @@ class VideoPreviewContent(QWidget):
         # ---- video, flanked by prev/next, with the same border a
         # Library thumbnail gets ----
         video_row = QHBoxLayout()
+        self._video_row = video_row
+        self._video_aspect = 16 / 9
         self.prev_btn = CustomButton("\u25c0")  # "◀"
         self.prev_btn.setFixedWidth(40)
         self.prev_btn.clicked.connect(self._go_to_prev)
         video_row.addWidget(self.prev_btn)
 
         self._video_frame = _VideoFrame()
+        self._video_frame.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.video_widget = MpvVideoWidget()
         self.video_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.video_widget.clicked.connect(self._toggle_play_pause)
@@ -452,7 +484,12 @@ class VideoPreviewContent(QWidget):
         # corners -- scoping this to the previewer's own instance only.
         self.video_widget.installEventFilter(self)
         self._video_frame._layout.addWidget(self.video_widget)
+        # The frame hugs the video (no black bars beside it): its size is
+        # capped to the video's aspect in _fit_video_frame and it's centered
+        # in whatever room the row has.
+        video_row.addStretch(0)
         video_row.addWidget(self._video_frame, stretch=1)
+        video_row.addStretch(0)
 
         self.next_btn = CustomButton("\u25b6")  # "▶"
         self.next_btn.setFixedWidth(40)
@@ -599,6 +636,9 @@ class VideoPreviewContent(QWidget):
         # loads, e.g. via Prev/Next, never trigger that workaround
         # again) means there's only ever ONE play command in flight by
         # the time audio actually starts, not two overlapping ones.
+        self._video_aspect = _video_aspect_of(video.path)
+        self._fit_video_frame()
+        self.aspect_changed.emit()
         is_first_load_ever = not self.video_widget._first_load_done
         self.video_widget.load(video.path)
         self.video_widget.set_volume(self.volume_slider.value())
@@ -843,6 +883,7 @@ class VideoPreviewContent(QWidget):
     # the whole overlay (vs. the normal CONTENT_SIZE_FRACTION) instead.
     fullscreen_toggled = Signal(bool)
     advanced_edit_requested = Signal(int)
+    aspect_changed = Signal()
     _is_expanded = False
     _shut_down = False
 
@@ -926,6 +967,7 @@ class VideoPreviewContent(QWidget):
         self.next_btn.hide()
         self._outer_layout.setContentsMargins(0, 0, 0, 0)
         self._video_frame._layout.setContentsMargins(0, 0, 0, 0)
+        self._video_frame.set_fit(None)       # fill the screen (mpv letterboxes)
 
         self.setMouseTracking(True)
         self._overlay_visible = True
@@ -953,6 +995,7 @@ class VideoPreviewContent(QWidget):
         self._outer_layout.setContentsMargins(16, 16, 16, 16)
         border = config_module.load_readonly().appearance.unedited_selected_border_width
         self._video_frame._layout.setContentsMargins(border, border, border, border)
+        self._fit_video_frame()
 
     def _position_overlay_controls(self) -> None:
         header_h = self._header_box.sizeHint().height()
@@ -1027,7 +1070,38 @@ class VideoPreviewContent(QWidget):
         super().resizeEvent(event)
         if self._is_expanded and self._overlay_visible:
             self._position_overlay_controls()
+        self._fit_video_frame()
         self._position_filters_panel()
+
+    def video_chrome(self) -> "tuple[int, int]":
+        """(width, height) this box needs around the video frame when not
+        fullscreen: margins, the Prev/Next arrows, the header and the
+        transport."""
+        m = self._outer_layout.contentsMargins()
+        sp_v = max(0, self._outer_layout.spacing())
+        sp_h = max(0, self._video_row.spacing())
+        cw = m.left() + m.right() + self.prev_btn.width() + self.next_btn.width() + 2 * sp_h
+        ch = (m.top() + m.bottom() + self._header_box.sizeHint().height()
+              + self._transport_box.sizeHint().height() + 2 * sp_v)
+        return cw, ch
+
+    def frame_border(self) -> int:
+        return self._video_frame._layout.contentsMargins().left()
+
+    def _fit_video_frame(self) -> None:
+        """Cap the bordered video frame to the video's own aspect inside the
+        room it has, so there's never letterboxing beside/above the video."""
+        if self._is_expanded:
+            self._video_frame.set_fit(None)
+            return
+        cw, ch = self.video_chrome()
+        b = self.frame_border()
+        aw = max(1, self.width() - cw - 2 * b)
+        ah = max(1, self.height() - ch - 2 * b)
+        ar = self._video_aspect
+        vw = min(aw, ah * ar)
+        vh = vw / ar
+        self._video_frame.set_fit(QSize(int(round(vw)) + 2 * b, int(round(vh)) + 2 * b))
 
     def changeEvent(self, event) -> None:
         # Hides the controls immediately on losing window focus (not
@@ -1209,6 +1283,7 @@ class VideoPreviewOverlay(QWidget):
         self.setAttribute(Qt.WA_TranslucentBackground, False)
         self.content = VideoPreviewContent(video, neighbor_provider=neighbor_provider, parent=self)
         self.content.fullscreen_toggled.connect(lambda _expanded: self._layout_content())
+        self.content.aspect_changed.connect(self._layout_content)
         self.setFocusPolicy(Qt.StrongFocus)
 
         self._opacity_effect = QGraphicsOpacityEffect(self)
@@ -1226,8 +1301,20 @@ class VideoPreviewOverlay(QWidget):
             # itself was already genuinely fullscreen underneath it.
             w, h = self.width(), self.height()
         else:
-            w = min(CONTENT_WIDTH, round(self.width() * 0.97))
-            h = min(CONTENT_HEIGHT, round(self.height() * 0.97))
+            # Sized around the video: as wide as CONTENT_WIDTH allows, and as
+            # tall as the video needs at that width (up to the window), so the
+            # video fills the box edge to edge instead of sitting between
+            # black bars. A tall/narrow video that hits the height limit
+            # gets a narrower box instead.
+            max_w = min(CONTENT_WIDTH, round(self.width() * 0.97))
+            max_h = round(self.height() * 0.97)
+            cw, ch = self.content.video_chrome()
+            b = self.content.frame_border()
+            ar = self.content._video_aspect
+            vw = max(1.0, min(max_w - cw - 2 * b, (max_h - ch - 2 * b) * ar))
+            vh = vw / ar
+            w = max(min(CONTENT_MIN_WIDTH, max_w), int(round(vw)) + 2 * b + cw)
+            h = min(max_h, int(round(vh)) + 2 * b + ch)
         x = (self.width() - w) // 2
         y = (self.height() - h) // 2
         self.content.setGeometry(x, y, w, h)

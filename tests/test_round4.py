@@ -234,13 +234,9 @@ w.grab().save(f"{OUT}/r4_word_keys.png")
 # ---- 8: thought cloud grows without a center oval -----------------------------------------------------------------
 body = QRectF(-100, -40, 200, 80)
 tip = QPointF(160, 160)
-path_mid = R.bubble_shape("thought", body, tip, 0.45)[0]
-far_side = QPointF(-80, -10)             # opposite the trail
-near_side = QPointF(70, 20)
-check(not path_mid.contains(far_side) and path_mid.contains(near_side),
-      "mid-grow: the cloud has formed on the trail's side only (no whole oval up front)")
+# (round 7: the cloud now grows uniformly out of its middle -- see test_round7)
 full = R.bubble_shape("thought", body, tip, 1.0)[0]
-check(full.contains(QPointF(0, 0)) and full.contains(far_side), "fully grown: the middle is solid")
+check(full.contains(QPointF(0, 0)) and full.contains(QPointF(-80, -10)), "fully grown: the middle is solid")
 
 # ---- round 5: the tail follows the bubble; thought cloud done before text; Permanent Marker ----------
 from afterglow.nle.model import Keyframe, Project
@@ -269,11 +265,8 @@ mp = Project.from_dict(old)
 mst = mp.tracks[0].segments[0].parts[0].text
 check(abs(mst.tail_x - (-0.2)) < 1e-9 and abs(mst.tail_y - 0.4) < 1e-9, "old projects: absolute tail tips become offsets")
 body = QRectF(-100, -40, 200, 80)
-done = R.bubble_shape("thought", body, QPointF(160, 160), R.THOUGHT_TEXT_IN_AT)[0]
-full = R.bubble_shape("thought", body, QPointF(160, 160), 1.0)[0]
-far = QPointF(90, -30)                 # top right, the far side from the trail
-check(done.contains(far) and abs(done.boundingRect().width() - full.boundingRect().width()) < 1.0,
-      "the thought cloud (top right included) is complete when its text starts")
+check(R.THOUGHT_TEXT_IN_AT < R.THOUGHT_CLOUD_END and R.TEXT_IN_AT <= 0.25,
+      "bubble text starts early in the grow (thought: before the cloud is done)")
 
 w.close()
 pump(0.3)

@@ -212,6 +212,11 @@ class EditorController(QObject):
         for hook in list(self.flush_hooks):
             hook()
 
+    def flush_edits(self) -> None:
+        """Close any panel's grouped edit (e.g. a burst of spin box changes)
+        so it's recorded -- before leaving the page or quitting."""
+        self._flush()
+
     def perform(self, label: str, fn):
         if self.history is None:
             return None

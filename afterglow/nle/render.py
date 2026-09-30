@@ -525,9 +525,10 @@ def text_layout(st, ch: float) -> dict:
             "rect": QRectF(-max(widths or [0]) / 2, -total_h / 2, max(widths or [0]), total_h)}
 
 
-TEXT_IN_AT = 0.55     # text transitions start when a bubble's grow-in is this far along
-THOUGHT_TEXT_IN_AT = 0.75   # thought clouds: once the cloud is complete (see bubble_shape)
-THOUGHT_CLOUD_START, THOUGHT_CLOUD_END = 0.3, THOUGHT_TEXT_IN_AT
+TEXT_IN_AT = 0.2      # speech: text transitions start this far into the grow-in (the
+                      # body only scales, so the text can ride in with it early)
+THOUGHT_TEXT_IN_AT = 0.4    # thought: text starts while the cloud is still puffing up
+THOUGHT_CLOUD_START, THOUGHT_CLOUD_END = 0.15, 0.8   # the cloud's share of the grow
 TEXT_OUT_AT = 0.4     # ...and finish when its grow-out is this far along
 
 
@@ -766,8 +767,8 @@ def bubble_shape(kind: str, body: QRectF, tip: "QPointF | None", g: float = 1.0,
 
     Speech grows out of the tail tip: the body flies from the tip to its
     place while scaling up (with a little overshoot) and the tail stretches
-    between them. Thought sprouts its trail circles from the tip outward,
-    then the cloud puffs up bump by bump starting on the trail's side.
+    between them. Thought sprouts its trail circles from the tip outward
+    while the cloud grows uniformly out of its own middle.
     shrinking=True runs the motion back into the tip with its own easing:
     running the grow-in's overshoot easing backwards kept the bubble near
     full size until the last couple of frames and then it vanished, so the
@@ -799,44 +800,35 @@ def bubble_shape(kind: str, body: QRectF, tip: "QPointF | None", g: float = 1.0,
                 dot = QPainterPath()
                 dot.addEllipse(pc, r * k, r * k)
                 path = path.united(dot)
-        # phase 2: the cloud puffs up, bump by bump, starting on the trail's
-        # side. Each bump brings its own slice of the interior with it (a
-        # wedge from the center out to the bump), so the middle fills in as
-        # the bumps arrive -- there's no separate center oval popping in
-        # ahead of them (all the wedges together ARE the middle).
-        # The whole cloud is complete by THOUGHT_CLOUD_END -- the point where
-        # the text starts -- so no side (the far one especially) is still
-        # puffing up behind the words.
-        if n_tr:
-            cg = 1.0 if g >= 1 else _window(g, THOUGHT_CLOUD_START, THOUGHT_CLOUD_END - THOUGHT_CLOUD_START)
-        else:
-            cg = 1.0 if g >= 1 else _window(g, 0.0, THOUGHT_CLOUD_END)
+        # phase 2: the cloud grows out of its middle, uniformly -- every bump
+        # moves out from the center and swells at the same pace. Each bump
+        # brings its slice of the interior with it (a wedge from the center
+        # out to the bump), so there's no separate center oval.
+        cg = 1.0 if g >= 1 else _window(g, THOUGHT_CLOUD_START, THOUGHT_CLOUD_END - THOUGHT_CLOUD_START)
         if cg > 0.001:
             c = c_full
             nb = 11
             circ = 2 * math.pi * math.sqrt((rx * rx + ry * ry) / 2)
             br = circ / nb * 0.62
             slot = 2 * math.pi / nb
-            for i in range(nb):
-                a = 2 * math.pi * i / nb
-                d = abs(math.atan2(math.sin(a - ang), math.cos(a - ang))) / math.pi if tail is not None else i / nb
-                u = _window(cg, 0.45 * d, 0.55) if cg < 1 else 1.0
-                kb = ease_back(u) if u < 1 else 1.0
-                reach = ease_cubic(u) if u < 1 else 1.0
-                if kb <= 0.01:
-                    continue
-                wedge = QPainterPath()
-                wedge.moveTo(c)
-                for j in range(7):
-                    aa = a - slot * 0.56 + slot * 1.12 * j / 6
-                    wedge.lineTo(QPointF(c.x() + rx * 0.86 * math.cos(aa) * reach, c.y() + ry * 0.8 * math.sin(aa) * reach))
-                wedge.closeSubpath()
-                path = path.united(wedge)
-                bump = QPainterPath()
-                bc = QPointF(c.x() + rx * 0.86 * math.cos(a) * reach, c.y() + ry * 0.8 * math.sin(a) * reach)
-                bump.addEllipse(bc, br * kb, br * 0.9 * kb)
-                path = path.united(bump)
-        return path, QPointF(0.0, 0.0), 1.0, (1.0 if g >= 1 else _window(cg, 0.7, 0.3))
+            kb = ease_back(cg) if cg < 1 else 1.0
+            reach = ease_cubic(cg) if cg < 1 else 1.0
+            if kb > 0.01:
+                for i in range(nb):
+                    a = 2 * math.pi * i / nb
+                    wedge = QPainterPath()
+                    wedge.moveTo(c)
+                    for j in range(7):
+                        aa = a - slot * 0.56 + slot * 1.12 * j / 6
+                        wedge.lineTo(QPointF(c.x() + rx * 0.86 * math.cos(aa) * reach,
+                                             c.y() + ry * 0.8 * math.sin(aa) * reach))
+                    wedge.closeSubpath()
+                    path = path.united(wedge)
+                    bump = QPainterPath()
+                    bc = QPointF(c.x() + rx * 0.86 * math.cos(a) * reach, c.y() + ry * 0.8 * math.sin(a) * reach)
+                    bump.addEllipse(bc, br * kb, br * 0.9 * kb)
+                    path = path.united(bump)
+        return path, QPointF(0.0, 0.0), 1.0, (1.0 if g >= 1 else _window(g, THOUGHT_TEXT_IN_AT, 0.3))
     # speech
     e_pos = ease_cubic(g)
     e_size = max(0.0, ease_back(g)) if g < 1 else 1.0
@@ -866,7 +858,7 @@ def bubble_shape(kind: str, body: QRectF, tip: "QPointF | None", g: float = 1.0,
             path = path.united(tp)
     # text rides with the body; the painter maps local (0,0) = c_full
     text_center = QPointF(cc.x() - c_full.x() * e_size, cc.y() - c_full.y() * e_size)
-    return path, text_center, e_size, (1.0 if g >= 1 else _window(g, 0.55, 0.45))
+    return path, text_center, e_size, (1.0 if g >= 1 else _window(g, TEXT_IN_AT, 0.3))
 
 
 def previous_on_track(track: Track, seg: Segment) -> "Segment | None":
@@ -1081,12 +1073,11 @@ def export(project: Project, out_path: str, progress: "Callable[[float], None] |
     def tick():
         with lock:
             done_frames[0] += 1
-            n = done_frames[0]
-        if progress is not None and jobs == 1:
-            progress(n / n_frames)
 
     def cancelled():
         return cancel is not None and cancel.is_set()
+
+    audio_done = [0.0]
 
     def encode_audio(out, aus):
         renderer = Renderer(project)
@@ -1104,6 +1095,7 @@ def export(project: Project, out_path: str, progress: "Callable[[float], None] |
                 for pkt in aus.encode(af):
                     out.mux(pkt)
                 done += n
+                audio_done[0] = done / max(total, 1)
             for pkt in aus.encode(None):
                 out.mux(pkt)
         finally:
@@ -1161,62 +1153,63 @@ def export(project: Project, out_path: str, progress: "Callable[[float], None] |
 
     parts_files: list = []
     try:
-        if jobs == 1:
-            with av.open(tmp, "w", format="mp4") as out:
-                vs = _new_video_stream(out, rate, width, height, crf, preset)
-                aus = None
-                if has_audio:
-                    aus = out.add_stream("aac", rate=RATE)
-                    aus.layout = "stereo"
-                    aus.bit_rate = 192000
-                # Audio first is fine for mp4 (the muxer interleaves by time);
-                # it's cheap next to video and keeps the video loop simple.
-                if aus is not None:
-                    encode_audio(out, aus)
-                render_range(out, vs, 0, n_frames, threaded=True)
-        else:
-            cpus = os.cpu_count() or 2
-            bounds = [round(n_frames * k / jobs) for k in range(jobs + 1)]
-            errors: list = []
-            threads = []
-            for k in range(jobs):
-                f0, f1 = bounds[k], bounds[k + 1]
-                path = f"{out_path}.part{k}.mp4"
-                parts_files.append(path)
+        # Every piece of work runs on its own thread from the start -- the
+        # video piece(s) AND the audio -- and this thread only reports
+        # progress, so the bar moves from the first frame (encoding the
+        # audio up front used to leave it at nothing for seconds).
+        cpus = os.cpu_count() or 2
+        bounds = [round(n_frames * k / jobs) for k in range(jobs + 1)]
+        errors: list = []
+        threads = []
+        for k in range(jobs):
+            f0, f1 = bounds[k], bounds[k + 1]
+            path = f"{out_path}.part{k}.mp4"
+            parts_files.append(path)
 
-                def job(path=path, f0=f0, f1=f1):
-                    try:
-                        with av.open(path, "w", format="mp4") as out:
-                            vs = _new_video_stream(out, rate, width, height, crf, preset,
-                                                   threads=max(1, cpus // jobs))
-                            render_range(out, vs, f0, f1, threaded=False)
-                    except BaseException as e:
-                        errors.append(e)
-                        if cancel is not None:
-                            cancel.set()
-                th = threading.Thread(target=job, daemon=True, name=f"export-part{k}")
-                th.start()
-                threads.append(th)
-            audio_path = f"{out_path}.audio.m4a"
-            if has_audio:
-                parts_files.append(audio_path)
-                with av.open(audio_path, "w", format="mp4") as aout:
-                    aus = aout.add_stream("aac", rate=RATE)
-                    aus.layout = "stereo"
-                    aus.bit_rate = 192000
-                    encode_audio(aout, aus)
-            while any(th.is_alive() for th in threads):
-                for th in threads:
-                    th.join(timeout=0.1)
-                if progress is not None:
-                    progress(min(1.0, done_frames[0] / n_frames) * 0.99)
-            if errors:
-                raise errors[0]
-            if cancelled():
-                raise ExportCancelled()
-            _join_parts(tmp, parts_files[:jobs], audio_path if has_audio else None, bounds, frame_tb)
+            def job(path=path, f0=f0, f1=f1):
+                try:
+                    with av.open(path, "w", format="mp4") as out:
+                        vs = _new_video_stream(out, rate, width, height, crf, preset,
+                                               threads=None if jobs == 1 else max(1, cpus // jobs))
+                        render_range(out, vs, f0, f1, threaded=jobs == 1)
+                except BaseException as e:
+                    errors.append(e)
+                    if cancel is not None:
+                        cancel.set()
+            threads.append(threading.Thread(target=job, daemon=True, name=f"export-part{k}"))
+        audio_path = f"{out_path}.audio.m4a"
+        if has_audio:
+            parts_files.append(audio_path)
+
+            def audio_job():
+                try:
+                    with av.open(audio_path, "w", format="mp4") as aout:
+                        aus = aout.add_stream("aac", rate=RATE)
+                        aus.layout = "stereo"
+                        aus.bit_rate = 192000
+                        encode_audio(aout, aus)
+                except BaseException as e:
+                    errors.append(e)
+                    if cancel is not None:
+                        cancel.set()
+            threads.append(threading.Thread(target=audio_job, daemon=True, name="export-audio"))
+        for th in threads:
+            th.start()
+        # audio is a small share of the work next to the pictures
+        a_w = 0.08 if has_audio else 0.0
+        while any(th.is_alive() for th in threads):
+            for th in threads:
+                th.join(timeout=0.05)
             if progress is not None:
-                progress(1.0)
+                v = min(1.0, done_frames[0] / n_frames)
+                progress(min(0.99, (v * (1 - a_w) + audio_done[0] * a_w)))
+        if errors:
+            raise errors[0]
+        if cancelled():
+            raise ExportCancelled()
+        _join_parts(tmp, parts_files[:jobs], audio_path if has_audio else None, bounds, frame_tb)
+        if progress is not None:
+            progress(1.0)
         os.replace(tmp, out_path)
     except BaseException:
         if os.path.exists(tmp):
@@ -1232,7 +1225,10 @@ def export(project: Project, out_path: str, progress: "Callable[[float], None] |
 
 def _join_parts(out_path: str, video_parts: list, audio_path: "str | None", bounds: list, frame_tb) -> None:
     """Concatenate separately encoded video pieces (identical settings, each
-    starting on a keyframe) and the audio into one MP4, copying packets."""
+    starting on a keyframe) and the audio into one MP4, copying packets.
+    Packets are written interleaved by time (so the muxer never has to
+    buffer a whole stream)."""
+    import heapq
     with av.open(out_path, "w", format="mp4") as out:
         first = av.open(video_parts[0])
         ovs = out.add_stream_from_template(first.streams.video[0]) if hasattr(out, "add_stream_from_template") \
@@ -1244,24 +1240,32 @@ def _join_parts(out_path: str, video_parts: list, audio_path: "str | None", boun
             ain = av.open(audio_path)
             oas = out.add_stream_from_template(ain.streams.audio[0]) if hasattr(out, "add_stream_from_template") \
                 else out.add_stream(template=ain.streams.audio[0])
-        for k, path in enumerate(video_parts):
-            offset_s = bounds[k] * frame_tb          # seconds
-            with av.open(path) as inp:
-                st = inp.streams.video[0]
-                off = int(round(offset_s / st.time_base))
-                for pkt in inp.demux(st):
-                    if pkt.dts is None and pkt.pts is None:
-                        continue
-                    if pkt.pts is not None:
-                        pkt.pts += off
-                    if pkt.dts is not None:
-                        pkt.dts += off
-                    pkt.stream = ovs
-                    out.mux(pkt)
-        if ain is not None:
-            for pkt in ain.demux(ain.streams.audio[0]):
+
+        def video_packets():
+            for k, path in enumerate(video_parts):
+                offset_s = bounds[k] * frame_tb          # seconds
+                with av.open(path) as inp:
+                    st = inp.streams.video[0]
+                    off = int(round(offset_s / st.time_base))
+                    for pkt in inp.demux(st):
+                        if pkt.dts is None and pkt.pts is None:
+                            continue
+                        if pkt.pts is not None:
+                            pkt.pts += off
+                        if pkt.dts is not None:
+                            pkt.dts += off
+                        yield float((pkt.dts if pkt.dts is not None else pkt.pts) * st.time_base), pkt, ovs
+
+        def audio_packets():
+            st = ain.streams.audio[0]
+            for pkt in ain.demux(st):
                 if pkt.dts is None:
                     continue
-                pkt.stream = oas
-                out.mux(pkt)
+                yield float(pkt.dts * st.time_base), pkt, oas
+
+        sources = [video_packets()] + ([audio_packets()] if ain is not None else [])
+        for _t, pkt, stream in heapq.merge(*sources, key=lambda x: x[0]):
+            pkt.stream = stream
+            out.mux(pkt)
+        if ain is not None:
             ain.close()

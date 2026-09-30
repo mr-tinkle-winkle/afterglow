@@ -199,7 +199,10 @@ class ProgressDialog(_Dialog):
         self.bar = QProgressBar()
         self.bar.setRange(0, 1000)
         self.bar.setTextVisible(True)
-        self.bar.setFormat("%p%")
+        # A QProgressBar starts at value -1, which draws no text at all; show
+        # what's happening until the first frames are done.
+        self.bar.setValue(0)
+        self.bar.setFormat("Preparing…")
         self.bar.setStyleSheet(
             f"QProgressBar {{ background-color: {a.afterglow_color_card_background}; color: {a.card_text_color};"
             f" border: 1px solid {a.afterglow_color_accent}; border-radius: 8px; text-align: center; height: 22px; }}"
@@ -213,7 +216,10 @@ class ProgressDialog(_Dialog):
         self.setMinimumWidth(420)
 
     def set_fraction(self, f: float) -> None:
-        self.bar.setValue(int(f * 1000))
+        v = int(f * 1000)
+        if v > 0 and self.bar.format() != "%p%":
+            self.bar.setFormat("%p%")
+        self.bar.setValue(v)
 
     def keyPressEvent(self, event) -> None:
         if event.key() == Qt.Key_Escape:
@@ -262,6 +268,15 @@ class AdvancedEditorPage(QWidget):
         self.save_btn.setMinimumWidth(90)
         self.save_btn.clicked.connect(self.save)
         header.addWidget(self.save_btn)
+        header.addSpacing(6)
+        # Filters (top right): the clip's library filters/tags, the same
+        # panel the previewer's Filters button opens.
+        self.filters_btn = CustomButton("Filters")
+        self.filters_btn.setToolTip("Change this clip's filters")
+        self.filters_btn.setMinimumWidth(90)
+        self.filters_btn.clicked.connect(self.toggle_filters_panel)
+        header.addWidget(self.filters_btn)
+        self._filters_panel = None
         outer.addLayout(header)
 
         # ---- panels
@@ -377,6 +392,7 @@ class AdvancedEditorPage(QWidget):
         pass
 
     def shutdown(self) -> None:
+        self.ctl.flush_edits()          # a still-open grouped edit would block the autosave
         self.ctl.autosave_now()
         self.preview.shutdown()
         self.visuals.shutdown()
@@ -466,8 +482,10 @@ class AdvancedEditorPage(QWidget):
 
     def hideEvent(self, event) -> None:
         super().hideEvent(event)
+        self.close_filters_panel()
         self.preview.stop()
         self.preview.release_audio()
+        self.ctl.flush_edits()
         self.ctl.autosave_now()
 
     # ================================================================ save
@@ -562,8 +580,50 @@ class AdvancedEditorPage(QWidget):
         # Lit (highlight color) while snapping is on, plain when off.
         self.snap_btn.set_fill_color(self._theme.turquoise() if self.ctl.snapping else None)
 
+    # ================================================================ filters
+    def toggle_filters_panel(self) -> None:
+        if self._filters_panel is not None:
+            self.close_filters_panel()
+            return
+        if self.ctl.mode != "library" or self.current_video_id is None:
+            return
+        from ..preview_filters_panel import PreviewFiltersPanel
+        panel = PreviewFiltersPanel(self.current_video_id, parent=self)
+        panel.close_requested.connect(self.close_filters_panel)
+        self._filters_panel = panel
+        self._position_filters_panel()
+        panel.show()
+        panel.raise_()
+
+    def _position_filters_panel(self) -> None:
+        panel = self._filters_panel
+        if panel is None:
+            return
+        panel.adjustSize()
+        anchor = self.filters_btn.mapTo(self, self.filters_btn.rect().bottomRight())
+        x = max(0, min(anchor.x() - panel.width(), self.width() - panel.width()))
+        panel.move(x, anchor.y() + 6)
+
+    def close_filters_panel(self) -> None:
+        if self._filters_panel is not None:
+            self._filters_panel.hide()
+            self._filters_panel.setParent(None)
+            self._filters_panel.deleteLater()
+            self._filters_panel = None
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._position_filters_panel()
+
     def _update_state(self) -> None:
         has = self.ctl.has_project
+        library_clip = has and self.ctl.mode == "library" and self.current_video_id is not None
+        self.filters_btn.setEnabled(library_clip)
+        self.filters_btn.setToolTip("Change this clip's filters" if library_clip
+                                    else "Filters are for Library clips (not imported files)")
+        if not library_clip or (self._filters_panel is not None
+                                and self._filters_panel._video_id != self.current_video_id):
+            self.close_filters_panel()
         h = self.ctl.history
         self.undo_btn.setEnabled(bool(h and h.can_undo()))
         self.redo_btn.setEnabled(bool(h and h.can_redo()))

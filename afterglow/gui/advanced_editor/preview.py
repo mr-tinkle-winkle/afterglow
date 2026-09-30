@@ -147,7 +147,7 @@ class AudioOut:
 
 
 class PreviewCanvas(QWidget):
-    """Letterboxed preview image + the transform overlay."""
+    """The preview image, as large as fits, + the transform overlay."""
 
     def __init__(self, panel: "PreviewPanel"):
         super().__init__(panel)
@@ -274,8 +274,10 @@ class PreviewCanvas(QWidget):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
         p.setRenderHint(QPainter.SmoothPixmapTransform)
-        p.fillRect(self.rect(), QColor(8, 8, 10))
+        # Only the video's own frame is drawn -- no dark letterbox bars around
+        # it; the panel shows through the spare space.
         if self.ctl.project is None:
+            p.fillRect(self.rect(), QColor(8, 8, 10))
             p.setPen(QColor(160, 160, 160))
             p.drawText(self.rect(), Qt.AlignCenter, "No project open")
             p.end()

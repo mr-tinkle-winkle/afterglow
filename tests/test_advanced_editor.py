@@ -384,7 +384,9 @@ def wheel(dy, mods=Qt.NoModifier, pos=None):
     pump(0.05)
 st0 = view.scroll_t
 wheel(-120)
-check(view.scroll_t > st0 and abs(ctl.playhead - 2.0) < 1e-9, f"plain wheel scrolls along the timeline ({st0:.2f} -> {view.scroll_t:.2f}s)")
+check(abs(view.scroll_t - st0) < 1e-9 and abs(ctl.playhead - 2.0) < 1e-9, "plain wheel leaves time alone (it scrolls the tracks)")
+wheel(-120, Qt.AltModifier)
+check(view.scroll_t > st0 and abs(ctl.playhead - 2.0) < 1e-9, f"Alt+wheel scrolls along the timeline ({st0:.2f} -> {view.scroll_t:.2f}s)")
 wheel(120, Qt.ShiftModifier)
 check(abs(ctl.playhead - (2.0 + 1 / p.fps)) < 1e-6, f"Shift+wheel steps the playhead one frame ({ctl.playhead:.4f})")
 wheel(-120, Qt.ShiftModifier | Qt.ControlModifier)

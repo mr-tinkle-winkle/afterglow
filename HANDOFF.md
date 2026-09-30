@@ -423,7 +423,48 @@ plain QSS rule is unavoidable.
 Seven consecutive batches of Library/Settings/appearance
 features/bug fixes, given together each time. Newest first.
 
-### This session (newest -- feedback round 4)
+### This session (newest -- feedback round 5)
+1. **Speech text starts early in the grow.** `render.TEXT_IN_AT = 0.2` (was
+   0.55): the body only scales, so type/delay/fade start 20% into grow-in;
+   the text's own alpha ramps over g in [0.2, 0.5].
+2. **Thought clouds grow uniformly out of their middle.** The bump-by-bump
+   sweep from the trail side is gone: every bump moves out from the center
+   and swells at the same pace over g in [THOUGHT_CLOUD_START=0.15,
+   THOUGHT_CLOUD_END=0.8]; the trail still sprouts tip-first. Thought text
+   starts at THOUGHT_TEXT_IN_AT=0.4 (while the cloud is still growing).
+3. **Save progress bar never blank.** Cause: a QProgressBar starts at value
+   -1 (draws no text), and export() encoded all the audio before the first
+   frame. Now ProgressDialog starts at 0 with "Preparing…" until the first
+   fraction arrives, and export() always runs the video piece(s) AND the
+   audio on their own threads from the start (audio -> `<out>.audio.m4a`),
+   the calling thread only reports progress (audio weighted 8%), then
+   `_join_parts` remuxes. `_join_parts` now merges packets by time
+   (heapq.merge) instead of writing all video then all audio.
+4. **Bubble settings reset (investigating).** Project load/migration keeps
+   colors/fonts (verified). Found and fixed one loss path: an open grouped
+   edit (Properties spin-box burst) made `autosave_now` skip, so quitting or
+   leaving the page right after such an edit dropped it. Page shutdown/hide
+   now call `ctl.flush_edits()` first. Also note: a previewer quick trim or
+   Undo Edits discards the clip's editor project (by design, see
+   nle/store.py), which resets everything made in the editor.
+5. **Filters in the editor header (top right).** `page.filters_btn` opens
+   the previewer's PreviewFiltersPanel for the open library clip (disabled
+   for imported files); closes on hide / clip change.
+6. **No side padding around the video.** Previewer: `VideoPreviewContent`
+   probes the clip's display aspect (`_video_aspect_of`), pins the bordered
+   frame to the video's shape (`_VideoFrame.set_fit`, centered by stretches
+   in the row), and `VideoPreviewOverlay._layout_content` sizes the box
+   around the video: CONTENT_WIDTH wide (min CONTENT_MIN_WIDTH=760) and as
+   tall as the video needs up to 97% of the window (CONTENT_HEIGHT is no
+   longer a cap). Fullscreen un-pins the frame. Editor: PreviewCanvas draws
+   only the video frame (no dark letterbox fill).
+7. **Timeline wheel:** plain wheel scrolls the tracks (vertical bar); Alt =
+   scroll along time; Shift = frame step; Ctrl+Shift = 1 s; Ctrl = zoom.
+Tests: tests/test_round7.py (new); round-4 thought checks updated;
+test_previewer_trim's fast-trim length now accounts for the keyframe the
+cut snaps to.
+
+### Previous session (feedback round 4)
 1. **Bubble tail follows the tracked object through grow in/out.** The tail
    tip used to be an absolute canvas position, so with Position keyframes
    the grow-out collapsed into a fixed spot while the object kept moving.
@@ -508,7 +549,7 @@ Tests: `tests/test_round4.py` (43 checks); all earlier suites pass.
    the selected layers (click a track header to select; Ctrl adds), or the
    layers holding the selected segments. Eye icon in each track header.
    Hidden lanes are dimmed and hatched.
-3. **Timeline wheel:** plain wheel scrolls along the timeline; Shift+wheel
+3. **Timeline wheel (superseded in round 5: plain = tracks, Alt = time):** plain wheel scrolls along the timeline; Shift+wheel
    steps one frame; Ctrl+Shift+wheel one second; Ctrl+wheel zooms;
    Alt+wheel or over the headers scrolls tracks. Uses whichever wheel axis
    moved (Qt/desktops swap axes under Alt/Shift).

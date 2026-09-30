@@ -19,9 +19,10 @@ Interaction summary (see HANDOFF.md for the spec each comes from):
   can that closes the gap.
 - Track header: drag the 3-line handle to reorder, click the arrow to
   collapse. Header side follows Settings > General > Editor.
-- Wheel: scroll along the timeline; Shift = step the playhead one frame
-  (Ctrl+Shift = 1 s); Ctrl = zoom around the cursor; over the headers (or
-  with Alt) = scroll tracks. Middle-drag pans the view.
+- Wheel: scroll the tracks up/down (the vertical bar); Alt = scroll along
+  the timeline; a horizontal wheel/trackpad too; Shift = step the playhead
+  one frame (Ctrl+Shift = 1 s); Ctrl = zoom around the cursor. Middle-drag
+  pans the view.
 - Track header: click selects the layer (Ctrl adds), the eye (or H)
   hides it.
 - Alt while dragging bypasses snapping; N toggles snapping.
@@ -1289,9 +1290,10 @@ class TimelineView(QWidget):
         steps = raw / 120.0
         if mods & Qt.ControlModifier and not mods & Qt.ShiftModifier:
             self.zoom_by(steps, anchor_x=pos.x())
-        elif in_header or mods & Qt.AltModifier:
-            self.set_scroll_y(self.scroll_y - steps * self.lane_h() * 0.5)
-        elif mods & Qt.ShiftModifier:
+        elif mods & Qt.AltModifier and not in_header:
+            # Alt: scroll along the timeline (down = later)
+            self.set_scroll_t(self.scroll_t - steps * self.visible_seconds() * 0.1)
+        elif mods & Qt.ShiftModifier and not in_header:
             if mods & Qt.ControlModifier:        # Ctrl+Shift: one second per notch
                 self.ctl.step_playhead(seconds=math.copysign(1.0, steps) * max(1, round(abs(steps))))
             else:                                # Shift: one frame per notch
@@ -1299,8 +1301,8 @@ class TimelineView(QWidget):
                 self.ctl.step_playhead(frames=n)
             self.ensure_playhead_visible()
         else:
-            # Plain wheel scrolls along the timeline (down = later).
-            self.set_scroll_t(self.scroll_t - steps * self.visible_seconds() * 0.1)
+            # Plain wheel scrolls the layers up/down (the vertical bar).
+            self.set_scroll_y(self.scroll_y - steps * self.lane_h() * 0.5)
         event.accept()
 
     # ================================================================ context menu
