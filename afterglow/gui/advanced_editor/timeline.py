@@ -1340,6 +1340,8 @@ class TimelineView(QWidget):
             if any(s.has_video and s.has_audio for s in segs):
                 menu.addAction("Detach Audio", ctl.detach_audio)
             menu.addSeparator()
+            add_style_actions(menu, ctl)
+            menu.addSeparator()
             tmenu = menu.addMenu("Transition In")
             tmenu.setStyleSheet(_menu_stylesheet(self._appearance))
             for label, kind in (("None", None), ("Crossfade", "crossfade"), ("Blur / Focus", "blur"),
@@ -1500,3 +1502,19 @@ class TimelinePanel(QWidget):
     def _on_v(self, value: int) -> None:
         if not self._syncing:
             self.view.set_scroll_y(float(value))
+
+
+def add_style_actions(menu, ctl) -> None:
+    """Copy / Paste Colors and Copy / Paste Properties (timeline and preview
+    right-click menus)."""
+    segs = ctl.selected_segments()
+    one = len(segs) == 1
+    a = menu.addAction("Copy Colors", lambda: ctl.copy_style("colors"))
+    a.setEnabled(one and ops.has_colors(segs[0]))
+    a.setToolTip("Text, outline, bubble and shadow colors")
+    a = menu.addAction("Paste Colors", lambda: ctl.paste_style("colors"))
+    a.setEnabled(bool(segs) and "colors" in ctl.style_clipboard)
+    a = menu.addAction("Copy Properties", lambda: ctl.copy_style("properties"))
+    a.setEnabled(one)
+    a = menu.addAction("Paste Properties", lambda: ctl.paste_style("properties"))
+    a.setEnabled(bool(segs) and "properties" in ctl.style_clipboard)

@@ -349,6 +349,29 @@ class PreviewCanvas(QWidget):
                     return s
         return None
 
+    def contextMenuEvent(self, event) -> None:
+        """Right-click an element: Copy/Paste Colors and Properties, etc."""
+        if self.ctl.project is None:
+            return
+        pos = QPointF(event.pos())
+        s = self._segment_at(pos)
+        if s is None:
+            return
+        if s.id not in self.ctl.selection:
+            self.ctl.set_selection([s.id], anchor=s.id)
+        from PySide6.QtWidgets import QMenu
+        from ..video_card import _menu_stylesheet
+        from .timeline import add_style_actions
+        from ... import config as config_module
+        menu = QMenu(self)
+        menu.setStyleSheet(_menu_stylesheet(config_module.load_readonly().appearance))
+        add_style_actions(menu, self.ctl)
+        menu.addSeparator()
+        menu.addAction("Copy\tCtrl+C", self.ctl.copy)
+        menu.addAction("Duplicate\tCtrl+D", self.ctl.duplicate)
+        menu.addAction("Delete\tDel", self.ctl.delete)
+        menu.exec(event.globalPos())
+
     def mousePressEvent(self, event) -> None:
         if self.ctl.project is None or event.button() != Qt.LeftButton:
             return
@@ -378,7 +401,10 @@ class PreviewCanvas(QWidget):
         t = seg.transform
         self._drag = {
             "seg_id": seg.id, "handle": handle, "press": pos, "center": center,
-            "base": self.ctl.project.to_dict(),
+            # just this element's animatable state: restored before every
+            # drag step (restoring the whole project each step was slow)
+            "orig": (copy.deepcopy(seg.keyframes), copy.deepcopy(seg.transform),
+                     [(pt.text.tail_x, pt.text.tail_y) if pt.text is not None else None for pt in seg.parts]),
             "x": nle_render.eval_keyframes(kf.get("x"), local, t.x),
             "y": nle_render.eval_keyframes(kf.get("y"), local, t.y),
             "scale": nle_render.eval_keyframes(kf.get("scale"), local, t.scale),
@@ -468,15 +494,22 @@ class PreviewCanvas(QWidget):
             values = {"crop_left": cl, "crop_top": ct, "crop_right": cr, "crop_bottom": cb}
 
         def fn(proj):
-            restored = Project.from_dict(copy.deepcopy(d["base"]))
-            proj.__dict__.update(restored.__dict__)
+            _t, seg_now = proj.find_segment(sid)
+            if seg_now is None:
+                return
+            kfs, trf, tails = d["orig"]
+            seg_now.keyframes = copy.deepcopy(kfs)
+            seg_now.transform = copy.deepcopy(trf)
+            for pt, tl in zip(seg_now.parts, tails):
+                if tl is not None and pt.text is not None:
+                    pt.text.tail_x, pt.text.tail_y = tl
             for prop, v in values.items():
                 if prop.startswith("crop_"):
                     from ...nle import ops
                     ops.set_transform(proj, [sid], **{prop: v})
                 else:
                     self.ctl.animated_fn([sid], prop, v)(proj)
-        self.ctl.live(fn)
+        self.ctl.live_preview(fn)
 
     def mouseReleaseEvent(self, event) -> None:
         if self._drag is not None:
@@ -655,6 +688,7 @@ class PreviewPanel(QWidget):
         self._timer.timeout.connect(self._tick)
 
         controller.changed.connect(self.request_frame)
+        controller.previewed.connect(self.request_frame)
         controller.selection_changed.connect(self.canvas.update)
         controller.playhead_changed.connect(self._on_playhead)
         controller.state_changed.connect(self._on_state)

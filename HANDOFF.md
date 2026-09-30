@@ -423,7 +423,49 @@ plain QSS rule is unavoidable.
 Seven consecutive batches of Library/Settings/appearance
 features/bug fixes, given together each time. Newest first.
 
-### This session (newest -- feedback round 8)
+### This session (newest -- feedback round 9)
+1. **Canvas drags don't reload the panels.** Dragging an element in the
+   preview (move/scale/rotate/crop/tail -- including one that creates a
+   keyframe) now goes through `ctl.live_preview()`, which emits the new
+   `previewed` signal instead of `changed`: only the preview re-renders
+   and Properties updates its X/Y/scale/rotation boxes
+   (`_refresh_keyframe_values`); the keyframe list, timeline and undo
+   history update once, on release (`ctl.end()`). Each drag step restores
+   only the dragged element's keyframes/transform/tail (was: the whole
+   project from a dict every mouse move).
+2. **Save Edits vs Export.** Header: Discard Changes | Save Edits | Export |
+   Filters. Save Edits (Ctrl+S, `ctl.save_edits()`) writes the project and
+   its `.saved.json` baseline, clears "unsaved", renders nothing. Export
+   (Ctrl+E, the old Save: `page.save()`, dialog titled "Export") renders
+   into the clip / new clip / import output, then `mark_rendered()`.
+   `Project.export_pending` + `ctl.export_pending` track edits not yet
+   exported (set on any history change; older projects: pending if they
+   had unsaved changes); the header shows "● Unsaved changes" (orange) or
+   "● Saved, not exported" (blue). Autosave still runs (crash safety) but
+   leaves the project marked unsaved; Discard goes back to the last Save
+   Edits / Export.
+3. **Clean Up** (timeline toolbar, `ops.clean_up`, undoable): pictures
+   settle down toward the middle, audio-only up toward it, greedy "gravity"
+   that never changes times or layering (a unit lands one level past the
+   highest thing it overlaps); transition-joined back-to-back chains move
+   as one; hidden tracks are kept as-is above the pictures; empty tracks go
+   (normalize_tracks keeps the top/bottom drop tracks and MIN_TRACKS).
+4. **Copy / Paste Colors and Properties.** `ops.copy_colors` (text, outline,
+   bubble fill/outline + their transparencies, shadow color),
+   `ops.copy_properties` (all TextStyle fields except text/word keys;
+   fades, volume, zoom, shadow, scale/rotation/crop, transition -- not
+   position or timing), `ops.paste_style` applies only what fits (no crop
+   or volume onto text, style kept valid for the bubble kind). UI: a
+   Copy/Paste Colors + Copy/Paste Properties grid at the top of Properties,
+   and in the timeline and preview right-click menus
+   (`timeline.add_style_actions`). Clipboard: `ctl.style_clipboard`.
+5. **Properties panel no longer wider than its column** (it was clipping
+   ~80 px on the right): combo boxes size to 8 characters
+   (AdjustToMinimumContentsLengthWithIcon), spin boxes min 74 px, shorter
+   labels ("Fill transparency", "Typing cursor ( | )", "Per-word timing").
+Tests: tests/test_round10.py (new); test_round9 gained the drag check.
+
+### Previous session (feedback round 8)
 1. **Smoother harsh motion.** Spiky speech, Angry thought and the Intercom
    tail used to step (a new random shape 14-16x/s, held in between). Now
    `_jitter(t, rate, *key)` picks new random targets (FLICKER_HZ=20 for

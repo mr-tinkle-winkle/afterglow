@@ -15,7 +15,7 @@ from __future__ import annotations
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont
 from PySide6.QtWidgets import (
-    QColorDialog, QComboBox, QFormLayout, QHBoxLayout, QLabel, QPlainTextEdit,
+    QColorDialog, QComboBox, QFormLayout, QGridLayout, QHBoxLayout, QLabel, QPlainTextEdit,
     QScrollArea, QVBoxLayout, QWidget,
 )
 
@@ -52,7 +52,7 @@ def _spin(lo, hi, step, decimals=2, suffix=""):
     s.setDecimals(decimals)
     s.setSuffix(suffix)
     s.setKeyboardTracking(False)
-    s.setMinimumWidth(84)
+    s.setMinimumWidth(74)
     return s
 
 
@@ -97,6 +97,7 @@ class PropertiesPanel(QWidget):
         self._body = None
         controller.selection_changed.connect(self._rebuild)
         controller.changed.connect(self._refresh)
+        controller.previewed.connect(self._refresh_keyframe_values)   # a canvas drag: just the numbers
         controller.playhead_changed.connect(lambda _t: self._refresh_keyframe_values())
         self._rebuild()
 
@@ -133,7 +134,7 @@ class PropertiesPanel(QWidget):
         body = QWidget()
         body.setAttribute(Qt.WA_TranslucentBackground, True)
         lay = QVBoxLayout(body)
-        lay.setContentsMargins(0, 0, 6, 0)
+        lay.setContentsMargins(0, 0, 2, 0)
         lay.setSpacing(8)
         if not segs:
             self.title.setText("Properties")
@@ -156,6 +157,31 @@ class PropertiesPanel(QWidget):
         any_audio = any(s.has_audio for s in segs)
         any_video = any(s.has_video for s in segs)
         text_part = next((p for p in first.parts if p.kind == KIND_TEXT and p.text), None) if single else None
+
+        # ---- copy / paste colors and properties
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(6)
+        grid.setVerticalSpacing(6)
+        cc = CustomButton("Copy Colors")
+        cc.setToolTip("Copy this element's text, outline, bubble and shadow colors")
+        cc.setEnabled(single and ops.has_colors(first))
+        cc.clicked.connect(lambda: self._copy_style("colors"))
+        pc = CustomButton("Paste Colors")
+        pc.setEnabled("colors" in self.ctl.style_clipboard)
+        pc.clicked.connect(lambda: self.ctl.paste_style("colors"))
+        cp = CustomButton("Copy Properties")
+        cp.setToolTip("Copy how this element looks and behaves (font, style, effects, fades, shadow, "
+                      "scale/rotation...) -- not its text, position or timing")
+        cp.setEnabled(single)
+        cp.clicked.connect(lambda: self._copy_style("properties"))
+        pp = CustomButton("Paste Properties")
+        pp.setEnabled("properties" in self.ctl.style_clipboard)
+        pp.clicked.connect(lambda: self.ctl.paste_style("properties"))
+        for i, b_ in enumerate((cc, pc, cp, pp)):
+            b_.setMinimumHeight(26)
+            grid.addWidget(b_, i // 2, i % 2)
+        lay.addLayout(grid)
+        self._fields.update(paste_colors_btn=pc, paste_props_btn=pp)
 
         # ---- clip
         g, form = self._group(lay, "Clip")
@@ -334,7 +360,7 @@ class PropertiesPanel(QWidget):
             tout = _spin(0, 600, 0.1, 2, " s")
             tout.setToolTip("Delete the text over this long at the end (0 = off)")
             tout.valueChanged.connect(lambda v: self._edit("Type out", lambda p: self._set_text(p, type_out=v)))
-            cur = CustomCheckBox("Show typing cursor ( | )")
+            cur = CustomCheckBox("Typing cursor ( | )")
             cur.clicked.connect(lambda: self._once("Typing cursor", lambda p: self._set_text(p, type_cursor=cur.isChecked())))
             din = _spin(0, 600, 0.1, 2, " s")
             din.setToolTip("Delay: fade the words in one by one (letters left to right) over this long (0 = off)")
@@ -347,7 +373,7 @@ class PropertiesPanel(QWidget):
             form2.addRow(self._lbl(""), cur)
             form2.addRow(self._lbl("Delay in"), din)
             form2.addRow(self._lbl("Delay out"), dout)
-            keyed = CustomCheckBox("Per-word timing (keyframes)")
+            keyed = CustomCheckBox("Per-word timing")
             keyed.setToolTip("Time each word yourself: move the playhead to when a word is said and click it below")
             keyed.clicked.connect(lambda: self._set_word_keyed(keyed.isChecked()))
             form2.addRow(self._lbl(""), keyed)
@@ -412,7 +438,7 @@ class PropertiesPanel(QWidget):
             gout = _spin(0, 30, 0.05, 2, " s")
             gout.setToolTip("Grow out: the bubble shrinks back into its tail tip at the end (0 = off)")
             gout.valueChanged.connect(lambda v: self._edit("Grow out", lambda p: self._set_text(p, grow_out=v)))
-            form3.addRow(self._lbl("Background transparency"), bft)
+            form3.addRow(self._lbl("Fill transparency"), bft)
             form3.addRow(self._lbl("Outline transparency"), bot)
             form3.addRow(self._lbl("Grow in"), gin)
             form3.addRow(self._lbl("Grow out"), gout)
@@ -490,6 +516,9 @@ class PropertiesPanel(QWidget):
     def _combo(self, items):
         c = QComboBox()
         c.setStyleSheet(self._combo_qss)
+        # don't let the longest item widen the whole panel past its edge
+        c.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        c.setMinimumContentsLength(8)
         for label, data in items:
             c.addItem(label, data)
         return c
@@ -753,6 +782,8 @@ class PropertiesPanel(QWidget):
         c = QComboBox()
         c.setStyleSheet(self._combo_qss)
         c.setEditable(False)
+        c.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        c.setMinimumContentsLength(8)
         c.setMaxVisibleItems(26)
 
         def add(label, family):
@@ -875,6 +906,12 @@ class PropertiesPanel(QWidget):
                 st.delay_word_times = keys
                 st.delay_keyed = True
         self._once("Clear word key" if clear else "Key word", fn)
+
+    def _copy_style(self, what: str) -> None:
+        if self.ctl.copy_style(what):
+            key = "paste_colors_btn" if what == "colors" else "paste_props_btn"
+            if key in self._fields:
+                self._fields[key].setEnabled(True)
 
     def _set_variant(self, variant: str) -> None:
         if self._refreshing or not self._ids:

@@ -670,3 +670,159 @@ PLAYHEAD_SNAP_FRACTION = 0.4   # playhead snaps with less strength than segments
 def snap_playhead(project: Project, t: float, threshold: float) -> float:
     """The playhead snaps to segment edges, weakly."""
     return snap_time(t, project.edge_times(), threshold * PLAYHEAD_SNAP_FRACTION)[0]
+
+
+# =========================================================================
+# clean up
+# =========================================================================
+
+def clean_up(project: Project) -> None:
+    """"Clean Up": pull everything as close to the middle of the timeline as
+    it can go and drop the tracks that end up empty. Pictures (video, text,
+    images) settle downward onto the video side, sounds (audio-only) settle
+    upward onto the audio side -- like gravity toward the middle -- without
+    changing any times or what's drawn on top of what: an element that was
+    above another it overlaps in time stays above it. Back-to-back elements
+    joined by a transition move together (a transition needs them on one
+    track). Hidden tracks are left as they are (merging them would show
+    them), just above the pictures."""
+    tracks = list(project.tracks)
+    hidden = [t for t in tracks if t.hidden and t.segments]
+    live = [t for t in tracks if not t.hidden]
+
+    def units_of(track_list, key):
+        """Chains of transition-joined segments per track, in track order."""
+        out = []
+        for ti, t in enumerate(track_list):
+            segs = sorted([s for s in t.segments if key(s)], key=lambda s: s.start)
+            chain = []
+            for s in segs:
+                if chain and s.transition_in is not None and abs(chain[-1].end - s.start) < 1e-4:
+                    chain.append(s)
+                else:
+                    if chain:
+                        out.append((ti, chain))
+                    chain = [s]
+            if chain:
+                out.append((ti, chain))
+        return out
+
+    def settle(units):
+        """Greedy gravity: units in the order given (nearest the middle
+        first) each drop to the level just past anything they overlap."""
+        levels: list[list[Segment]] = []
+        for _ti, chain in units:
+            lo = min(s.start for s in chain)
+            hi = max(s.end for s in chain)
+            need = 0
+            for li, lv in enumerate(levels):
+                if any(o.start < hi - EPS and o.end > lo + EPS for o in lv):
+                    need = li + 1
+            while len(levels) <= need:
+                levels.append([])
+            levels[need].extend(chain)
+        return levels
+
+    def is_picture(s):
+        return s.has_video
+
+    # pictures: the bottom-most (nearest the middle) track first
+    pic_units = units_of(list(reversed(live)), is_picture)
+    pic_levels = settle(pic_units)
+    # sounds: the top-most (nearest the middle) track first
+    snd_units = units_of(live, lambda s: not is_picture(s))
+    snd_levels = settle(snd_units)
+
+    def track_for(segs, template: "Track | None" = None):
+        t = empty_track()
+        t.segments = sorted(segs, key=lambda s: s.start)
+        return t
+
+    new = [empty_track()]
+    new += hidden
+    new += [track_for(lv) for lv in reversed(pic_levels)]    # level 0 (nearest the middle) at the bottom
+    new += [track_for(lv) for lv in snd_levels]               # level 0 (nearest the middle) on top
+    new.append(empty_track())
+    project.tracks = new
+    normalize_tracks(project)
+
+
+# =========================================================================
+# copy / paste colors and properties
+# =========================================================================
+
+TEXT_COLOR_FIELDS = ("color", "outline_color", "bubble_fill", "bubble_outline",
+                     "bubble_fill_transparency", "bubble_outline_transparency")
+SEG_COLOR_FIELDS = ("shadow_color",)
+# Properties = everything about how an element looks and behaves, except
+# what it says, where it is and when it is (text, position, timing, keys).
+TEXT_PROP_EXCLUDE = {"text", "delay_word_times", "delay_keyed"}
+SEG_PROP_FIELDS = ("fade_in", "fade_out", "volume", "zoom_amount", "zoom_in", "zoom_out",
+                   "shadow", "shadow_color", "shadow_opacity", "shadow_distance", "shadow_angle", "shadow_blur")
+TRANSFORM_PROP_FIELDS = ("scale", "rotation", "crop_left", "crop_top", "crop_right", "crop_bottom")
+
+
+def _text_style(seg: Segment):
+    return next((p.text for p in seg.parts if p.text is not None), None)
+
+
+def has_colors(seg: Segment) -> bool:
+    """Text (its colors) or a drop shadow (its color)."""
+    return _text_style(seg) is not None or seg.shadow
+
+
+def copy_colors(seg: Segment) -> dict:
+    st = _text_style(seg)
+    out = {"kind": "colors", "seg": {k: getattr(seg, k) for k in SEG_COLOR_FIELDS} if seg.shadow else {}}
+    out["text"] = {k: getattr(st, k) for k in TEXT_COLOR_FIELDS} if st is not None else {}
+    return out
+
+
+def copy_properties(seg: Segment) -> dict:
+    from dataclasses import fields as _fields
+    st = _text_style(seg)
+    return {
+        "kind": "properties",
+        "is_text": st is not None,
+        "has_audio": seg.has_audio,
+        "seg": {k: getattr(seg, k) for k in SEG_PROP_FIELDS},
+        "transform": {k: getattr(seg.transform, k) for k in TRANSFORM_PROP_FIELDS},
+        "transition": copy.deepcopy(seg.transition_in),
+        "text": ({f.name: copy.deepcopy(getattr(st, f.name)) for f in _fields(st)
+                  if f.name not in TEXT_PROP_EXCLUDE} if st is not None else {}),
+    }
+
+
+def paste_style(project: Project, ids: list[str], payload: dict) -> int:
+    """Apply copied colors / properties to the given segments -- only the
+    parts that make sense for each (text styling onto text, crop onto
+    pictures, volume onto things with sound). Returns how many changed."""
+    n = 0
+    for seg in _editable(project, ids):
+        st = _text_style(seg)
+        changed = False
+        for k, v in payload.get("seg", {}).items():
+            if k == "volume" and not seg.has_audio:
+                continue
+            if payload.get("kind") == "properties" and k.startswith("zoom") and st is not None:
+                continue
+            setattr(seg, k, copy.deepcopy(v))
+            changed = True
+        if st is not None:
+            for k, v in payload.get("text", {}).items():
+                setattr(st, k, copy.deepcopy(v))
+                changed = True
+            if payload.get("kind") == "properties" and payload.get("text"):
+                from .render import valid_variant
+                st.bubble_variant = valid_variant(st.bubble, st.bubble_variant)
+        if payload.get("kind") == "properties":
+            for k, v in payload.get("transform", {}).items():
+                if k.startswith("crop_") and (st is not None or payload.get("is_text")):
+                    continue                  # crop means nothing to text
+                setattr(seg.transform, k, v)
+                changed = True
+            if (st is None) == (not payload.get("is_text")):
+                seg.transition_in = copy.deepcopy(payload.get("transition"))
+                changed = True
+        n += bool(changed)
+    return n

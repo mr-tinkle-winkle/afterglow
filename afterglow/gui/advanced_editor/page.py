@@ -119,7 +119,7 @@ class SaveDialog(_Dialog):
     QUALITIES = [("High (larger file)", 18), ("Medium", 23), ("Small file", 28)]
 
     def __init__(self, project: Project, target_text: str, parent=None, library_clip: bool = False):
-        super().__init__("Save Edit", parent)
+        super().__init__("Export", parent)
         self.replace_radio = self.separate_radio = None
         if library_clip:
             from ..custom_radio_button import CustomRadioButton
@@ -167,7 +167,7 @@ class SaveDialog(_Dialog):
         row.addStretch(1)
         cancel = CustomButton("Cancel")
         cancel.clicked.connect(self.reject)
-        ok = CustomButton("Save")
+        ok = CustomButton("Export")
         ok.clicked.connect(self.accept)
         for b_ in (cancel, ok):
             b_.setMinimumWidth(90)
@@ -264,13 +264,20 @@ class AdvancedEditorPage(QWidget):
         header.addWidget(self.unsaved_label)
         header.addSpacing(12)
         self.discard_btn = CustomButton("Discard Changes")
-        self.discard_btn.setToolTip("Throw away every change since the last Save")
+        self.discard_btn.setToolTip("Throw away every change since the last Save Edits / Export")
         self.discard_btn.setMinimumWidth(130)
         self.discard_btn.clicked.connect(self.discard_changes)
         header.addWidget(self.discard_btn)
         header.addSpacing(6)
-        self.save_btn = CustomButton("Save")
-        self.save_btn.setToolTip("Render the edit (Ctrl+S)")
+        self.save_edits_btn = CustomButton("Save Edits")
+        self.save_edits_btn.setToolTip("Save the project as it is (Ctrl+S) -- the video itself isn't changed "
+                                       "until you Export")
+        self.save_edits_btn.setMinimumWidth(100)
+        self.save_edits_btn.clicked.connect(self.save_edits)
+        header.addWidget(self.save_edits_btn)
+        header.addSpacing(6)
+        self.save_btn = CustomButton("Export")
+        self.save_btn.setToolTip("Render the edit into the video (Ctrl+E)")
         self.save_btn.setMinimumWidth(90)
         self.save_btn.clicked.connect(self.save)
         header.addWidget(self.save_btn)
@@ -327,6 +334,14 @@ class AdvancedEditorPage(QWidget):
         self.snap_btn = tool("magnet", "Snapping (N) -- hold Alt while dragging to bypass", self._toggle_snap, True)
         self.snap_btn.setChecked(True)
         self._style_snap()
+        tools.addSpacing(10)
+        self.cleanup_btn = CustomButton("Clean Up")
+        self.cleanup_btn.setToolTip("Pull everything as close to the middle tracks as it goes and remove "
+                                    "empty tracks (times and layering stay the same)")
+        self.cleanup_btn.setMinimumHeight(30)
+        self.cleanup_btn.setMinimumWidth(90)
+        self.cleanup_btn.clicked.connect(self.clean_up)
+        tools.addWidget(self.cleanup_btn)
         tools.addStretch(1)
         self.status_label = QLabel("")
         self.status_label.setStyleSheet(f"QLabel {{ color: {text_c}; }}")
@@ -523,13 +538,21 @@ class AdvancedEditorPage(QWidget):
         self.timeline.view.request_fit()
         self._flash("Changes discarded")
 
-    # ================================================================ save
+    # ================================================================ save edits
+    def save_edits(self) -> None:
+        if not self.ctl.has_project:
+            return
+        if self.ctl.save_edits():
+            self._flash("Edits saved -- Export puts them into the video")
+
+    # ================================================================ export
     def save(self) -> None:
+        """Export: render the edit into the video."""
         if not self.ctl.has_project:
             return
         p = self.ctl.project
         if p.duration <= 0:
-            show_message(self, "Nothing to Save", "The timeline is empty.")
+            show_message(self, "Nothing to Export", "The timeline is empty.")
             return
         self.preview.stop()
         if self.ctl.mode == "library":
@@ -545,7 +568,7 @@ class AdvancedEditorPage(QWidget):
         work = Project.from_dict(copy.deepcopy(p.to_dict()))
         cancel = threading.Event()
         bridge = _Bridge()
-        prog = ProgressDialog("Saving…", self)
+        prog = ProgressDialog("Exporting…", self)
         prog.cancel_btn.clicked.connect(cancel.set)
         bridge.progress.connect(prog.set_fraction)
         result = {}
@@ -580,9 +603,9 @@ class AdvancedEditorPage(QWidget):
         th.join(timeout=30)
         if "err" in result:
             if result["err"] != "cancelled":
-                show_message(self, "Save Failed", result["err"])
+                show_message(self, "Export Failed", result["err"])
             else:
-                self._flash("Save cancelled")
+                self._flash("Export cancelled")
             return
         # The saved copy's sources may have been re-pointed at stable
         # backups (library clips). Carry that over to the live project and
@@ -598,13 +621,22 @@ class AdvancedEditorPage(QWidget):
         if mode == "library" and self._video_path:
             self._video_mtime = self._file_mtime(self._video_path)
         if mode == "library" and separately:
-            self._flash(f"Saved as a new clip: {getattr(result.get('ok'), 'title', '')}")
+            self._flash(f"Exported as a new clip: {getattr(result.get('ok'), 'title', '')}")
         elif mode == "library":
-            self._flash("Saved -- the clip now has your edit (Undo Edits restores the original)")
+            self._flash("Exported -- the clip now has your edit (Undo Edits restores the original)")
         else:
-            self._flash(f"Saved {os.path.basename(str(result.get('ok')))}")
+            self._flash(f"Exported {os.path.basename(str(result.get('ok')))}")
 
     # ================================================================ misc
+    def clean_up(self) -> None:
+        if not self.ctl.has_project:
+            return
+        from ...nle import ops
+        before = len(self.ctl.project.tracks)
+        self.ctl.perform("Clean up", ops.clean_up)
+        after = len(self.ctl.project.tracks)
+        self._flash(f"Cleaned up -- {before} tracks → {after}" if after != before else "Cleaned up")
+
     def _toggle_snap(self) -> None:
         self.ctl.snapping = not self.ctl.snapping
         self.snap_btn.setChecked(self.ctl.snapping)
@@ -666,7 +698,15 @@ class AdvancedEditorPage(QWidget):
         self.redo_btn.setToolTip(f"Redo {h.redo_label()} (Ctrl+Shift+Z)" if h and h.can_redo() else "Redo")
         self.save_btn.setEnabled(has)
         self.discard_btn.setEnabled(has and self.ctl.unsaved)
-        self.unsaved_label.setText("● Unsaved changes" if self.ctl.unsaved else "")
+        self.save_edits_btn.setEnabled(has and self.ctl.unsaved)
+        if self.ctl.unsaved:
+            self.unsaved_label.setStyleSheet("QLabel { color: #ffb347; font-weight: bold; }")
+            self.unsaved_label.setText("● Unsaved changes")
+        elif has and self.ctl.export_pending:
+            self.unsaved_label.setStyleSheet("QLabel { color: #8fc7ff; font-weight: bold; }")
+            self.unsaved_label.setText("● Saved, not exported")
+        else:
+            self.unsaved_label.setText("")
         if not has:
             self.name_edit.setText("")
             self.name_edit.setEnabled(False)
@@ -724,7 +764,8 @@ class AdvancedEditorPage(QWidget):
         sc(["Shift+.", ">", "Shift+Right"], need(lambda: ctl.step_playhead(seconds=1)))
         sc("Home", need(lambda: ctl.set_playhead(0.0)))
         sc("End", need(lambda: ctl.set_playhead(ctl.project.duration)))
-        sc("Ctrl+S", need(self.save))
+        sc("Ctrl+S", need(self.save_edits))
+        sc("Ctrl+E", need(self.save))
         sc("Ctrl+0", need(view.zoom_to_fit))
         sc(["Ctrl+=", "Ctrl++"], need(lambda: view.zoom_by(1)))
         sc("Ctrl+-", need(lambda: view.zoom_by(-1)))

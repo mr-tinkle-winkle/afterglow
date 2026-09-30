@@ -179,7 +179,7 @@ sp2 = w._preview_overlay if False else None
 # ---- 9: Discard Changes ----------------------------------------------------------------------------------------
 check(page.discard_btn.isVisible() and page.discard_btn.isEnabled(), "Discard Changes is there (unsaved edits)")
 dx = page.discard_btn.mapTo(page, QPoint(0, 0)).x()
-sx = page.save_btn.mapTo(page, QPoint(0, 0)).x()
+sx = page.save_edits_btn.mapTo(page, QPoint(0, 0)).x()
 check(0 < sx - dx < 200, "...next to Save")
 page.discard_changes(confirm=False)
 pump(0.5)
@@ -204,6 +204,44 @@ reloaded = store.load_project(store.project_path_for_video(v.id))
 check(reloaded is not None and sorted(s.name for s in reloaded.all_segments() if s.parts[0].kind == KIND_TEXT) == ["Title"],
       "...on disk too (reopening shows the saved state)")
 w.grab().save(f"{OUT}/r9_editor.png")
+
+# ---- round 11: dragging a keyframed element doesn't reload the side panel until release ----------------------------
+from PySide6.QtTest import QTest
+seg = ctl.add_text("Plain text", t=0.0)
+pump(0.3)
+props._fields["kf_prop"].setCurrentIndex(props._fields["kf_prop"].findData("position"))
+pump(0.1)
+ctl.set_playhead(0.5)
+props._add_keyframe()
+pump(0.2)
+ctl.set_playhead(1.5)                     # no key here yet: dragging makes one
+pump(0.4)
+canvas = page.preview.canvas
+geo = canvas.seg_geometry(ctl.project.find_segment(seg.id)[1])
+tr, box, _k = geo
+c = tr.map(box.center()).toPoint()
+counts = {"changed": 0, "rebuilds": 0, "steps": len(ctl.history._undo)}
+ctl.changed.connect(lambda: counts.__setitem__("changed", counts["changed"] + 1))
+orig_rebuild = props._refresh_keyframes
+sigs = []
+QTest.mouseMove(canvas, c)
+QTest.mousePress(canvas, Qt.LeftButton, Qt.NoModifier, c)
+pump(0.05)
+for k in range(1, 9):
+    QTest.mouseMove(canvas, QPoint(c.x() + 8 * k, c.y() + 4 * k))
+    pump(0.03)
+    sigs.append(getattr(props, "_kf_sig", None))
+during = counts["changed"]
+xbox = props._fields["x"].value()
+QTest.mouseRelease(canvas, Qt.LeftButton, Qt.NoModifier, QPoint(c.x() + 64, c.y() + 32))
+pump(0.3)
+s_now = ctl.project.find_segment(seg.id)[1]
+xs = s_now.keyframes.get("x", [])
+check(during == 0 and len(set(sigs)) == 1, f"while dragging: no panel reloads ({during} change signals, "
+                                           f"{len(set(sigs))} keyframe-list states)")
+check(xbox > 1.0, f"...the X box still follows the drag ({xbox:.1f} %)")
+check(len(xs) == 2 and counts["changed"] >= 1 and len(ctl.history._undo) == counts["steps"] + 1,
+      f"on release: the new keyframe lands, as one undo step ({len(xs)} x-keys)")
 
 w.close()
 pump(0.3)

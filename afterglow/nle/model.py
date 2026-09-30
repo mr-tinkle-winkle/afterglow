@@ -286,6 +286,8 @@ class Project:
     # True while the project holds edits that haven't been rendered to the
     # output file yet (autosave keeps them; the editor shows a marker).
     unsaved_changes: bool = False
+    # Edits (saved or not) that haven't been exported to the video yet.
+    export_pending: bool = False
     schema_version: int = SCHEMA_VERSION
 
     # ---- queries ---------------------------------------------------------

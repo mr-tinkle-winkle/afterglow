@@ -68,6 +68,10 @@ def probe_cached(path: str) -> dict:
 
 class EditorController(QObject):
     changed = Signal()             # project content changed
+    # A drag in progress changed what the preview shows (live_preview):
+    # only the picture and the value boxes follow it; the panels rebuild and
+    # the change is recorded on release (end()).
+    previewed = Signal()
     selection_changed = Signal()
     playhead_changed = Signal(float)
     state_changed = Signal()       # undo/redo availability, dirty marker, project loaded
@@ -82,11 +86,13 @@ class EditorController(QObject):
         self.anchor: "str | None" = None
         self.playhead = 0.0
         self.clipboard: dict = {}
+        self.style_clipboard: dict = {}     # "colors" / "properties" -> ops.copy_colors/copy_properties payload
         self.snapping = True
         # "library" (library_video_id set) | "import" (import_source set)
         self.mode: "str | None" = None
         self.import_source: "str | None" = None
         self._loaded_unsaved = False
+        self._export_pending = False
         self._autosave = QTimer(self)
         self._autosave.setSingleShot(True)
         self._autosave.setInterval(AUTOSAVE_DELAY_MS)
@@ -104,6 +110,8 @@ class EditorController(QObject):
         self.import_source = import_source
         self.history = History(project, on_change=self._on_history_change)
         self._loaded_unsaved = bool(project.unsaved_changes)
+        # older projects didn't track this: anything unsaved wasn't exported either
+        self._export_pending = bool(project.export_pending or project.unsaved_changes)
         self.selection = []
         self.selected_tracks = []
         self.anchor = None
@@ -148,15 +156,43 @@ class EditorController(QObject):
         if not self.unsaved:
             return
         self.project.unsaved_changes = True
+        self.project.export_pending = self._export_pending
         try:
             store.save_project(self.project, path)
         except OSError:
             pass
 
+    @property
+    def export_pending(self) -> bool:
+        return self.project is not None and self._export_pending
+
+    def save_edits(self) -> bool:
+        """"Save Edits": keep the project as it is now -- reopening the clip
+        (or Discard Changes) comes back to this -- without rendering it into
+        the video (that's Export)."""
+        path = self.project_file()
+        if path is None or self.history is None:
+            return False
+        self._flush()
+        if self.history.in_gesture:
+            return False
+        self._autosave.stop()
+        self.project.unsaved_changes = False
+        self.project.export_pending = self._export_pending
+        store.save_project(self.project, path)
+        store.save_project(self.project, store.saved_state_path(path))   # for Discard Changes
+        self.history.mark_saved()
+        self._loaded_unsaved = False
+        self.state_changed.emit()
+        return True
+
     def mark_rendered(self) -> None:
-        """After a successful Save (render)."""
+        """After a successful Export (render): the edits are in the video,
+        and saved."""
+        self._export_pending = False
         self._loaded_unsaved = False
         self.project.unsaved_changes = False
+        self.project.export_pending = False
         self.history.mark_saved()
         path = self.project_file()
         if path is not None:
@@ -165,8 +201,8 @@ class EditorController(QObject):
         self.state_changed.emit()
 
     def discard_changes(self, fresh_project) -> bool:
-        """Throw away every edit since the last Save: back to the project as
-        it was saved, or -- if it was never saved from here -- to
+        """Throw away every edit since the last Save Edits / Export: back to
+        the project as it was saved, or -- if it was never saved -- to
         `fresh_project()` (the clip as it is). Returns True if something
         was reloaded."""
         if self.project is None:
@@ -234,6 +270,7 @@ class EditorController(QObject):
         self.changed.emit()
 
     def _on_history_change(self) -> None:
+        self._export_pending = True
         # Selection may point at segments an undo removed.
         before = list(self.selection)
         self.selection = [i for i in self.selection if self.project.find_segment(i)[1] is not None]
@@ -294,6 +331,18 @@ class EditorController(QObject):
         except ops.OpError as e:
             self.error.emit(str(e))
         self.changed.emit()
+
+    def live_preview(self, fn) -> None:
+        """Like live(), but only the preview (and the Properties value boxes)
+        follow along -- for canvas drags, whose keyframe/transform change is
+        applied for real when the drag ends."""
+        if self.project is None:
+            return
+        try:
+            fn(self.project)
+        except ops.OpError as e:
+            self.error.emit(str(e))
+        self.previewed.emit()
 
     def undo(self) -> None:
         self._flush()
@@ -413,6 +462,30 @@ class EditorController(QObject):
             return
         label = {"locked": "Lock", "muted": "Mute", "visible": "Visibility"}[attr]
         self.perform(label, lambda p: ops.toggle(p, list(self.selection), attr))
+
+    # ---- Copy / Paste Colors and Properties ------------------------------
+    def copy_style(self, what: str) -> bool:
+        """what = "colors" | "properties": remember the (single) selected
+        element's colors / look-and-behavior settings."""
+        segs = self.selected_segments()
+        if len(segs) != 1:
+            return False
+        s = segs[0]
+        if what == "colors":
+            if not ops.has_colors(s):
+                return False
+            self.style_clipboard["colors"] = ops.copy_colors(s)
+        else:
+            self.style_clipboard["properties"] = ops.copy_properties(s)
+        return True
+
+    def paste_style(self, what: str) -> int:
+        payload = self.style_clipboard.get(what)
+        ids = list(self.selection)
+        if not payload or not ids:
+            return 0
+        return self.perform("Paste colors" if what == "colors" else "Paste properties",
+                            lambda p: ops.paste_style(p, ids, payload)) or 0
 
     def copy(self) -> None:
         if self.selection:
