@@ -373,10 +373,17 @@ class PropertiesPanel(QWidget):
             pic_size.valueChanged.connect(lambda v: self._edit("Picture size", lambda p: self._set_text(
                 p, image_size=v / 100)))
             form.addRow(self._lbl("Picture size"), pic_size)
+            pic_speed = _spin(0.1, 5, 0.1, 2, "x")
+            pic_speed.setToolTip("How fast an animated picture (GIF) plays -- it loops for as long as the text lasts")
+            pic_speed.valueChanged.connect(lambda v: self._edit("Picture speed", lambda p: self._set_text(
+                p, image_speed=v)))
+            form.addRow(self._lbl("GIF speed"), pic_speed)
             has_pic = bool(text_part.text.image_path)
             for w_ in (pic_del, pic_place, pic_size):
                 w_.setEnabled(has_pic)
-            self._fields.update(image_place=pic_place, image_size=pic_size)
+            from ...nle.render import image_is_animated
+            pic_speed.setEnabled(has_pic and image_is_animated(text_part.text.image_path))
+            self._fields.update(image_place=pic_place, image_size=pic_size, image_speed=pic_speed)
 
             g2, form2 = self._group(lay, "Text Transitions")
             tin = _spin(0, 600, 0.1, 2, " s")
@@ -641,6 +648,7 @@ class PropertiesPanel(QWidget):
             self._set("grow_out", st.grow_out)
             self._set("image_place", st.image_place)
             self._set("image_size", st.image_size * 100)
+            self._set("image_speed", st.image_speed)
             from ...nle.render import valid_variant
             var = valid_variant(st.bubble, st.bubble_variant)
             self._set("bubble_variant", var)

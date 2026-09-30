@@ -396,7 +396,8 @@ class Renderer:
                 painter.save()
                 painter.setOpacity(painter.opacity() * a)
                 painter.setRenderHint(QPainter.SmoothPixmapTransform)
-                painter.drawImage(lay["image_rect"], lay["image"])
+                pic = bubble_image_at(st.image_path, max(0.0, local) * max(0.0, st.image_speed)) or lay["image"]
+                painter.drawImage(lay["image_rect"], pic)
                 painter.restore()
         if not st.text:
             return
@@ -590,11 +591,38 @@ def text_layout(st, ch: float) -> dict:
 
 _image_cache: dict = {}
 _image_lock = threading.Lock()      # export renders on several threads
+GIF_MAX_SIDE = 640                  # animated pictures are kept at most this big (memory)
 
 
-def bubble_image(path: str) -> "QImage | None":
-    """The picture for a text element (cached; reloaded if the file changes).
-    GIFs show their first frame."""
+def _load_picture(path: str):
+    """[(QImage, seconds shown)] for a picture file: one entry for a still,
+    every frame for an animated GIF (downscaled to GIF_MAX_SIDE), or None."""
+    from PySide6.QtGui import QImageReader
+    r = QImageReader(path)
+    if not r.canRead():
+        return None
+    if r.supportsAnimation() and r.imageCount() != 1:
+        frames = []
+        while True:
+            img = r.read()
+            if img.isNull():
+                break
+            delay = r.nextImageDelay()
+            if img.width() > GIF_MAX_SIDE or img.height() > GIF_MAX_SIDE:
+                img = img.scaled(GIF_MAX_SIDE, GIF_MAX_SIDE, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            # browsers treat tiny/zero delays as 0.1 s; so do we
+            frames.append((img.convertToFormat(QImage.Format_ARGB32_Premultiplied),
+                           (delay if delay >= 20 else 100) / 1000.0))
+            if len(frames) >= 1000:
+                break
+        if frames:
+            return frames
+        r = QImageReader(path)
+    img = r.read()
+    return None if img.isNull() else [(img, 0.0)]
+
+
+def _picture_frames(path: str):
     if not path:
         return None
     try:
@@ -602,15 +630,46 @@ def bubble_image(path: str) -> "QImage | None":
     except OSError:
         return None
     with _image_lock:
-        img = _image_cache.get(key)
-        if img is None:
-            img = QImage(path)
-            if img.isNull():
+        frames = _image_cache.get(key)
+        if frames is None:
+            frames = _load_picture(path)
+            if frames is None:
                 return None
-            if len(_image_cache) > 64:
+            if len(_image_cache) > 32:
                 _image_cache.clear()
-            _image_cache[key] = img
-        return img
+            _image_cache[key] = frames
+        return frames
+
+
+def bubble_image(path: str) -> "QImage | None":
+    """The picture for a text element (its first frame for a GIF) -- cached,
+    reloaded if the file changes."""
+    frames = _picture_frames(path)
+    return frames[0][0] if frames else None
+
+
+def image_is_animated(path: str) -> bool:
+    frames = _picture_frames(path)
+    return bool(frames) and len(frames) > 1
+
+
+def bubble_image_at(path: str, t: float) -> "QImage | None":
+    """The picture as shown `t` seconds in: an animated GIF plays with its
+    own frame timing and loops for as long as needed."""
+    frames = _picture_frames(path)
+    if not frames:
+        return None
+    if len(frames) == 1:
+        return frames[0][0]
+    total = sum(d for _i, d in frames)
+    if total <= 0:
+        return frames[0][0]
+    x = t % total
+    for img, d in frames:
+        if x < d:
+            return img
+        x -= d
+    return frames[-1][0]
 
 
 TEXT_IN_AT = 0.2      # speech: text transitions start this far into the grow-in (the

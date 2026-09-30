@@ -125,6 +125,7 @@ class TextStyle:
     image_path: str = ""
     image_place: str = "above"
     image_size: float = 0.18
+    image_speed: float = 1.0        # playback speed of an animated picture (GIF); it loops
     # "Grow" in/out (seconds, 0 = off): a bubble grows out of its tail tip
     # into place (a thought bubble sprouts its circles first, then puffs up
     # like a cloud), and shrinks back into the tip at the end.

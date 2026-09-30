@@ -423,7 +423,19 @@ plain QSS rule is unavoidable.
 Seven consecutive batches of Library/Settings/appearance
 features/bug fixes, given together each time. Newest first.
 
-### This session (newest -- feedback round 11)
+### This session (newest -- feedback round 12)
+1. **Animated GIFs in text / bubbles.** `render._load_picture` reads every
+   frame with QImageReader (its own per-frame delay; <20 ms counts as
+   100 ms like browsers; frames downscaled to GIF_MAX_SIDE=640; max 1000
+   frames), cached per (path, mtime) in `_picture_frames` behind a lock.
+   `bubble_image_at(path, t)` picks the frame for t (looping forever);
+   `_draw_content` uses t = element-local time * `TextStyle.image_speed`
+   (new, default 1.0). Layout still sizes from the first frame
+   (`bubble_image`). `image_is_animated(path)`. Properties > Text: "GIF
+   speed" (0.1-5x, enabled only for an animated picture).
+Tests: tests/test_round13.py (new).
+
+### Previous session (feedback round 11)
 1. **Pictures in text / bubbles (any kind).** TextStyle.image_path ("" =
    none), image_place ("above" | "below" | "left" | "right" of the words),
    image_size (height as a share of the canvas height, default 0.18).
@@ -435,7 +447,7 @@ features/bug fixes, given together each time. Newest first.
    type/delay text effect the picture fades in (0.25 s) as the words start,
    otherwise it follows the bubble's text fade. Picture-only elements (no
    words) work. `bubble_image()` caches loaded images by (path, mtime)
-   behind a lock (export threads); GIFs show their first frame; a missing
+   behind a lock (export threads); GIFs animate (round 12); a missing
    file is ignored. Properties > Text: Picture (Add Picture… / Change… /
    Remove), Place, Picture size. The picture is part of Copy Properties and
    of global presets.
