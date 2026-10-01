@@ -22,7 +22,12 @@ CREATE TABLE IF NOT EXISTS clip_configs (
     length_seconds  INTEGER NOT NULL,
     sound_path      TEXT,                  -- NULL/empty = use default sound
     hotkey          TEXT,                  -- serialized combo, e.g. "ctrl+shift+f9"
-    sort_order      INTEGER NOT NULL DEFAULT 0
+    sort_order      INTEGER NOT NULL DEFAULT 0,
+    overlay_enabled         INTEGER NOT NULL DEFAULT 0,      -- capture Puppetry's input overlay with this clip type
+    overlay_pieces          TEXT NOT NULL DEFAULT '["keyboard","mouse"]',   -- JSON list of pieces to render
+    overlay_visible_default INTEGER NOT NULL DEFAULT 1,      -- overlay starts shown in previewer/editor
+    overlay_offset_ms       REAL NOT NULL DEFAULT 0,         -- timing calibration (+ later, - earlier)
+    overlay_placements      TEXT NOT NULL DEFAULT '{}'       -- JSON {piece: {x,y,w,rotation,visible}} per-piece overrides
 );
 
 CREATE TABLE IF NOT EXISTS videos (
@@ -97,6 +102,15 @@ def _migrate_columns(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE tags ADD COLUMN icon_path TEXT")
     if not _has_column(conn, "tags", "category_id"):
         conn.execute("ALTER TABLE tags ADD COLUMN category_id INTEGER REFERENCES filter_categories(id) ON DELETE SET NULL")
+    for col, ddl in (
+        ("overlay_enabled", "INTEGER NOT NULL DEFAULT 0"),
+        ("overlay_pieces", "TEXT NOT NULL DEFAULT '[\"keyboard\",\"mouse\"]'"),
+        ("overlay_visible_default", "INTEGER NOT NULL DEFAULT 1"),
+        ("overlay_offset_ms", "REAL NOT NULL DEFAULT 0"),
+        ("overlay_placements", "TEXT NOT NULL DEFAULT '{}'"),
+    ):
+        if not _has_column(conn, "clip_configs", col):
+            conn.execute(f"ALTER TABLE clip_configs ADD COLUMN {col} {ddl}")
     if not _has_column(conn, "tags", "outline_color"):
         conn.execute("ALTER TABLE tags ADD COLUMN outline_color TEXT")
 

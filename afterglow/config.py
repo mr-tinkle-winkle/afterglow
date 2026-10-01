@@ -303,6 +303,13 @@ class AppSettings:
     # to default_error_sound_path when a keyframe has no specific one.
     error_sounds: dict[str, str] = field(default_factory=dict)
     default_error_sound_path: str = ""
+    # Input overlay (Puppetry): global default placement per overlay piece,
+    # {piece: {"x", "y", "w", "rotation", "visible"}} (fractions of the
+    # video; rotation in degrees). Pieces not listed use the built-in
+    # defaults in input_overlay.DEFAULT_PLACEMENT. A clip type can override
+    # single pieces (clip_configs.overlay_placements). Edited on
+    # Settings > Input Overlay.
+    overlay_placements: dict[str, dict[str, float]] = field(default_factory=dict)
     obs: OBSSettings = field(default_factory=OBSSettings)
     youtube: YouTubeSettings = field(default_factory=YouTubeSettings)
     filter_display: FilterDisplaySettings = field(default_factory=FilterDisplaySettings)

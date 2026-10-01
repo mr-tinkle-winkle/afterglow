@@ -61,6 +61,34 @@ POLL_INTERVAL_SEC = 0.3
 _REPLAY_BUFFER_LOCK_PATH = CONFIG_DIR / "replay_buffer.lock"
 
 
+def _once(fn):
+    """Wrap fn so it runs at most once -- the event path can time out and
+    fall back to polling, which sends a SECOND save request; the overlay
+    job is started by the first only."""
+    if fn is None:
+        return None
+    done = []
+
+    def wrapper(*a, **k):
+        if not done:
+            done.append(True)
+            return fn(*a, **k)
+    return wrapper
+
+
+def _call_on_sent(on_sent) -> None:
+    """Invoke the caller's on_sent(t_save) callback -- the instant the
+    SaveReplayBuffer request has gone out. Never lets a callback failure
+    break the capture (a missing input overlay must never cost a clip)."""
+    if on_sent is None:
+        return
+    t_save = time.time()
+    try:
+        on_sent(t_save)
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"on_sent callback failed (capture continues): {e}")
+
+
 class OBSError(RuntimeError):
     pass
 
@@ -163,6 +191,18 @@ class OBSClient:
         except Exception:
             return None
 
+    def get_fps(self) -> float | None:
+        """OBS's output frame rate (for rendering the input overlay at the
+        recording's own fps), or None if it can't be read."""
+        try:
+            r = self._require_client().get_video_settings()
+            num = float(getattr(r, "fps_numerator", 0) or 0)
+            den = float(getattr(r, "fps_denominator", 0) or 0)
+            return num / den if num > 0 and den > 0 else None
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"Could not query OBS's video settings: {e}")
+            return None
+
     def get_output_directory(self) -> Path | None:
         """
         OBS's configured recording output directory -- the replay buffer
@@ -184,7 +224,7 @@ class OBSClient:
             logger.warning(f"Could not query OBS's output directory: {e}")
             return None
 
-    def save_replay_buffer(self) -> Path:
+    def save_replay_buffer(self, on_sent=None) -> Path:
         """
         Trigger OBS to flush its replay buffer to disk, and return the path
         of the file it wrote. Waits on OBS's own ReplayBufferSaved event to
@@ -203,19 +243,20 @@ class OBSClient:
         save, this blocks here until that one is confirmed complete, then
         requests its own fresh save afterward rather than racing it.
         """
+        on_sent = _once(on_sent)
         CONFIG_DIR.mkdir(parents=True, exist_ok=True)
         with open(_REPLAY_BUFFER_LOCK_PATH, "w") as lock_file:
             fcntl.flock(lock_file, fcntl.LOCK_EX)
             try:
-                return self._save_replay_buffer_locked()
+                return self._save_replay_buffer_locked(on_sent)
             finally:
                 fcntl.flock(lock_file, fcntl.LOCK_UN)
 
-    def _save_replay_buffer_locked(self) -> Path:
+    def _save_replay_buffer_locked(self, on_sent=None) -> Path:
         self.ensure_replay_buffer_active()
 
         if self._event_client is not None:
-            path = self._save_replay_buffer_via_event()
+            path = self._save_replay_buffer_via_event(on_sent)
             if path is not None:
                 time.sleep(self._settings.wait_after_replay_buffer_finishes_sec)
                 return path
@@ -224,11 +265,11 @@ class OBSClient:
                 f"falling back to directory polling."
             )
 
-        path = self._save_replay_buffer_via_polling()
+        path = self._save_replay_buffer_via_polling(on_sent)
         time.sleep(self._settings.wait_after_replay_buffer_finishes_sec)
         return path
 
-    def _save_replay_buffer_via_event(self) -> Path | None:
+    def _save_replay_buffer_via_event(self, on_sent=None) -> Path | None:
         """
         Returns the saved file's path as soon as OBS's ReplayBufferSaved
         event reports it, or None on timeout/failure (caller falls back
@@ -250,6 +291,7 @@ class OBSClient:
         self._event_client.callback.register(on_replay_buffer_saved)
         try:
             c.save_replay_buffer()
+            _call_on_sent(on_sent)
             logger.info("Requested replay buffer save from OBS -- waiting for ReplayBufferSaved event...")
             if not got_event.wait(timeout=EVENT_MAX_WAIT_SEC):
                 return None
@@ -270,7 +312,7 @@ class OBSClient:
         logger.info(f"Replay file ready (via event): {path}")
         return path
 
-    def _save_replay_buffer_via_polling(self) -> Path:
+    def _save_replay_buffer_via_polling(self, on_sent=None) -> Path:
         """
         Fallback used when the ReplayBufferSaved event isn't available:
         snapshot OBS's output directory before requesting the save, then
@@ -299,6 +341,7 @@ class OBSClient:
 
         try:
             c.save_replay_buffer()
+            _call_on_sent(on_sent)
             logger.info(f"Requested replay buffer save from OBS. Watching {output_dir} for new files...")
         except Exception as e:
             raise OBSError(f"OBS rejected the save-replay-buffer request. ({e})") from e

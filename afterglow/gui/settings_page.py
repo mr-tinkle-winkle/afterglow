@@ -31,6 +31,7 @@ from ..clips import ClipError
 from .clip_config_row import ClipConfigRow
 from .filters_settings_page import FiltersSettingsPage
 from .stats_settings_page import StatsPage
+from .overlay_options import InputOverlaySettingsPage
 from .custom_button import CustomButton
 from .custom_checkbox import CustomCheckBox
 from .custom_line_edit import CustomLineEdit
@@ -130,6 +131,9 @@ class SettingsPage(QWidget):
 
         self.stats_page = StatsPage()
         _add_settings_tab("Stats", self.stats_page)
+
+        self.input_overlay_page = InputOverlaySettingsPage(self._settings)
+        _add_settings_tab("Input Overlay", self.input_overlay_page)
 
         advanced_page = QWidget()
         advanced_layout = QVBoxLayout(advanced_page)
@@ -831,12 +835,15 @@ class SettingsPage(QWidget):
 
     def _load_clip_configs(self) -> None:
         for cfg in clips.list_clip_configs():
-            self._add_row(cfg.id, cfg.name, cfg.length_seconds, cfg.sound_path, cfg.hotkey)
+            self._add_row(cfg.id, cfg.name, cfg.length_seconds, cfg.sound_path, cfg.hotkey, overlay={
+                "overlay_enabled": cfg.overlay_enabled, "overlay_pieces": cfg.overlay_pieces,
+                "overlay_visible_default": cfg.overlay_visible_default, "overlay_offset_ms": cfg.overlay_offset_ms,
+                "overlay_placements": cfg.overlay_placements})
 
     def _add_row(self, clip_config_id: int | None = None, name: str = "New Clip",
                  length_seconds: int = 30, sound_path: str | None = None,
-                 hotkey: str | None = None) -> None:
-        row = ClipConfigRow(clip_config_id, name, length_seconds, sound_path, hotkey)
+                 hotkey: str | None = None, overlay: dict | None = None) -> None:
+        row = ClipConfigRow(clip_config_id, name, length_seconds, sound_path, hotkey, overlay=overlay)
         row.delete_requested.connect(lambda: self._remove_row(row))
         # insert before the trailing stretch
         self.rows_layout.insertWidget(self.rows_layout.count() - 1, row)
@@ -941,6 +948,7 @@ class SettingsPage(QWidget):
         a.card_text_outline_color = self.card_text_outline_color_edit.text().strip()
         a.card_text_outline_width = self.card_text_outline_width_spin.value()
 
+        self.input_overlay_page.save_into(self._settings)
         config_module.save(self._settings)
         self.filters_settings_page.save()
 

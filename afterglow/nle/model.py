@@ -35,7 +35,7 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass, field, fields, asdict
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 EPS = 1e-6
 
 # Part kinds. "av" = a media file's video and/or audio (has_video /
@@ -145,6 +145,30 @@ class TextStyle:
 
 
 @dataclass
+class OverlayPiece:
+    """One input-overlay piece (keyboard, mouse, controller...) ATTACHED to a
+    video part -- like a clip's audio, it follows the part: it shares the
+    part's source timeline (the piece file is cut to the untrimmed clip), so
+    trims, splits, speed changes, deletes and exports all carry it for free.
+    While attached its layout is fixed per clip (no keyframes -- Detach Input
+    Overlay turns it into a normal element that can be animated).
+
+    x / y / w are the piece's top-left corner and width as FRACTIONS of the
+    part's displayed picture (the segment's transform carries it); rotation
+    is in degrees, about the piece's centre. width / height = the piece
+    file's pixel size (for its aspect ratio)."""
+    name: str = ""
+    source: str = ""
+    x: float = 0.0
+    y: float = 0.0
+    w: float = 0.3
+    rotation: float = 0.0
+    visible: bool = True
+    width: int = 0
+    height: int = 0
+
+
+@dataclass
 class Part:
     kind: str = KIND_AV
     source: str = ""               # file path (empty for text)
@@ -163,6 +187,8 @@ class Part:
     # inclusive merge never changes how anything looks or sounds.
     gain: float = 1.0
     visible: bool = True
+    # Input overlay pieces attached to this (video) part -- see OverlayPiece.
+    overlays: list[OverlayPiece] = field(default_factory=list)
 
     @property
     def duration(self) -> float:
@@ -227,6 +253,12 @@ class Segment:
     shadow_distance: float = 0.012     # fraction of canvas height
     shadow_angle: float = 135.0        # degrees; 135 = down-right (0 = right, 90 = down)
     shadow_blur: float = 0.35          # 0 = hard edge .. 1 = very soft
+    # Detached input-overlay element ("Detach Input Overlay"): the piece's
+    # name ("keyboard", ...), "" for an ordinary segment. Marks the segment
+    # as OVERLAY for the renderer, the export and the UI: it is previewed
+    # (unless the Editor's overlay toggle is off) but NEVER burned into the
+    # exported video -- it goes into the output's `.input/` sidecar instead.
+    overlay_piece: str = ""
 
     @property
     def duration(self) -> float:
@@ -299,12 +331,21 @@ class Project:
     unsaved_changes: bool = False
     # Edits (saved or not) that haven't been exported to the video yet.
     export_pending: bool = False
+    # Input overlay: whether the output's overlay sidecar starts shown (the
+    # source clip's manifest "visible_by_default").
+    overlay_visible_by_default: bool = True
     schema_version: int = SCHEMA_VERSION
 
     # ---- queries ---------------------------------------------------------
     @property
     def duration(self) -> float:
         return max((s.end for t in self.tracks for s in t.segments), default=0.0)
+
+    @property
+    def video_duration(self) -> float:
+        """Length of the exported VIDEO: like a hidden element, an input
+        overlay element (Segment.overlay_piece) never lengthens it."""
+        return max((s.end for t in self.tracks for s in t.segments if not s.overlay_piece), default=0.0)
 
     def all_segments(self):
         for t in self.tracks:
@@ -343,6 +384,7 @@ class Project:
         if version > SCHEMA_VERSION:
             raise ValueError(f"Project was saved by a newer version (schema {version} > {SCHEMA_VERSION}).")
         # (migrations for older schema versions go here)
+        # schema 2 -> 3: Part.overlays / Segment.overlay_piece were added (defaults: none) -- no migration needed.
         if version < 2:
             d = _migrate_tail_to_offset(d)
         tracks = []
@@ -352,7 +394,8 @@ class Project:
                 parts = []
                 for pd in sd.get("parts", []):
                     text = _build(TextStyle, pd.get("text")) if pd.get("text") else None
-                    parts.append(_build(Part, {**pd, "text": text}))
+                    overlays = [_build(OverlayPiece, od) for od in (pd.get("overlays") or [])]
+                    parts.append(_build(Part, {**pd, "text": text, "overlays": overlays}))
                 kfs = {k: [_build(Keyframe, kd) for kd in v] for k, v in (sd.get("keyframes") or {}).items()}
                 trans = _build(Transition, sd["transition_in"]) if sd.get("transition_in") else None
                 segs.append(_build(Segment, {

@@ -20,6 +20,7 @@ from PySide6.QtGui import QColor, QFont, QFontMetricsF, QPainter, QPen, QPolygon
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QPlainTextEdit, QSizePolicy, QVBoxLayout, QWidget
 
 from ... import config as config_module
+from ...nle import ops
 from ...nle import render as nle_render
 from ...nle.model import EPS, KIND_IMAGE, KIND_TEXT, Project, Segment
 from ..custom_button import CustomButton
@@ -269,6 +270,114 @@ class PreviewCanvas(QWidget):
                 out["tail"] = tip
         return out
 
+    # ---- input overlay pieces (attached to the selected clip) ---------------
+    def _overlay_part(self, seg: Segment):
+        local = self.ctl.playhead - seg.start
+        return next((pt for pt in seg.parts if pt.has_video and pt.visible and pt.overlays and pt.active_at(local)), None)
+
+    @staticmethod
+    def _piece_px(o) -> "tuple[int, int]":
+        if o.width and o.height:
+            return o.width, o.height
+        try:
+            info = probe_cached(o.source)
+            return max(info.get("width") or 1, 1), max(info.get("height") or 1, 1)
+        except Exception:
+            return 1, 1
+
+    def piece_geometry(self, seg: Segment, o):
+        """(transform piece box -> widget, piece box, kind) of the attached
+        piece `o` -- mirrors Renderer._draw_overlays -- plus the video box size."""
+        geo = self.seg_geometry(seg)
+        if geo is None:
+            return None
+        tr, vbox, kind = geo
+        bw, bh = vbox.width(), vbox.height()
+        pw, ph = self._piece_px(o)
+        Wd = o.w * bw
+        Hd = Wd * ph / max(1, pw)
+        t = QTransform()
+        t.translate((o.x - 0.5) * bw + Wd / 2, (o.y - 0.5) * bh + Hd / 2)
+        t.rotate(o.rotation)
+        return t * tr, QRectF(-Wd / 2, -Hd / 2, Wd, Hd), kind
+
+    def _visible_pieces(self, seg: Segment) -> list:
+        part = self._overlay_part(seg)
+        return [o for o in part.overlays if o.visible] if part is not None and self.panel.overlay_shown() else []
+
+    def _piece_target(self, pos: QPointF):
+        """(segment, piece name, handle) under `pos`, or None. The picked
+        piece's handles first, then any piece's body (topmost last-drawn first)."""
+        seg = self.target_segment()
+        if seg is None or self.crop_mode:
+            return None
+        pieces = self._visible_pieces(seg)
+        pick = self.ctl.overlay_pick
+        for o in pieces:
+            if o.name != pick:
+                continue
+            geo = self.piece_geometry(seg, o)
+            if geo is None:
+                continue
+            for name, pt in self._handles(geo).items():
+                if abs(pt.x() - pos.x()) <= HANDLE_R + 3 and abs(pt.y() - pos.y()) <= HANDLE_R + 3:
+                    return seg, o.name, name
+        for o in reversed(pieces):
+            geo = self.piece_geometry(seg, o)
+            if geo is None:
+                continue
+            inv, ok = geo[0].inverted()
+            if ok and geo[1].contains(inv.map(pos)):
+                return seg, o.name, "move"
+        return None
+
+    def _start_piece_drag(self, seg: Segment, name: str, handle: str, pos: QPointF) -> None:
+        if seg.locked:
+            return
+        o = next((o for pt in seg.parts for o in pt.overlays if o.name == name), None)
+        part = self._overlay_part(seg)
+        vgeo = self.seg_geometry(seg)
+        geo = self.piece_geometry(seg, o) if o is not None else None
+        if o is None or part is None or vgeo is None or geo is None:
+            return
+        self.ctl.pick_overlay(name)
+        pw, ph = self._piece_px(o)
+        self._drag = {
+            "piece": True, "seg_id": seg.id, "name": name, "handle": handle, "press": pos,
+            "center": geo[0].map(geo[1].center()), "orig": (o.x, o.y, o.w, o.rotation),
+            "vinv": vgeo[0].inverted()[0], "bw": vgeo[1].width(), "bh": vgeo[1].height(), "pw": pw, "ph": ph,
+        }
+        self.ctl.begin("Input overlay")
+
+    def _drag_piece(self, d, pos: QPointF, event) -> None:
+        x0, y0, w0, r0 = d["orig"]
+        bw, bh, pw, ph = d["bw"], d["bh"], d["pw"], d["ph"]
+        h = d["handle"]
+        if h == "move":
+            lp0, lp1 = d["vinv"].map(d["press"]), d["vinv"].map(pos)
+            values = {"x": x0 + (lp1.x() - lp0.x()) / bw, "y": y0 + (lp1.y() - lp0.y()) / bh}
+        elif h == "rot":
+            c = d["center"]
+            a0 = math.degrees(math.atan2(d["press"].y() - c.y(), d["press"].x() - c.x()))
+            a1 = math.degrees(math.atan2(pos.y() - c.y(), pos.x() - c.x()))
+            r = (r0 + (a1 - a0) + 180) % 360 - 180
+            if event.modifiers() & Qt.ShiftModifier:
+                r = round(r / 15) * 15
+            elif abs(r) < 2:
+                r = 0.0
+            values = {"rotation": r}
+        else:                                   # a corner: resize about the piece's centre
+            c = d["center"]
+            d0 = math.hypot(d["press"].x() - c.x(), d["press"].y() - c.y()) or 1.0
+            d1 = math.hypot(pos.x() - c.x(), pos.y() - c.y())
+            w1 = max(0.01, w0 * d1 / d0)
+            Wd0, Wd1 = w0 * bw, w1 * bw
+            cx = (x0 - 0.5) * bw + Wd0 / 2
+            cy = (y0 - 0.5) * bh + Wd0 * ph / max(1, pw) / 2
+            values = {"w": w1, "x": (cx - Wd1 / 2) / bw + 0.5, "y": (cy - Wd1 * ph / max(1, pw) / 2) / bh + 0.5}
+        sid, name = d["seg_id"], d["name"]
+        self.ctl.live_preview(lambda proj: ops.set_overlay(proj, [sid], name, **values))
+
     # ---- paint -------------------------------------------------------------
     def paintEvent(self, event) -> None:
         p = QPainter(self)
@@ -296,7 +405,7 @@ class PreviewCanvas(QWidget):
                 p.setPen(QPen(QColor(255, 255, 255, 220), 1.5, Qt.DashLine if self.crop_mode else Qt.SolidLine))
                 p.setBrush(Qt.NoBrush)
                 p.drawPolygon(poly)
-                hs = self._handles(geo, seg)
+                hs = {} if self._visible_pieces(seg) and self.ctl.overlay_pick else self._handles(geo, seg)
                 if "tail" in hs:
                     p.setPen(QPen(QColor(255, 180, 60, 200), 1.2, Qt.DashLine))
                     p.drawLine(tr.map(box.center()), hs["tail"])
@@ -315,7 +424,32 @@ class PreviewCanvas(QWidget):
                         p.drawEllipse(pt, HANDLE_R, HANDLE_R)
                     else:
                         p.drawRect(QRectF(pt.x() - HANDLE_R, pt.y() - HANDLE_R, 2 * HANDLE_R, 2 * HANDLE_R))
+            self._paint_pieces(p, seg)
         p.end()
+
+    def _paint_pieces(self, p: QPainter, seg: Segment) -> None:
+        cyan = QColor("#4dd0e1")
+        for o in self._visible_pieces(seg):
+            geo = self.piece_geometry(seg, o)
+            if geo is None:
+                continue
+            tr, box, _k = geo
+            picked = o.name == self.ctl.overlay_pick
+            p.setPen(QPen(cyan, 1.6 if picked else 1.0, Qt.SolidLine if picked else Qt.DashLine))
+            p.setBrush(Qt.NoBrush)
+            p.drawPolygon(tr.map(QPolygonF(box)))
+            if not picked:
+                continue
+            hs = self._handles(geo)
+            top_mid = tr.map(QPointF(box.center().x(), box.top()))
+            p.drawLine(top_mid, hs["rot"])
+            for name, pt in hs.items():
+                p.setPen(QPen(QColor(0, 0, 0, 200), 1))
+                p.setBrush(QColor("#ffd43b") if name == self._hover_handle else cyan)
+                if name == "rot":
+                    p.drawEllipse(pt, HANDLE_R, HANDLE_R)
+                else:
+                    p.drawRect(QRectF(pt.x() - HANDLE_R, pt.y() - HANDLE_R, 2 * HANDLE_R, 2 * HANDLE_R))
 
     # ---- mouse -------------------------------------------------------------
     def _hit_handle(self, pos: QPointF):
@@ -376,7 +510,13 @@ class PreviewCanvas(QWidget):
         if self.ctl.project is None or event.button() != Qt.LeftButton:
             return
         pos = event.position()
+        hit = self._piece_target(pos)
+        if hit is not None:
+            self._start_piece_drag(*hit, pos)
+            return
         seg, handle = self._hit_handle(pos)
+        if self.ctl.overlay_pick is not None:
+            self.ctl.pick_overlay(None)
         if handle is None or handle == "move":
             # A plain click selects the TOPMOST element under the cursor --
             # even when another (e.g. the full-frame video underneath) is
@@ -428,8 +568,12 @@ class PreviewCanvas(QWidget):
     def mouseMoveEvent(self, event) -> None:
         pos = event.position()
         d = self._drag
+        if d is not None and d.get("piece"):
+            self._drag_piece(d, pos, event)
+            return
         if d is None:
-            _seg, h = self._hit_handle(pos)
+            hit = self._piece_target(pos)
+            _seg, h = (hit[0], hit[2]) if hit is not None else self._hit_handle(pos)
             if h != self._hover_handle:
                 self._hover_handle = h
                 self.update()
@@ -674,6 +818,14 @@ class PreviewPanel(QWidget):
         self.crop_btn.setToolTip("Crop handles on the selected picture (instead of move/scale/rotate)")
         self.crop_btn.toggled.connect(self._set_crop_mode)
         row.addWidget(self.crop_btn)
+        self.overlay_btn = CustomButton("Overlay")
+        self.overlay_btn.setCheckable(True)
+        self.overlay_btn.setChecked(True)
+        self.overlay_btn.setToolTip("Show / hide all input-overlay elements in the preview "
+                                    "(they are never burned into the export)")
+        self.overlay_btn.toggled.connect(self._set_overlay_shown)
+        self.overlay_btn.hide()
+        row.addWidget(self.overlay_btn)
         layout.addLayout(row)
 
         # While paused, keep the open audio stream fed with silence, and
@@ -690,6 +842,8 @@ class PreviewPanel(QWidget):
         controller.changed.connect(self.request_frame)
         controller.previewed.connect(self.request_frame)
         controller.selection_changed.connect(self.canvas.update)
+        controller.overlay_pick_changed.connect(self.canvas.update)
+        controller.changed.connect(self._update_overlay_button)
         controller.playhead_changed.connect(self._on_playhead)
         controller.state_changed.connect(self._on_state)
 
@@ -702,8 +856,31 @@ class PreviewPanel(QWidget):
             self.renderer = None
         if p is not None and self.renderer is None:
             self.renderer = nle_render.Renderer(p)
+            self.overlay_btn.blockSignals(True)
+            self.overlay_btn.setChecked(bool(p.overlay_visible_by_default))
+            self.overlay_btn.blockSignals(False)
+            self.renderer.overlays = self.overlay_btn.isChecked()
             self.request_frame()
+        self._update_overlay_button()
         self._update_time()
+
+    def overlay_shown(self) -> bool:
+        return self.renderer is None or self.renderer.overlays
+
+    def _has_overlay(self) -> bool:
+        p = self.ctl.project
+        return p is not None and any(s.overlay_piece or ops.has_overlay(s) for s in p.all_segments())
+
+    def _update_overlay_button(self) -> None:
+        self.overlay_btn.setVisible(self._has_overlay())
+
+    def _set_overlay_shown(self, on: bool) -> None:
+        if self.renderer is not None:
+            self.renderer.overlays = on
+        if self.ctl.project is not None:
+            self.ctl.project.overlay_visible_by_default = on
+        self.request_frame()
+        self.canvas.update()
 
     def _set_crop_mode(self, on: bool) -> None:
         self.canvas.crop_mode = on

@@ -1,0 +1,45 @@
+{
+  "format": "puppetry-overlay-sidecar",
+  "version": 1,
+  "clip": "clip.mp4",
+  "clip_end": 1790748500.0,
+  "offset_ms": 0,
+  "visible_by_default": true,
+  "inputs": "inputs.jsonl",
+  "pieces": {
+    "keyboard": {
+      "file": "keyboard.mov",
+      "width": 1076,
+      "height": 320,
+      "placement": {
+        "x": 0.02,
+        "y": 0.76,
+        "w": 0.34,
+        "visible": true
+      }
+    },
+    "mouse": {
+      "file": "mouse.mov",
+      "width": 192,
+      "height": 320,
+      "placement": {
+        "x": 0.88,
+        "y": 0.66,
+        "w": 0.1,
+        "visible": true
+      }
+    },
+    "controller": {
+      "file": "controller.mov",
+      "width": 496,
+      "height": 320,
+      "placement": {
+        "x": 0.39,
+        "y": 0.74,
+        "w": 0.22,
+        "visible": false
+      }
+    }
+  },
+  "errors": {}
+}

@@ -23,11 +23,12 @@ pipeline that fires when a hotkey is pressed:
 """
 from __future__ import annotations
 
+import json
 import shutil
 import sqlite3
 import subprocess
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
@@ -35,6 +36,7 @@ from . import db
 from . import config as config_module
 from . import autofilter
 from . import keyframes
+from . import overlay_support
 from .editor import TrimRequest, commit_trim, probe_duration, EditorError
 from .obs_client import OBSClient, OBSError
 from .library import add_video, add_tag_to_video, get_video, Video
@@ -75,19 +77,45 @@ class ClipConfig:
     sound_path: str | None
     hotkey: str | None
     sort_order: int
+    # Input overlay (Puppetry) -- see input_overlay.py / HANDOFF.md.
+    overlay_enabled: bool = False
+    overlay_pieces: list = field(default_factory=lambda: ["keyboard", "mouse"])
+    overlay_visible_default: bool = True
+    overlay_offset_ms: float = 0.0
+    # Per-piece placement overrides for this clip type ({} = use global).
+    overlay_placements: dict = field(default_factory=dict)
+
+
+def _json_or(text, default):
+    try:
+        v = json.loads(text) if text else default
+    except (TypeError, ValueError):
+        return default
+    return v if isinstance(v, type(default)) else default
 
 
 def _row_to_clip_config(row) -> ClipConfig:
+    keys = row.keys()
+    extra = {}
+    if "overlay_enabled" in keys:
+        extra = dict(
+            overlay_enabled=bool(row["overlay_enabled"]),
+            overlay_pieces=_json_or(row["overlay_pieces"], ["keyboard", "mouse"]),
+            overlay_visible_default=bool(row["overlay_visible_default"]),
+            overlay_offset_ms=float(row["overlay_offset_ms"] or 0.0),
+            overlay_placements=_json_or(row["overlay_placements"], {}),
+        )
     return ClipConfig(
         id=row["id"], name=row["name"], length_seconds=row["length_seconds"],
         sound_path=row["sound_path"], hotkey=row["hotkey"], sort_order=row["sort_order"],
+        **extra,
     )
 
 
 # ---------------------------------------------------------------- CRUD
 
 def create_clip_config(name: str, length_seconds: int, sound_path: str | None = None,
-                        hotkey: str | None = None) -> ClipConfig:
+                        hotkey: str | None = None, **overlay_fields) -> ClipConfig:
     name = name.strip()
     if not name:
         raise ClipError("Clip config name can't be empty.")
@@ -107,15 +135,26 @@ def create_clip_config(name: str, length_seconds: int, sound_path: str | None = 
                 f"unique (case-insensitive) since they're used to trigger clips "
                 f"by name, e.g. `trigger --name {name}`."
             )
-        row = conn.execute("SELECT * FROM clip_configs WHERE id = ?", (cur.lastrowid,)).fetchone()
-        return _row_to_clip_config(row)
+        new_id = cur.lastrowid
+    if overlay_fields:
+        return update_clip_config(new_id, **overlay_fields)
+    return get_clip_config(new_id)
 
 
 def update_clip_config(clip_config_id: int, **fields) -> ClipConfig:
-    allowed = {"name", "length_seconds", "sound_path", "hotkey", "sort_order"}
+    allowed = {"name", "length_seconds", "sound_path", "hotkey", "sort_order",
+               "overlay_enabled", "overlay_pieces", "overlay_visible_default",
+               "overlay_offset_ms", "overlay_placements"}
     bad = set(fields) - allowed
     if bad:
         raise ClipError(f"Unknown fields: {bad}")
+    # JSON-valued / boolean overlay columns are stored as text / ints.
+    for k in ("overlay_pieces", "overlay_placements"):
+        if k in fields and not isinstance(fields[k], str):
+            fields[k] = json.dumps(fields[k])
+    for k in ("overlay_enabled", "overlay_visible_default"):
+        if k in fields:
+            fields[k] = int(bool(fields[k]))
     if "name" in fields:
         fields["name"] = fields["name"].strip()
         if not fields["name"]:
@@ -236,6 +275,68 @@ def _play_error_sound(keyframe: str, settings) -> None:
         print(f"Warning: failed to play error sound for '{keyframe}': {e}")
 
 
+# ---------------------------------------------------------------- input overlay capture
+
+class _OverlayCapture:
+    """The input-overlay half of one clip capture (Puppetry integration).
+
+    on_sent(t_save) starts the render job the moment the save request is
+    sent; finish() stores the result as `<clip>.input/` once the final clip
+    file is in place. Both swallow every failure into self.error (logged;
+    the error noise plays from finish()) -- a missing overlay never costs
+    a clip. Does nothing at all when the clip type has the overlay off."""
+
+    def __init__(self, clip_cfg: "ClipConfig", settings):
+        self.enabled = bool(clip_cfg.overlay_enabled)
+        self._cfg, self._settings = clip_cfg, settings
+        self.job = None
+        self.error: str | None = None
+        self.fps: float | None = None
+        self.t_save: float | None = None
+
+    def on_sent(self, t_save: float) -> None:
+        if not self.enabled:
+            return
+        self.t_save = t_save
+        self._start(t_save)
+
+    def _start(self, t_save: float) -> None:
+        from .input_overlay import OverlaySettings
+        cfg, st = self._cfg, self._settings
+        try:
+            placements = overlay_support.resolve_placements(st.overlay_placements, cfg.overlay_placements)
+            self.job = overlay_support.aio.start_clip(t_save, OverlaySettings(
+                pieces=list(cfg.overlay_pieces) or ["keyboard", "mouse"],
+                placements=placements, offset_ms=cfg.overlay_offset_ms,
+                fps=self.fps or 60.0, visible_by_default=cfg.overlay_visible_default))
+        except Exception as e:  # noqa: BLE001
+            self.error = str(e)
+
+    def finish(self, clip_path: Path, clip_cfg: "ClipConfig", settings) -> None:
+        if not self.enabled:
+            return
+        try:
+            if self.job is None:
+                raise overlay_support.OverlayError(self.error or "the input overlay job never started")
+            manifest = overlay_support.aio.finish_clip(self.job, clip_path, clip_end=self.t_save)
+            # Persist the per-piece rotation default (Puppetry's own schema has none).
+            sc = overlay_support.load_sidecar(clip_path)
+            if sc is not None:
+                pl = overlay_support.resolve_placements(settings.overlay_placements, clip_cfg.overlay_placements)
+                overlay_support.save_placements(sc, {k: pl[k] for k in sc["pieces"]})
+            _play_keyframe_sound(keyframes.INPUT_OVERLAY, clip_cfg, settings)
+            if manifest.get("errors"):
+                print(f"Input overlay: some pieces failed: {manifest['errors']}")
+        except Exception as e:  # noqa: BLE001
+            self.error = str(e)
+            print(f"Input overlay could not be captured (the clip was kept): {e}")
+            _play_error_sound(keyframes.INPUT_OVERLAY, settings)
+            overlay_support.delete_sidecar(clip_path)
+        finally:
+            if self.job is not None:
+                self.job.cleanup()
+
+
 # ---------------------------------------------------------------- trigger pipeline
 
 def trigger_clip(clip_config_id: int) -> Video:
@@ -279,8 +380,14 @@ def trigger_clip(clip_config_id: int) -> Video:
         _play_keyframe_sound(stage, clip_cfg, settings)
 
         stage = keyframes.REPLAY_BUFFER_COMPLETED  # set before the call: a failure inside it belongs to this keyframe
+        # Input overlay (Puppetry): the job has to start the moment
+        # SaveReplayBuffer is SENT -- that freezes the input and starts
+        # rendering while OBS writes the file. Any failure here is
+        # remembered, never raised: a missing overlay must never cost a clip.
+        overlay = _OverlayCapture(clip_cfg, settings)
         with OBSClient(settings.obs) as obs_client:
-            raw_path = obs_client.save_replay_buffer()  # already waits for exists + size-stable
+            overlay.fps = obs_client.get_fps() if clip_cfg.overlay_enabled else None
+            raw_path = obs_client.save_replay_buffer(on_sent=overlay.on_sent)  # already waits for exists + size-stable
         _play_keyframe_sound(stage, clip_cfg, settings)
 
         # Extra settle time in case OBS is still doing internal post-save work
@@ -354,6 +461,8 @@ def trigger_clip(clip_config_id: int) -> Video:
         final_name = f"{timestamp}{raw_path.suffix}"
         final_path = clips_dir / final_name
         shutil.move(str(raw_path), str(final_path))
+        stage = keyframes.INPUT_OVERLAY  # a failure past this point costs only the overlay, never the clip
+        overlay.finish(final_path, clip_cfg, settings)
 
         video = add_video(
             final_path,

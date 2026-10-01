@@ -487,6 +487,8 @@ class TimelineView(QWidget):
     def _seg_colors(self, seg: Segment):
         theme = self._theme
         kind = seg_kind(seg)
+        if seg.overlay_piece:                      # a detached input-overlay element
+            return QColor(38, 66, 104)
         if kind == "audio":
             return theme.turquoise().darker(160)
         if kind == KIND_TEXT:
@@ -571,6 +573,8 @@ class TimelineView(QWidget):
 
     def _paint_label(self, p: QPainter, seg: Segment, r: QRectF, collapsed: bool) -> None:
         name = seg.name or ("Text" if seg_kind(seg) == KIND_TEXT else "Segment")
+        if seg.overlay_piece:
+            name = "\u2328 " + name
         if seg.parts and seg.parts[0].speed != 1.0:
             name += f"  {seg.parts[0].speed:g}x"
         f = QFont(self.font())
@@ -1339,6 +1343,8 @@ class TimelineView(QWidget):
             menu.addAction("Duplicate\tCtrl+D", ctl.duplicate)
             if any(s.has_video and s.has_audio for s in segs):
                 menu.addAction("Detach Audio", ctl.detach_audio)
+            if any(ops.has_overlay(s_) for s_ in segs):
+                menu.addAction("Detach Input Overlay", ctl.detach_overlay)
             menu.addSeparator()
             add_style_actions(menu, ctl)
             add_global_actions(menu, ctl, self)

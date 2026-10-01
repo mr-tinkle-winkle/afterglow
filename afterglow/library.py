@@ -8,6 +8,7 @@ about the database; library.py is the glue.
 from __future__ import annotations
 
 import re
+import shutil
 import sqlite3
 import json
 from dataclasses import dataclass
@@ -16,6 +17,8 @@ from pathlib import Path
 
 from . import db
 from . import config
+from . import editor as editor_module
+from . import overlay_support
 from .editor import (
     TrimRequest, commit_trim, undo_trim, clear_backup, probe_duration,
     EditorError,
@@ -431,6 +434,12 @@ def rename_video(video_id: int, title: str | None = None, description: str | Non
                 if target_stem != current_path.stem:
                     target_path = _unique_path(current_path.parent, target_stem, current_path.suffix)
                     current_path.rename(target_path)
+                    # The clip's input-overlay sidecar travels with it.
+                    try:
+                        overlay_support.move_sidecar(current_path, target_path)
+                    except (OSError, overlay_support.OverlayError) as e:
+                        import logging
+                        logging.getLogger("afterglow").warning(f"could not move overlay sidecar: {e}")
                     new_path_str = str(target_path)
                     new_filename = target_path.name
             # If the file's missing, just update the DB text fields below --
@@ -479,9 +488,12 @@ def delete_video(video_id: int, delete_file: bool = True) -> None:
         p = Path(video.path)
         if p.exists():
             p.unlink()
+        overlay_support.delete_sidecar(p)
         backup = Path(video.backup_path) if video.backup_path else None
         if backup and backup.exists():
             backup.unlink()
+        if backup:
+            overlay_support.clear_backup_sidecar(backup)
 
 
 def prune_missing_videos() -> list[int]:
@@ -786,8 +798,34 @@ def apply_trim(video_id: int, start_sec: float, end_sec: float, frame_perfect: b
         frame_perfect=frame_perfect,
     )
     existing_backup = Path(video.backup_path) if video.backup_path else None
+    # Input overlay: the sidecar's pieces must be cut with the SAME in/out
+    # as the video. A fast (stream-copy) trim snaps its start back to the
+    # keyframe at or before start_sec, so the effective start is looked up
+    # before the file is replaced.
+    sidecar = overlay_support.load_sidecar(video.path_obj)
+    orig_duration = probe_duration(video.path_obj) if sidecar else 0.0
+    eff_start = start_sec
+    if sidecar and not frame_perfect:
+        eff_start = editor_module._find_keyframe_at_or_before(video.path_obj, start_sec)
+    first_edit = not (video.has_edit and existing_backup and existing_backup.exists())
     backup_path = commit_trim(request, has_prior_edit=video.has_edit, existing_backup=existing_backup)
     new_duration = probe_duration(video.path_obj)
+    if sidecar:
+        try:
+            if first_edit and backup_path is not None:
+                overlay_support.backup_sidecar(video.path_obj, backup_path)
+            src_dir = overlay_support.sidecar_dir(video.path_obj)
+            tmp_dir = src_dir.with_name(src_dir.name + ".trim_tmp")
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+            overlay_support.trim_sidecar(src_dir, tmp_dir, eff_start, new_duration, orig_duration)
+            shutil.rmtree(src_dir)
+            tmp_dir.rename(src_dir)
+        except (OSError, overlay_support.OverlayError) as e:
+            # The video trim already happened and is valid; a sidecar that
+            # can't follow it is dropped rather than left misaligned.
+            import logging
+            logging.getLogger("afterglow").warning(f"overlay sidecar could not follow the trim, dropped: {e}")
+            overlay_support.delete_sidecar(video.path_obj)
     # A quick trim edits the file directly, so any Advanced Editor
     # project no longer describes it (see nle/store.py).
     _discard_advanced_project(video)
@@ -861,6 +899,7 @@ def undo_edit(video_id: int) -> Video:
     if not video.has_edit or not video.backup_path:
         raise LibraryError("This video has no pending edit to undo.")
     undo_trim(video.path_obj, Path(video.backup_path))
+    overlay_support.restore_sidecar(video.path_obj, Path(video.backup_path))
     new_duration = probe_duration(video.path_obj)
     _discard_advanced_project(video)
     with db.get_conn() as conn:
@@ -879,6 +918,7 @@ def clear_edit_backup(video_id: int) -> Video:
     if not video.has_edit or not video.backup_path:
         raise LibraryError("This video has no edit backup to clear.")
     clear_backup(Path(video.backup_path))
+    overlay_support.clear_backup_sidecar(Path(video.backup_path))
     # The project re-renders from the backup, so it can't survive this.
     _discard_advanced_project(video)
     with db.get_conn() as conn:

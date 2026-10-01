@@ -12,7 +12,9 @@ Project.unsaved_changes set so reopening the clip shows the marker.
 from __future__ import annotations
 
 import copy
+import json
 import os
+from pathlib import Path
 
 from PySide6.QtCore import QObject, QTimer, Signal
 
@@ -73,6 +75,7 @@ class EditorController(QObject):
     # the change is recorded on release (end()).
     previewed = Signal()
     selection_changed = Signal()
+    overlay_pick_changed = Signal()    # the picked input-overlay piece (canvas handles) changed
     playhead_changed = Signal(float)
     state_changed = Signal()       # undo/redo availability, dirty marker, project loaded
     error = Signal(str)
@@ -85,6 +88,7 @@ class EditorController(QObject):
         self.selection: list[str] = []
         self.selected_tracks: list[str] = []    # layers picked by clicking their header
         self.anchor: "str | None" = None
+        self.overlay_pick: "str | None" = None    # name of the attached overlay piece being edited on the canvas
         self.playhead = 0.0
         self.clipboard: dict = {}
         self.style_clipboard: dict = {}     # "colors" / "properties" -> ops.copy_colors/copy_properties payload
@@ -378,7 +382,9 @@ class EditorController(QObject):
             self.anchor = anchor
         if ids != self.selection:
             self.selection = ids
+            self.overlay_pick = None
             self.selection_changed.emit()
+            self.overlay_pick_changed.emit()
 
     def set_track_selection(self, track_ids: list) -> None:
         if self.project is None:
@@ -524,6 +530,73 @@ class EditorController(QObject):
         segs = list(self.selection)
         if segs:
             self.perform("Detach audio", lambda p: [ops.detach_audio(p, i) for i in segs])
+
+    # ------------------------------------------------------------ input overlay
+    def pick_overlay(self, name: "str | None") -> None:
+        if name != self.overlay_pick:
+            self.overlay_pick = name
+            self.overlay_pick_changed.emit()
+
+    def detach_overlay(self) -> None:
+        segs = [i for i in self.selection if ops.has_overlay(self.project.find_segment(i)[1])] if self.project else []
+        if segs:
+            self.pick_overlay(None)
+            new = self.perform("Detach input overlay", lambda p: [e for i in segs for e in ops.detach_overlay(p, i)])
+            if new:
+                self.set_selection([e.id for e in new], anchor=new[0].id)
+
+    def set_overlay(self, piece: "str | None", **values) -> None:
+        ids = list(self.selection)
+        if ids:
+            self.perform("Input overlay", lambda p: ops.set_overlay(p, ids, piece, **values))
+
+    def add_overlay_piece(self, name: str) -> "str | None":
+        """(Re-)render `name` from the clip's recorded input and attach it
+        (or replace it) on the selected clip. Returns an error text or None."""
+        from ... import overlay_support
+        from ...nle.model import KIND_AV, OverlayPiece
+        from ... import config as config_module
+        segs = self.selected_segments()
+        if len(segs) != 1 or not ops.has_overlay(segs[0]):
+            return "Select one clip that has an input overlay."
+        seg = segs[0]
+        made: dict = {}
+        try:
+            for part in seg.parts:
+                if part.kind != KIND_AV or not part.overlays or part.source in made:
+                    continue
+                d = Path(part.overlays[0].source).parent
+                mf = d / "manifest.json"
+                sc = json.loads(mf.read_text()) if mf.exists() else None
+                if sc is None or sc.get("derived") or "clip_end" not in sc:
+                    return "This clip has no recorded input to render from (it was exported from the Editor)."
+                sc["dir"] = str(d)
+                made[part.source] = overlay_support.aio.rerender(part.source, sc, name)
+                made[part.source]["dir"] = str(d)
+        except Exception as e:                       # OverlayError, a missing tool...
+            return str(e)
+        if not made:
+            return "Nothing to render."
+        defaults = overlay_support.resolve_placements(config_module.load_readonly().overlay_placements)[name]
+
+        def fn(p):
+            _t, sg = p.find_segment(seg.id)
+            for part in sg.parts:
+                info = made.get(part.source)
+                if info is None or not part.overlays:
+                    continue
+                old = next((o for o in part.overlays if o.name == name), None)
+                ref = old or next(iter(sg.parts[0].overlays), None)
+                src = os.path.join(info["dir"], info["file"])
+                piece = OverlayPiece(name=name, source=src, width=int(info.get("width", 0)), height=int(info.get("height", 0)),
+                                     x=old.x if old else defaults["x"], y=old.y if old else defaults["y"],
+                                     w=old.w if old else defaults["w"],
+                                     rotation=old.rotation if old else defaults.get("rotation", 0.0),
+                                     visible=old.visible if old else True)
+                ops.attach_overlay_piece(part, piece)
+        self.perform("Render overlay piece", fn)
+        self.pick_overlay(name)
+        return None
 
     def close_gap(self, track_id: str, t: float) -> None:
         self.perform("Close gap", lambda p: ops.close_gap(p, track_id, t))

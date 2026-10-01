@@ -993,7 +993,9 @@ class VideoCard(QWidget):
             # delay-then-cancel-if-a-second-click-arrives approach is
             # the standard way to disambiguate the two.
             no_modifiers = event.modifiers() == Qt.NoModifier
-            on_thumbnail = self.thumb_label.geometry().contains(event.pos())
+            # video_box (the whole thumbnail area, in this card's own coordinates), not
+            # thumb_label.geometry() (which is relative to video_box)
+            on_thumbnail = self.video_box.geometry().contains(event.pos())
             if no_modifiers and on_thumbnail:
                 self._preview_pending = True
                 QTimer.singleShot(250, self._open_preview_if_still_pending)

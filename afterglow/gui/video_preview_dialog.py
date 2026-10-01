@@ -47,6 +47,8 @@ from .preview_filters_panel import PreviewFiltersPanel
 from .mpv_widget import MpvVideoWidget
 from .rounded_rect import rounded_rect_path
 from .resources import resource_qpixmap
+from .overlay_icons import overlay_icon
+from .. import overlay_support
 from .video_card import _format_duration, _format_file_size, _format_date, FAVORITE_STAR
 
 # Same tolerance the Editor uses around the trim-end clamp: mpv's last
@@ -65,6 +67,19 @@ _HEADER_BTN_SIZE = 44
 CONTENT_WIDTH = 1581
 CONTENT_HEIGHT = 1035       # (no longer a cap: the box is as tall as the video needs)
 CONTENT_MIN_WIDTH = 760     # header/transport need this much even for a tall video
+
+
+def _video_size_of(path) -> "tuple[int, int]":
+    """(width, height) of a video's picture; 1920x1080 if unknown."""
+    try:
+        import av
+        with av.open(str(path)) as c:
+            cc = c.streams.video[0].codec_context
+            if cc.width and cc.height:
+                return int(cc.width), int(cc.height)
+    except Exception:
+        pass
+    return 1920, 1080
 
 
 def _video_aspect_of(path) -> float:
@@ -433,8 +448,20 @@ class VideoPreviewContent(QWidget):
         # use (Filters reuses that exact filters_icon.png). An equal-width
         # spacer on the left keeps the info text centered.
         info_row = QHBoxLayout()
+        self._info_row = info_row
         info_row.addSpacing(2 * _HEADER_BTN_SIZE + 8)
         info_row.addWidget(self._info_label, stretch=1)
+        # Input overlay toggle (Puppetry): shown only for a clip that HAS an
+        # overlay sidecar. Toggles the whole overlay; placements are only
+        # ever edited in the Editor.
+        self.overlay_btn = CustomButton()
+        self.overlay_btn.set_circular(_HEADER_BTN_SIZE)
+        self.overlay_btn.set_fill_color(appearance.card_text_color)
+        self.overlay_btn.clicked.connect(self._toggle_overlay)
+        self.overlay_btn.hide()
+        info_row.addWidget(self.overlay_btn)
+        self._overlay_gap = info_row.count()
+        info_row.addSpacing(8)
         self.favorite_btn = CustomButton()
         self.favorite_btn.set_circular(_HEADER_BTN_SIZE)
         self.favorite_btn.set_fill_color(appearance.card_text_color)
@@ -640,7 +667,8 @@ class VideoPreviewContent(QWidget):
         self._fit_video_frame()
         self.aspect_changed.emit()
         is_first_load_ever = not self.video_widget._first_load_done
-        self.video_widget.load(video.path)
+        self._setup_overlay(video)
+        self.video_widget.load(video.path, self._overlay_files, self._overlay_graph())
         self.video_widget.set_volume(self.volume_slider.value())
         if is_first_load_ever:
             QTimer.singleShot(200, self.video_widget.play)
@@ -649,6 +677,53 @@ class VideoPreviewContent(QWidget):
         self.play_pause_btn.setChecked(True)
         self._update_time_label()
         self._update_neighbor_buttons()
+
+    # ------------------------------------------------------------ input overlay
+
+    def _setup_overlay(self, video: "library.Video") -> None:
+        """Reads the clip's overlay sidecar (None -> no toggle at all). The
+        initial state is the manifest's visible_by_default, except that a
+        choice made in this previewer sticks for that clip (e.g. across a
+        Save Trim reload)."""
+        prefs = self.__dict__.setdefault("_overlay_prefs", {})
+        self._overlay_sidecar = overlay_support.load_sidecar(video.path)
+        self._overlay_files = []
+        sc = self._overlay_sidecar
+        if sc is None:
+            self._overlay_on = False
+            self.overlay_btn.hide()
+        else:
+            self._overlay_size = _video_size_of(video.path)
+            self._overlay_files = overlay_support.preview_graph(sc, *self._overlay_size, False)[0]
+            self._overlay_on = prefs.get(video.id, bool(sc.get("visible_by_default", True)))
+            self._update_overlay_button()
+            self.overlay_btn.show()
+        # the info line stays centred: the left spacer mirrors the buttons on the right
+        n_buttons = 2 + (1 if sc is not None else 0)
+        self._info_row.itemAt(0).spacerItem().changeSize(n_buttons * _HEADER_BTN_SIZE + (n_buttons - 1) * 8, 0)
+        self._info_row.itemAt(self._overlay_gap).spacerItem().changeSize(8 if sc is not None else 0, 0)
+        self._info_row.invalidate()
+
+    def _overlay_graph(self) -> str:
+        sc = getattr(self, "_overlay_sidecar", None)
+        if sc is None:
+            return ""
+        return overlay_support.preview_graph(sc, *self._overlay_size, self._overlay_on)[1]
+
+    def _update_overlay_button(self) -> None:
+        self.overlay_btn.set_icon_pixmap(overlay_icon(self._overlay_on))
+        self.overlay_btn.setToolTip("Hide input overlay" if self._overlay_on else "Show input overlay")
+
+    def _toggle_overlay(self) -> None:
+        if getattr(self, "_overlay_sidecar", None) is None:
+            return
+        self._overlay_on = not self._overlay_on
+        self.__dict__.setdefault("_overlay_prefs", {})[self._video.id] = self._overlay_on
+        self._update_overlay_button()
+        self.video_widget.set_overlay_graph(self._overlay_graph())
+        if self.video_widget.is_paused:
+            # a paused frame doesn't redraw by itself after a filter-graph change
+            self.video_widget.seek(self._current_pos)
 
     def _refresh_header(self) -> None:
         """Title (with favorite star), info line (tags + duration/size/

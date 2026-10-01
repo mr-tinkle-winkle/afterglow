@@ -29,7 +29,7 @@ from dataclasses import replace
 
 from .model import (
     EPS, KIND_AV, MAX_SPEED, MAX_VOLUME, MIN_SPEED, MIN_VOLUME, Keyframe,
-    Part, Project, Segment, Track, Transition, empty_track, new_id,
+    OverlayPiece, Part, Project, Segment, Track, Transform, Transition, empty_track, new_id,
 )
 
 MIN_TRACKS = 4
@@ -202,8 +202,10 @@ def _split_part(p: Part, local_t: float) -> "tuple[Part | None, Part | None]":
     if local_t >= p.end - EPS:
         return p, None
     cut_src = p.source_time(local_t)
-    left = replace(p, src_out=cut_src)
-    right = replace(p, src_in=cut_src, offset=local_t)
+    # Each half gets its OWN copy of the attached overlay pieces (after a
+    # split they can be placed independently, like any two clips).
+    left = replace(p, src_out=cut_src, overlays=copy.deepcopy(p.overlays))
+    right = replace(p, src_in=cut_src, offset=local_t, overlays=copy.deepcopy(p.overlays))
     return left, right
 
 
@@ -282,6 +284,9 @@ def combine(project: Project, ids: list[str]) -> Segment:
     if len(segs) < 2:
         raise OpError("Select at least two segments to combine.")
     segs.sort(key=lambda s: s.start)
+    kinds = {s.overlay_piece for s in segs}
+    if len(kinds) > 1:
+        raise OpError("Can't combine an input overlay element with other clips (or another overlay piece).")
     reach = segs[0].end
     for s in segs[1:]:
         if s.start > reach + EPS:
@@ -296,7 +301,8 @@ def combine(project: Project, ids: list[str]) -> Segment:
     first = segs[0]
     merged = Segment(start=new_start, parts=parts, name=first.name,
                      fade_in=first.fade_in, fade_out=max(segs, key=lambda s: s.end).fade_out,
-                     transform=copy.deepcopy(first.transform), transition_in=first.transition_in)
+                     transform=copy.deepcopy(first.transform), transition_in=first.transition_in,
+                     overlay_piece=first.overlay_piece)
     for s in segs:
         _detach(project, s.id)
     place(project, merged, top_index, new_start)
@@ -617,7 +623,7 @@ def detach_audio(project: Project, seg_id: str) -> "Segment | None":
     track, seg = project.find_segment(seg_id)
     if seg is None or seg.locked or not any(p.has_video and p.has_audio for p in seg.parts):
         return None
-    audio_parts = [replace(p, has_video=False) for p in seg.parts if p.has_audio]
+    audio_parts = [replace(p, has_video=False, overlays=[]) for p in seg.parts if p.has_audio]
     for p in seg.parts:
         if p.has_video:
             p.has_audio = False
@@ -626,6 +632,125 @@ def detach_audio(project: Project, seg_id: str) -> "Segment | None":
                     volume=seg.volume, muted=seg.muted, fade_in=seg.fade_in, fade_out=seg.fade_out)
     place(project, audio, project.track_index(track.id) + 1, seg.start, prefer=1)
     return audio
+
+
+# =========================================================================
+# input overlay (Puppetry): attached pieces and "Detach Input Overlay"
+# =========================================================================
+
+OVERLAY_KEYS = ("x", "y", "w", "rotation", "visible")
+
+
+def segment_overlay_names(seg: Segment) -> list[str]:
+    """Names of the overlay pieces attached to seg's parts, in first-seen order."""
+    out: list[str] = []
+    for p in seg.parts:
+        for o in p.overlays:
+            if o.name not in out:
+                out.append(o.name)
+    return out
+
+
+def has_overlay(seg: Segment) -> bool:
+    return any(p.overlays for p in seg.parts)
+
+
+def set_overlay(project: Project, ids: list[str], piece: "str | None", **values) -> int:
+    """Edit the attached overlay piece `piece` (None = every piece) on the
+    given segments: any of x / y / w / rotation / visible. The layout of a
+    piece belongs to the SEGMENT (one fixed layout per clip), so the value
+    is applied to that piece on every part of the segment. Returns the
+    number of pieces changed."""
+    bad = set(values) - set(OVERLAY_KEYS)
+    if bad:
+        raise OpError(f"Unknown overlay fields: {sorted(bad)}")
+    n = 0
+    for seg in _editable(project, ids):
+        for part in seg.parts:
+            for o in part.overlays:
+                if piece is None or o.name == piece:
+                    for k, v in values.items():
+                        setattr(o, k, bool(v) if k == "visible" else float(v))
+                    n += 1
+    return n
+
+
+def attach_overlay_piece(part: Part, piece: OverlayPiece) -> None:
+    """Attach (or replace, by name) a piece on a part."""
+    part.overlays = [o for o in part.overlays if o.name != piece.name] + [piece]
+
+
+def _fit_box(cw: float, ch: float, sw: float, sh: float, tr: Transform) -> "tuple[float, float]":
+    """Size of a source picture fitted (after crop) into the canvas, in canvas units (bw, bh)."""
+    crop_w = max(1e-6, 1 - tr.crop_left - tr.crop_right) * sw
+    crop_h = max(1e-6, 1 - tr.crop_top - tr.crop_bottom) * sh
+    fit = min(cw / crop_w, ch / crop_h)
+    return crop_w * fit, crop_h * fit
+
+
+def _source_size(project: Project, part: Part) -> "tuple[float, float]":
+    from . import media
+    try:
+        info = media.probe(part.source)
+        if info["width"] and info["height"]:
+            return float(info["width"]), float(info["height"])
+    except Exception:
+        pass
+    return float(project.width), float(project.height)
+
+
+def detach_overlay(project: Project, seg_id: str) -> "list[Segment]":
+    """Detach Input Overlay (mirrors Detach Audio): every attached piece
+    becomes its own video-only element on the nearest free track ABOVE, at
+    the same timing, placed where it was (its layout converted into that
+    element's Transform), free to be moved, keyframed and given effects.
+    They stay OVERLAY elements (Segment.overlay_piece): previewed, but never
+    burned into the exported video. Returns the new segments (empty when
+    there was nothing to detach)."""
+    track, seg = project.find_segment(seg_id)
+    if seg is None or seg.locked or not has_overlay(seg):
+        return []
+    import math
+    cw, ch = float(project.width), float(project.height)
+    tr = seg.transform
+    th = math.radians(tr.rotation)
+    new_segs: list[Segment] = []
+    for part in seg.parts:
+        if not part.overlays:
+            continue
+        sw, sh = _source_size(project, part)
+        bw, bh = _fit_box(cw, ch, sw, sh, tr)
+        Bw, Bh = bw * tr.scale, bh * tr.scale            # the video's displayed size on the canvas
+        for o in part.overlays:
+            pw = o.width or 1
+            ph = o.height or 1
+            Wd = o.w * Bw
+            Hd = Wd * ph / pw
+            ox = (o.x - 0.5) * Bw + Wd / 2
+            oy = (o.y - 0.5) * Bh + Hd / 2
+            rx = ox * math.cos(th) - oy * math.sin(th)
+            ry = ox * math.sin(th) + oy * math.cos(th)
+            piece_bw, _ = _fit_box(cw, ch, pw, ph, Transform())
+            el = Segment(
+                start=seg.start + part.offset,
+                parts=[Part(kind=KIND_AV, source=o.source, src_in=part.src_in, src_out=part.src_out, offset=0.0,
+                            speed=part.speed, has_video=True, has_audio=False,
+                            source_duration=part.source_duration)],
+                name=f"{seg.name} \u2013 {o.name}".strip(" \u2013"),
+                visible=seg.visible and o.visible, fade_in=seg.fade_in, fade_out=seg.fade_out,
+                transform=Transform(x=tr.x + rx / cw, y=tr.y + ry / ch, scale=Wd / piece_bw,
+                                    rotation=o.rotation + tr.rotation),
+                overlay_piece=o.name)
+            new_segs.append(el)
+        part.overlays = []
+    ti = project.track_index(track.id)
+    if ti == 0:
+        add_track(project, 0)
+        ti = 1
+    for el in new_segs:
+        place(project, el, ti - 1, el.start, prefer=-1)
+        ti = project.track_index(project.find_segment(seg_id)[0].id)   # tracks may have been inserted above
+    return new_segs
 
 
 # =========================================================================

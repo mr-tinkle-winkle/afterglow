@@ -7,6 +7,283 @@ Editor (the Editor page; afterglow/nle engine + afterglow/gui/
 advanced_editor UI), and YouTube upload (unlisted-library metadata
 cached locally, upload flow itself not yet implemented). Settings and
 Library pages are solid and confirmed working across multiple machines.
+The keyboard/mouse/controller **input overlay** (captured from Puppetry
+with each clip) is BUILT -- see "Input overlay (Puppetry integration) --
+BUILT" directly below.
+
+**Tests:** `tests/` (Qt widget tests with real events). Headless:
+`Xvfb :99 -screen 0 1920x1080x24 +extension GLX & DISPLAY=:99 openbox &`
+then `DISPLAY=:99 QT_QPA_PLATFORM=xcb python3 tests/<suite>.py` (the
+previewer suites need GL for mpv); the `tests/test_nle_*.py` engine
+suites run with `QT_QPA_PLATFORM=offscreen`. Every suite prints PASS/FAIL
+lines and exits non-zero on failure. All suites pass at handoff (16 older ones plus the overlay suites listed
+under the Input overlay status; `test_overlay_mpv` needs libmpv + Xvfb).
+
+## Input overlay (Puppetry integration) -- BUILT (this is the design + status)
+
+### Status (newest session)
+Plan steps 1-9 are implemented and tested. Where the code lives:
+`afterglow/input_overlay.py` (vendored, byte-identical to the prep package
+-- never edit it), `afterglow/overlay_support.py` (afterglow glue:
+rotation in placements, sidecar move/copy/delete/trim/backup/restore,
+the previewer's mpv graph), capture hook = `clips._OverlayCapture`
+(+ `OBSClient.save_replay_buffer(on_sent=...)`), Settings: the per-clip-type
+Input overlay row + "..." dialog and the "Input Overlay" tab
+(`gui/overlay_options.py`), previewer toggle (`video_preview_dialog.py`,
+`mpv_widget.set_overlay`), Editor model/ops/render (`nle/model.py`
+OverlayPiece, `nle/ops.py` set_overlay/detach_overlay, `nle/render.py`
+`overlays=` flag + `frame_piece`), export sidecar (`nle/overlay_export.py`,
+called from `nle/save.py`), Editor UI (Properties "Input Overlay" group,
+canvas handles in `preview.py`, preview "Overlay" toggle, timeline
+"Detach Input Overlay", `EditorController.detach_overlay/set_overlay/
+add_overlay_piece/pick_overlay`).
+Findings / deviations worth knowing:
+- **Pieces are attached to `Part.overlays`, not `Segment.overlays`** (the
+  plan said Segment): `combine` merges several parts into one segment, and
+  each part has its own source clip/pieces. `ops.set_overlay` applies a
+  placement edit to that piece name on every part of the segment (one
+  layout per clip, as decided).
+- **qtrle is NOT all-intra by default** (ffmpeg keeps a keyframe every 12
+  frames), so "stream copy is frame-exact" is false unless encoded `-g 1`.
+  `overlay_support.cut_piece` stream-copies only when every packet is a
+  keyframe, else re-cuts losslessly (qtrle, argb, -g 1).
+- mpv graph (external files + lavfi-complex, runtime toggle, rotation) was
+  verified in a REAL libmpv 0.37 (vo=image), incl. audio.
+- `Project.video_duration` ignores overlay segments: they never lengthen
+  the exported video (export uses it; `duration` still includes them).
+- Derived (exported) sidecars store REAL per-piece placements when the
+  layout is static (same placement on plain, untransformed, canvas-sized
+  clips; rebuilt at native size, stream-copied for a single plain clip);
+  animated/transformed/detached pieces are canvas-sized, full-frame.
+- Save/Export writes the output's own `<output>.input/` sidecar, so the
+  placements edited in the Editor travel with the output file (there is no
+  separate "write back to the old manifest" step).
+- The Library clipboard Copy deliberately does not carry the sidecar.
+- Editor canvas: click a piece (selected clip) to pick it, drag = move,
+  corners = size about the centre, top handle = rotate (Shift = 15 deg);
+  clicking the bare video clears the pick. The Properties "Render" row
+  re-renders a piece from the recorded input (`aio.rerender`) or adds one
+  that wasn't captured; not possible for exported (derived) clips.
+- Tests: `tests/fake_puppetry_overlay.py` (fake CLI), `test_input_overlay`,
+  `test_puppetry_integration` (skips without Puppetry), `test_overlay_
+  settings_ui`, `test_overlay_mpv` (needs libmpv + Xvfb), `test_overlay_
+  previewer` (Xvfb), `test_overlay_nle`, `test_overlay_editor_ui`.
+- Library card: a plain click on the thumbnail/video box opens the
+  preview player (the old hit-test used the wrong coordinate space);
+  `tests/test_card_click_preview.py`.
+
+### Original design (kept for reference)
+Puppetry (a separate Linux keyboard/mouse macro daemon)
+keeps a rolling in-RAM record of all keyboard, mouse and controller input
+("Layered Replay Buffer", as long as OBS's replay buffer) and renders it
+as transparent video. This epic makes afterglow capture that record with
+each clip and show it as an **input overlay**: toggleable in the
+previewer, editable in the Editor, and NEVER burned into the video --
+exports write a matching overlay sidecar for the output instead (see
+decision 5).
+
+**Source material (read first):** `integrations/puppetry_input_overlay/`
+is the Puppetry side's prep package (v3), copied in unchanged:
+- `README.md` -- the intended afterglow-side design (settings, capture
+  hook, previewer, editor, export, availability).
+- `FORMAT.md` -- the full interface: buffer/status files, the
+  `puppetry-overlay` CLI, transparency formats, the `<clip>.input/`
+  sidecar and its `manifest.json`, the mpv graph, the timing model and
+  offset calibration.
+- `afterglow_input_overlay.py` -- a stdlib-only drop-in module wrapping
+  all of it (`start_clip`, `finish_clip`, `load_sidecar`,
+  `placements_of`, `save_placements`, `piece_rect`,
+  `preview_overlay_args`, `mpv_overlay_args`, `export`, `rerender`,
+  `available`, `resolve_placements`, `OverlayError`).
+- `test_afterglow_input_overlay.py` -- integration test against the real
+  `puppetry-overlay` + ffmpeg; skips when Puppetry isn't installed (it
+  isn't in the sandbox).
+- `sample/` -- example buffer, status and sidecar manifest.
+
+### Decisions (asked and answered before writing this section)
+1. **The Editor treats the overlay like a clip's audio.** A clip's
+   overlay pieces (keyboard, mouse, controller, ...) are ATTACHED to its
+   video segment by default: they move, trim, split, speed-change,
+   delete and export with it. While attached, each piece's position,
+   rotation and size *within the video* can be edited (and it can be
+   shown/hidden). A **Detach Input Overlay** action (mirroring Detach
+   Audio) turns the pieces into independent video-only elements on the
+   track(s) above, same timing, with their own transform, keyframes and
+   effects -- but they REMAIN overlay elements (decision 8).
+2. **Trimming follows the video.** Because the overlay is attached,
+   whatever trims the clip trims the overlay: the previewer's Save Trim
+   cuts the sidecar pieces with the same in/out (the pieces are
+   all-intra qtrle, so a stream copy is frame-exact), and Undo Edits
+   restores the original pieces with the original clip.
+3. **Settings location:** each clip type's row in Settings > Clip
+   Capture gets an "Input overlay" toggle plus a "…" button (pieces,
+   show by default, timing offset, per-piece placement overrides or
+   "use global"), with `aio.available()`'s reason shown beside the
+   toggle when unavailable. The global default placements go on a new
+   Settings > Input Overlay page.
+4. **Delivered as a full afterglow handoff** (this repo + this section),
+   not a standalone document.
+5. **Export never burns the overlay in.** This overrides the prep
+   package's `aio.export()` / `puppetry-overlay layer` design. An
+   Editor export (Replace, Save Separately, or an import's "-edited"
+   file) writes clean video and gives the output its own
+   `<output>.input/` sidecar, so the overlay stays toggleable in the
+   previewer and editable in the Editor for the new file too (Save
+   Separately's new clip included). How: plan step 7b.
+6. **Rotation shows in the previewer too** (a `rotate=` step in the mpv
+   graph), matching the Editor.
+7. **No keyframes on attached pieces.** Attached pieces have one fixed
+   layout per clip; Detach Input Overlay is the way to animate them
+   (detached pieces get full keyframes).
+8. **The overlay is always separate from the video, attached or
+   detached.** Every overlay element is left out of the exported video
+   exactly as if it were hidden, and exported instead as transparent
+   (alpha) video in the output's `<output>.input/` sidecar, which is
+   what the previewer's toggle and the Editor's editing use. Nothing
+   ever burns an overlay into the video.
+
+### Where the prep package's assumptions differ from afterglow now
+- **The Editor does not use mpv.** The prep's editor path
+  (`mpv_overlay_args`, "drag a Qt outline over the mpv widget, rebuild
+  `lavfi-complex` on release") predates the Advanced Editor, which
+  decodes with PyAV and composites with QPainter (`nle/render.py`). Only
+  the previewer plays through mpv. So: the previewer uses
+  `preview_overlay_args` as designed; the Editor draws the pieces itself
+  (see plan step 7) and never touches `mpv_overlay_args`.
+- **Rotation is not in Puppetry's placement schema** (`{x, y, w,
+  visible}`, fractions of the video). afterglow adds a `"rotation"` key
+  (degrees) to each piece's placement in `manifest.json`; Puppetry's
+  own tools ignore unknown keys. The previewer's mpv graph gets a
+  `rotate=a=<rad>:c=none:ow=rotw(<rad>):oh=roth(<rad>)` step per rotated
+  piece (an afterglow-side variant of `preview_overlay_args`; the
+  overlay x/y then offset by half the size growth so the piece rotates
+  about its center, matching the Editor).
+- **`aio.export()` is not used** (decision 5): nothing is burned in.
+- **The previewer never edits placements** (per the prep's own
+  decision); only the Editor does.
+
+### Implementation plan (in order)
+1. **Vendor the module.** Copy `afterglow_input_overlay.py` to
+   `afterglow/input_overlay.py` (keep it byte-identical where possible so
+   future Puppetry-side versions drop in); adapt its test into
+   `tests/test_input_overlay.py`, plus sandbox tests that build FAKE
+   sidecars without Puppetry -- e.g. transparent qtrle pieces via
+   `ffmpeg -f lavfi -i color=c=red@0.5:s=320x100,format=argb -t 5 -c:v
+   qtrle keyboard.mov` next to a clip, with `sample/manifest.json`
+   adapted.
+2. **Clip-type settings.** Clip types live in the DB
+   (`clips.ClipConfig`, table `clip_configs`), not config.toml: add
+   columns via a `db.py` migration -- `overlay_enabled`,
+   `overlay_pieces` (JSON list), `overlay_visible_default`,
+   `overlay_offset_ms`, `overlay_placements` (JSON, per-piece overrides).
+   Global placements: a config.py field (dict piece -> placement), edited
+   on Settings > Input Overlay. New clips start at
+   `aio.resolve_placements(global, clip_type)`.
+3. **Capture hook** (`clips.trigger_clip`). `start_clip` must run the
+   moment SaveReplayBuffer is SENT (it freezes the input and starts
+   rendering while OBS writes). `obs_client.save_replay_buffer()` both
+   sends and waits (and may first wait on another save's lock), so give
+   it an `on_sent(t_save)` callback invoked right after the request goes
+   out, and call `aio.start_clip` from there when the clip type has the
+   overlay on. After the file is written: `aio.finish_clip(job, path)`
+   -> `<clip>.input/`, then `job.cleanup()`. On `OverlayError`: keep the
+   clip, play the error noise (a new keyframe in `keyframes.py`, e.g.
+   "input overlay", fits the Advanced Sound system), log the reason.
+   A missing overlay must never cost a clip.
+4. **Sidecar lifecycle -- every file operation on a clip must carry
+   `<clip>.input/` along:** the capture pipeline's move/cleanup step,
+   `library.rename_video` (renames the file), `library.delete_video`,
+   the Library's copy action, and any import/move path. Quick trim
+   (`editor.commit_trim` via `library.apply_trim`): back up the sidecar
+   beside the clip's Edit Backup (e.g. `<backup>.input/`), then trim
+   every piece with the same `-ss`/`-t` (stream copy); `editor.undo_trim`
+   / `library.undo_edit` restore it; `clear_edit_backup` removes the
+   backup copy.
+5. **Previewer** (`gui/video_preview_dialog.py`, mpv via
+   `gui/mpv_widget.py`). An "Input overlay" icon toggle in the header
+   row beside Favorite/Filters, shown only when `aio.load_sidecar(clip)`
+   isn't None, initial state `manifest["visible_by_default"]`. On load
+   set mpv `external-files`; on load and every toggle set
+   `lavfi-complex` (MpvVideoWidget needs a small property passthrough).
+   Only the whole overlay toggles here. Not verified in a running mpv
+   by the Puppetry side -- verify early on the real machine.
+6. **Editor model** (`nle/model.py`, schema 3 + migration). New
+   `Segment.overlays: list[OverlayPiece]` where `OverlayPiece` = piece
+   name, source `.mov`, `x`, `y`, `w`, `rotation`, `visible`. The pieces
+   share the main video part's source timeline (they are cut to the
+   untrimmed clip), so a piece's frame at segment-local time `t` is at
+   the main part's `source_time(t)`: trims, splits (`ops.split_segment`
+   must copy the list), speed changes and deletes all follow for free.
+   `nle/save.new_project_for_file` attaches pieces from
+   `aio.load_sidecar` + `aio.placements_of`. `ops.detach_overlay`
+   (modelled on `ops.detach_audio`) moves each piece to its own
+   video-only segment on the nearest free track above, converting its
+   placement into that segment's Transform (x/y/scale/rotation), and
+   clears `Segment.overlays`. Detached pieces carry
+   `Segment.overlay_piece = "<piece name>"` ("" for ordinary elements),
+   which marks them as overlay for the renderer, the export and the
+   UI (e.g. a distinct timeline color and an overlay icon).
+7. **Editor rendering** (`nle/render.py`). `_draw_segment` draws each
+   visible overlay piece after the segment's picture, inside the same
+   segment transform (so moving/scaling/rotating the video carries the
+   overlay), at `piece_rect` + rotation. Pieces are ARGB qtrle;
+   `media.frame_to_qimage` already converts to BGRA/ARGB32, so alpha
+   should survive -- confirm with a fake sidecar.
+   These overlay draws are for the Editor preview only: the export
+   render skips ALL overlay content -- attached pieces and detached
+   overlay segments (`overlay_piece != ""`) alike, treated as hidden --
+   via a `Renderer(project, overlays=False)` flag, so
+   `Renderer.passthrough_frame` stays valid and the video stays clean.
+   The Editor preview's overlay toggle (Properties / a toolbar button)
+   hides them all at once, like the previewer's.
+7b. **Export writes an overlay sidecar for the output.** After the video
+   is written, for each piece name used by visible overlay content
+   (attached pieces AND detached overlay segments, with their keyframes
+   and effects), render a transparent track at the canvas size and
+   project fps with the Renderer drawing ONLY that piece's content
+   (frame for frame, whichever segment is active), encoded as
+   qtrle ARGB `.mov` (mostly-transparent frames compress well with
+   RLE). Write `<output>.input/manifest.json` with each such piece at a
+   full-frame placement (`x=0, y=0, w=1, rotation=0`), the
+   `visible_by_default` of the source clip, and `"derived": true` plus
+   no `inputs` (a timeline-built overlay can't be re-rendered from raw
+   input; the Editor project keeps the original per-clip pieces for
+   that). Fast path: when the timeline is exactly one untransformed
+   clip with its pieces, cut the source pieces with the same in/out
+   (stream copy) and keep their real placements instead of rendering.
+   The previewer's toggle then shows/hides the whole overlay on the
+   exported file, and reopening it in the Editor attaches these pieces
+   again.
+   **Replace** overwrites the clip, so before writing the new sidecar,
+   move the clip's original `<clip>.input/` into Edit Backups beside the
+   `.orig` backup and re-point the project's piece sources there (the
+   same job `store.stabilize_sources` does for the clip's own file);
+   Undo Edits restores it. **Save Separately** gives the new library
+   clip the new sidecar; the original clip keeps its own.
+8. **Editor UI.** Properties: an "Input Overlay" group on segments that
+   have one -- master show/hide, per piece: visible, X, Y, Size,
+   Rotation, "Re-render from input" (`aio.rerender`, e.g. after changing
+   Puppetry's look) and an "Add piece" for pieces not captured
+   (controller on a keyboard-only clip). Preview canvas: when such a
+   segment is selected, its pieces get their own handles (click a piece
+   to pick it; drag = move, corner = size, top handle = rotate) --
+   reuse `PreviewCanvas`'s handle code and the `live_preview` drag path.
+   Timeline right-click + Audio-style button: "Detach Input Overlay".
+   On Save Edits / Export, write the attached placements back to the
+   clip's manifest (`aio.save_placements`, with the extra `rotation`
+   key) so the previewer shows the same layout.
+9. **Availability** (`aio.available()`): shown next to each clip type's
+   toggle; the capture hook skips (without an error noise) when the
+   overlay is off, but plays it when the overlay is on and unavailable.
+
+### Open questions for this epic
+- (Answered) Derived sidecars store per-piece placements when the layout
+  is static -- see the status block above.
+
+### Known unverified (from the Puppetry side)
+mpv itself (graphs were validated through ffmpeg only), real OBS and real
+input devices (controller stick/trigger ranges vary), and the real
+alignment offset (a few frames at most; `offset_ms` corrects it).
 
 ## MAJOR EPIC: UI Update + Editor Update (multi-session, in progress)
 A huge combined spec arrived for a UI overhaul AND a full
@@ -4765,6 +5042,12 @@ widget-level testing note above):
   toggles tag-on-video, the other toggles include/exclude-from-search).
 
 ## Next up
+The input overlay epic is built (see the top of this file). **Next:
+custom `QComboBox` styling** -- confirmed wanted (the item flagged below),
+to be done now that the overlay is finished. Editor feedback rounds
+continue alongside. Still untested on real hardware: real Puppetry/OBS
+timing (`offset_ms`) and controller ranges.
+
 **One item flagged this session, not attempted:**
 - **Custom `QComboBox` styling.** Every native button/checkbox/text
   field is now a custom widget (see "This session" above), but
@@ -4772,7 +5055,7 @@ widget-level testing note above):
   mode, etc.) is still native/KDE-styled -- a real custom dropdown
   needs its own popup list, not just recoloring the closed box, which
   is a meaningfully bigger build than anything else in this sweep.
-  Worth confirming this is wanted before starting it.
+  CONFIRMED WANTED (queued as the next item).
 
 **Nothing else explicitly re-requested is still outstanding** -- the
 previous round's two open items (custom text fields app-wide, and the
@@ -5115,7 +5398,7 @@ not a fixed roadmap.
 - Whether the README rewrite (anonymizing the whole changelog, not
   just new sections) should happen as its own dedicated pass.
 - Whether categories need their own rename/delete UI.
-- **Watch Speed persistence** -- currently resets to 1.00x on every
+- **Watch Speed persistence** -- CONFIRMED: keep resetting to 1.00x. Currently resets to 1.00x on every
   `load_video()` (a judgment call made with no feedback available from his PC,
   since the alternative readings -- per-video, per-Editor-session
   without resetting, or a global Settings default -- all seemed at

@@ -98,6 +98,8 @@ class PropertiesPanel(QWidget):
         controller.selection_changed.connect(self._rebuild)
         controller.changed.connect(self._refresh)
         controller.previewed.connect(self._refresh_keyframe_values)   # a canvas drag: just the numbers
+        controller.previewed.connect(self._refresh_overlay_values)
+        controller.overlay_pick_changed.connect(self._refresh_overlay_values)
         controller.playhead_changed.connect(lambda _t: self._refresh_keyframe_values())
         self._rebuild()
 
@@ -221,6 +223,10 @@ class PropertiesPanel(QWidget):
                 det = CustomButton("Detach Audio")
                 det.clicked.connect(self.ctl.detach_audio)
                 form.addRow(self._lbl(""), det)
+
+        # ---- input overlay (Puppetry): pieces attached to the clip
+        if any(ops.has_overlay(s_) for s_ in segs):
+            self._build_overlay_group(lay, segs, single)
 
         # ---- transform / crop / zoom
         if any_video:
@@ -521,6 +527,84 @@ class PropertiesPanel(QWidget):
         self._set_body(body)
         self._refresh()
 
+    def _build_overlay_group(self, lay, segs, single: bool) -> None:
+        from ..overlay_options import PIECE_LABELS
+        from ... import overlay_support
+        g, form = self._group(lay, "Input Overlay")
+        names = ops.segment_overlay_names(segs[0]) if ops.has_overlay(segs[0]) else []
+        self._ov_names = names
+        master = CustomCheckBox("Show overlay on this clip")
+        master.clicked.connect(lambda: self._once("Input overlay", lambda p: ops.set_overlay(
+            p, self._ids, None, visible=master.isChecked())))
+        form.addRow(self._lbl(""), master)
+        self._fields["ov_master"] = master
+        for name in names:
+            head = QHBoxLayout()
+            pick = CustomButton(PIECE_LABELS.get(name, name))
+            pick.setToolTip("Select this piece to move / size / rotate it on the preview")
+            pick.clicked.connect(lambda _=False, n=name: self.ctl.pick_overlay(n))
+            vis = CustomCheckBox("Shown")
+            vis.clicked.connect(lambda _=False, n=name, w=vis: self._once(
+                "Input overlay", lambda p: ops.set_overlay(p, self._ids, n, visible=w.isChecked())))
+            head.addWidget(pick, stretch=1)
+            head.addWidget(vis)
+            hw = QWidget()
+            hw.setLayout(head)
+            head.setContentsMargins(0, 0, 0, 0)
+            form.addRow(hw)
+            self._fields[f"ov_{name}_pick"] = pick
+            self._fields[f"ov_{name}_visible"] = vis
+            for key, lbl, lo, hi, step, suffix, k in (("x", "X", -100, 200, 1, " %", 100), ("y", "Y", -100, 200, 1, " %", 100),
+                                                      ("w", "Size", 1, 300, 1, " %", 100), ("rotation", "Rotation", -360, 360, 1, "°", 1)):
+                sp = _spin(lo, hi, step, 1, suffix)
+                sp.valueChanged.connect(lambda v, n=name, key=key, k=k: self._edit(
+                    "Input overlay", lambda p: ops.set_overlay(p, self._ids, n, **{key: v / k})))
+                form.addRow(self._lbl(lbl), sp)
+                self._fields[f"ov_{name}_{key}"] = sp
+        if single:
+            row = QHBoxLayout()
+            row.setContentsMargins(0, 0, 0, 0)
+            self._ov_render_combo = self._combo([(PIECE_LABELS.get(n, n) + ("" if n in names else "  (new)"), n)
+                                                 for n in overlay_support.PIECES])
+            btn = CustomButton("Render")
+            btn.setToolTip("Re-render this piece from the recorded input (or add one that wasn't captured)")
+            btn.clicked.connect(self._render_overlay_piece)
+            row.addWidget(self._ov_render_combo, stretch=1)
+            row.addWidget(btn)
+            rw = QWidget()
+            rw.setLayout(row)
+            form.addRow(self._lbl("From input"), rw)
+        det = CustomButton("Detach Input Overlay")
+        det.setToolTip("Turn the pieces into independent elements on the tracks above (free to move, animate and style)")
+        det.clicked.connect(self.ctl.detach_overlay)
+        form.addRow(self._lbl(""), det)
+
+    def _render_overlay_piece(self) -> None:
+        name = self._ov_render_combo.currentData()
+        err = self.ctl.add_overlay_piece(name)
+        if err:
+            self.ctl.error.emit(err)
+
+    def _refresh_overlay(self, s: Segment) -> None:
+        if "ov_master" not in self._fields:
+            return
+        pieces = {o.name: o for part in s.parts for o in part.overlays}
+        self._set("ov_master", any(o.visible for o in pieces.values()))
+        for name in getattr(self, "_ov_names", []):
+            o = pieces.get(name)
+            if o is None:
+                continue
+            self._set(f"ov_{name}_visible", o.visible)
+            self._set(f"ov_{name}_x", o.x * 100)
+            self._set(f"ov_{name}_y", o.y * 100)
+            self._set(f"ov_{name}_w", o.w * 100)
+            self._set(f"ov_{name}_rotation", o.rotation)
+            pick = self._fields.get(f"ov_{name}_pick")
+            if pick is not None:
+                f = pick.font()
+                f.setBold(self.ctl.overlay_pick == name)
+                pick.setFont(f)
+
     def _set_body(self, body: QWidget) -> None:
         body.setAutoFillBackground(False)
         body.setObjectName("propsBody")
@@ -669,9 +753,19 @@ class PropertiesPanel(QWidget):
             self._fields["bubble_fill_btn"].set_fill_color(st.bubble_fill)
             self._fields["bubble_outline_btn"].set_fill_color(st.bubble_outline)
             self._fields["outline_btn"].set_fill_color(st.outline_color)
+        self._refresh_overlay(s)
         self._refresh_keyframe_values()
         self._refreshing = False
         self._refresh_keyframes()
+
+    def _refresh_overlay_values(self) -> None:
+        segs = self._segments()
+        if not segs or [s.id for s in segs] != self._ids:
+            return
+        was = self._refreshing
+        self._refreshing = True
+        self._refresh_overlay(segs[0])
+        self._refreshing = was
 
     def _refresh_keyframe_values(self) -> None:
         """Animated values (they depend on the playhead when keyframed)."""

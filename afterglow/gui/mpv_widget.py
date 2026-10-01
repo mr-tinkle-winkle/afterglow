@@ -186,8 +186,14 @@ class MpvVideoWidget(QOpenGLWidget):
 
     # ------------------------------------------------------------ playback control
 
-    def load(self, path: str) -> None:
+    def load(self, path: str, overlay_files: "list[str] | None" = None, overlay_graph: str = "") -> None:
+        """Load `path`. `overlay_files` / `overlay_graph` are the input
+        overlay's pieces (external transparent videos) and the lavfi-complex
+        graph that composites them (see overlay_support.preview_graph); both
+        are RESET on every load, so a clip without an overlay never inherits
+        the previous clip's."""
         self._duration_reported = False
+        self.set_overlay(overlay_files or [], overlay_graph if overlay_files else "")
         self._mpv.play(path)
         self._mpv.pause = True  # load paused -- Editor decides whether/when to auto-play
 
@@ -205,6 +211,22 @@ class MpvVideoWidget(QOpenGLWidget):
             # lifetime -- later loads aren't affected, and reloading
             # every time would just add a pointless flicker/reset.
             QTimer.singleShot(150, lambda p=path: self._reload_first_video(p))
+
+    def set_overlay(self, files: "list[str]", graph: str) -> None:
+        """Set the overlay's external files (read when a file is loaded)
+        and the lavfi-complex graph (can change any time -- the previewer's
+        on/off toggle just swaps the graph). An empty graph = no overlay."""
+        try:
+            self._mpv["external-files"] = list(files)
+        except Exception:  # noqa: BLE001
+            pass
+        self.set_overlay_graph(graph)
+
+    def set_overlay_graph(self, graph: str) -> None:
+        try:
+            self._mpv["lavfi-complex"] = graph or ""
+        except Exception:  # noqa: BLE001
+            pass
 
     def _reload_first_video(self, path: str) -> None:
         # Preserves whatever play/pause state was ACTUALLY in effect

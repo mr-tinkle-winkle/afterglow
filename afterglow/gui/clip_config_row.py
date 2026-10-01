@@ -21,6 +21,9 @@ from .custom_line_edit import CustomLineEdit
 from .collapse_toggle_button import CollapseToggleButton, _ANIM_DURATION_MS as _TOGGLE_ANIM_MS
 from .custom_spinbox import CustomSpinBox
 from .custom_button import CustomButton
+from .custom_checkbox import CustomCheckBox
+from .overlay_options import OverlayOptionsDialog
+from .. import overlay_support
 
 
 class ClipConfigRow(QFrame):
@@ -28,8 +31,15 @@ class ClipConfigRow(QFrame):
     delete_requested = Signal()
 
     def __init__(self, clip_config_id: int | None, name: str, length_seconds: int,
-                 sound_path: str | None, hotkey: str | None, parent=None):
+                 sound_path: str | None, hotkey: str | None, parent=None, overlay: dict | None = None):
         super().__init__(parent)
+        ov = overlay or {}
+        self._overlay = {
+            "overlay_pieces": list(ov.get("overlay_pieces", ["keyboard", "mouse"])),
+            "overlay_visible_default": bool(ov.get("overlay_visible_default", True)),
+            "overlay_offset_ms": float(ov.get("overlay_offset_ms", 0.0)),
+            "overlay_placements": dict(ov.get("overlay_placements", {})),
+        }
         self.clip_config_id = clip_config_id  # None for a not-yet-saved new row
         self.setFrameShape(QFrame.StyledPanel)
 
@@ -90,6 +100,25 @@ class ClipConfigRow(QFrame):
         hotkey_row.addWidget(record_btn)
         hotkey_row.addWidget(self.clear_hotkey_btn)
         form.addRow("Hotkey:", hotkey_row)
+
+        # Input overlay (Puppetry): capture a keyboard/mouse/controller
+        # overlay with each clip of this type. The availability reason
+        # (Puppetry missing, Layered Replay Buffer off, ...) sits beside
+        # the toggle; "..." opens the pieces/timing/placement options.
+        overlay_row = QHBoxLayout()
+        self.overlay_check = CustomCheckBox("Capture")
+        self.overlay_check.setChecked(bool((overlay or {}).get("overlay_enabled", False)))
+        self.overlay_check.toggled.connect(self._on_overlay_toggled)
+        self.overlay_options_btn = CustomButton("\u2026")
+        self.overlay_options_btn.setToolTip("Input overlay options: pieces, show by default, timing offset, placement")
+        self.overlay_options_btn.clicked.connect(self._edit_overlay_options)
+        self.overlay_reason_label = QLabel()
+        self.overlay_reason_label.setWordWrap(True)
+        overlay_row.addWidget(self.overlay_check)
+        overlay_row.addWidget(self.overlay_options_btn)
+        overlay_row.addWidget(self.overlay_reason_label, stretch=1)
+        form.addRow("Input overlay:", overlay_row)
+        self._refresh_overlay_reason()
 
         outer.addWidget(self.body)
         self._update_summary()
@@ -161,6 +190,29 @@ class ClipConfigRow(QFrame):
             self.hotkey_edit.setText(dialog.result_combo)
             self._on_any_change()
 
+    def _on_overlay_toggled(self, *_a) -> None:
+        self._refresh_overlay_reason()
+        self._on_any_change()
+
+    def _refresh_overlay_reason(self) -> None:
+        """Shows aio.available()'s reason beside the toggle when the overlay
+        is on but can't work right now (checked only when it's on, so a
+        user who doesn't use Puppetry never pays for the lookup)."""
+        self.overlay_options_btn.setEnabled(self.overlay_check.isChecked())
+        if not self.overlay_check.isChecked():
+            self.overlay_reason_label.setText("")
+            return
+        ok, why = overlay_support.available()
+        self.overlay_reason_label.setText("" if ok else f"\u26a0 Unavailable: {why}")
+
+    def _edit_overlay_options(self) -> None:
+        o = self._overlay
+        dialog = OverlayOptionsDialog(o["overlay_pieces"], o["overlay_visible_default"], o["overlay_offset_ms"],
+                                      o["overlay_placements"], self)
+        if dialog.exec():
+            self._overlay.update(dialog.result_values())
+            self._on_any_change()
+
     def _clear_hotkey(self) -> None:
         if self.hotkey_edit.text():
             self.hotkey_edit.setText("")
@@ -174,4 +226,6 @@ class ClipConfigRow(QFrame):
             "length_seconds": self.length_spin.value(),
             "sound_path": self.sound_edit.text().strip() or None,
             "hotkey": self.hotkey_edit.text().strip() or None,
+            "overlay_enabled": self.overlay_check.isChecked(),
+            **self._overlay,
         }

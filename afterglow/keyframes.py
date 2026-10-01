@@ -18,6 +18,10 @@ REPLAY_BUFFER_SENT = "replay_buffer_sent"
 REPLAY_BUFFER_COMPLETED = "replay_buffer_completed"
 TRIM_FINISHED = "trim_finished"
 CLEANED_UP_MOVED = "cleaned_up_moved"
+# Input overlay (Puppetry): capturing/storing the overlay sidecar for a clip.
+# Its Error Noise plays when the overlay could not be made (the clip itself
+# is still kept -- a missing overlay never costs a clip).
+INPUT_OVERLAY = "input_overlay"
 
 # (key, human-readable label), in actual pipeline order -- Settings UI
 # and any future keyframe-ordered UI should iterate this rather than
@@ -28,4 +32,5 @@ PIPELINE_KEYFRAMES: list[tuple[str, str]] = [
     (REPLAY_BUFFER_COMPLETED, "OBS Replay Buffer Completed"),
     (TRIM_FINISHED, "Trim Finished"),
     (CLEANED_UP_MOVED, "Cleaned Up & Moved Files"),
+    (INPUT_OVERLAY, "Input Overlay"),
 ]

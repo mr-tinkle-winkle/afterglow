@@ -47,7 +47,7 @@ from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import QColor, QFont, QImage, QLinearGradient, QPainter, QPainterPath, QPen
 
 from . import media
-from .model import EPS, KIND_AV, KIND_GIF, KIND_IMAGE, KIND_TEXT, Keyframe, Part, Project, Segment, Track
+from .model import EPS, KIND_AV, KIND_GIF, KIND_IMAGE, KIND_TEXT, Keyframe, OverlayPiece, Part, Project, Segment, Track
 
 RATE = media.AUDIO_RATE
 
@@ -112,8 +112,14 @@ class Renderer:
     """Holds decoders/caches for one consumer (the preview, or one export).
     Not thread-safe -- use one per thread."""
 
-    def __init__(self, project: Project):
+    def __init__(self, project: Project, overlays: bool = True):
+        """overlays=False: every input-overlay element -- attached pieces AND
+        detached overlay segments -- is left out, exactly as if hidden (the
+        export renders the video this way: nothing is ever burned in). The
+        Editor's overlay toggle flips `overlays` on the preview's renderer."""
         self.project = project
+        self.overlays = overlays
+        self._only: "str | None" = None     # frame_piece(): draw ONLY this overlay piece's content
         self._video: dict[str, media.VideoSource] = {}
         self._images: dict[str, QImage] = {}
         self._frames = media.FrameCache()
@@ -166,22 +172,45 @@ class Renderer:
         return img
 
     def frame(self, t: float, width: "int | None" = None, height: "int | None" = None) -> QImage:
+        return self._compose(t, width, height)
+
+    def frame_piece(self, t: float, name: str, width: "int | None" = None, height: "int | None" = None) -> QImage:
+        """ONLY the content of input-overlay piece `name` at time t, on a
+        transparent background (ARGB32): its attached pieces (drawn inside
+        their segment's transform, without the video itself) and its
+        detached overlay segments with their transforms, keyframes and
+        effects, stacked in track order. Used to build the output's overlay
+        sidecar."""
+        self._only = name
+        try:
+            return self._compose(t, width, height, transparent=True)
+        finally:
+            self._only = None
+
+    def _compose(self, t: float, width: "int | None", height: "int | None", transparent: bool = False) -> QImage:
         p = self.project
         cw, ch = p.width, p.height
         width, height = width or cw, height or ch
-        out = QImage(width, height, QImage.Format_RGB32)
-        out.fill(QColor(0, 0, 0))
+        if transparent:
+            out = QImage(width, height, QImage.Format_ARGB32_Premultiplied)
+            out.fill(Qt.transparent)
+        else:
+            out = QImage(width, height, QImage.Format_RGB32)
+            out.fill(QColor(0, 0, 0))
         painter = QPainter(out)
         painter.setRenderHint(QPainter.SmoothPixmapTransform)
         painter.setRenderHint(QPainter.Antialiasing)
         k = width / cw                          # preview scale (canvas units -> output px)
         painter.scale(k, height / ch)
+        only = self._only
         for track in reversed(p.tracks):        # bottom first, top track drawn last (on top)
             if track.hidden:
                 continue
             for seg in track.segments:
                 if not seg.covers(t):
                     continue
+                if seg.overlay_piece and (not self.overlays or (only is not None and seg.overlay_piece != only)):
+                    continue                    # an overlay element, left out (as if hidden) / not this piece
                 local = t - seg.start
                 tr = seg.transition_in
                 prev = previous_on_track(track, seg) if tr is not None and tr.duration > EPS else None
@@ -216,6 +245,8 @@ class Renderer:
             for seg in track.segments:
                 if not seg.covers(t) or not seg.visible or not seg.has_video:
                     continue
+                if seg.overlay_piece and not self.overlays:
+                    continue                    # left out exactly as if hidden
                 if found is not None:
                     return None
                 found = (track, seg)
@@ -231,6 +262,8 @@ class Renderer:
         if len(parts) != 1 or parts[0].kind != KIND_AV:
             return None
         part = parts[0]
+        if self.overlays and any(o.visible for o in part.overlays):
+            return None                         # attached overlay pieces are drawn on top
         src = self._source(part.source)
         if src is None or src.width != p.width or src.height != p.height or (width, height) != (p.width, p.height):
             return None
@@ -295,7 +328,14 @@ class Renderer:
             painter.translate(cw / 2 + x * cw, ch / 2 + y * ch)
             painter.rotate(rotation)
             painter.scale(scale, scale)
-            if part.kind == KIND_TEXT:
+            if self._only is not None and not seg.overlay_piece:
+                # frame_piece(): another clip -- its picture isn't part of the
+                # overlay sidecar; only its attached pieces of this name are.
+                if part.kind == KIND_AV and part.overlays:
+                    box = self._fit_box(part, tr, cw, ch)
+                    if box is not None:
+                        self._draw_overlays(painter, part, local, cw, ch, scale * k, *box)
+            elif part.kind == KIND_TEXT:
                 tip = None
                 st = part.text
                 if st is not None and st.bubble:
@@ -311,32 +351,77 @@ class Renderer:
                 self._draw_text(painter, part, ch, local=max(0.0, min(local - part.offset, part.duration)),
                                 duration=part.duration, tip=tip)
             else:
-                self._draw_picture(painter, part, local, tr, cw, ch, scale * k)
+                box = self._draw_picture(painter, part, local, tr, cw, ch, scale * k)
+                # Attached input-overlay pieces ride on the picture, inside the
+                # same transform (so moving/scaling/rotating the clip carries
+                # them). Preview only: the export renders with overlays=False.
+                if box is not None and part.overlays and self.overlays and part.kind == KIND_AV:
+                    self._draw_overlays(painter, part, local, cw, ch, scale * k, *box)
             painter.restore()
 
-    def _draw_picture(self, painter, part, local, tr, cw, ch, draw_scale) -> None:
-        # Fitted size of the cropped picture in canvas units (before scale).
+    def _fit_box(self, part, tr, cw, ch) -> "tuple[float, float] | None":
+        """(bw, bh): the part's cropped picture fitted into the canvas, in
+        canvas units (before the segment's scale). None if unreadable."""
         src = self._source(part.source) if part.kind != KIND_IMAGE else None
         sw = src.width if src else None
         sh = src.height if src else None
         if src is None:
-            img0 = self._picture(part, local, 1, 1)
+            img0 = self._picture(part, 0.0, 1, 1)
             if img0 is None:
-                return
+                return None
             sw, sh = img0.width(), img0.height()
         cl, ct, cr, cb = tr.crop_left, tr.crop_top, tr.crop_right, tr.crop_bottom
         crop_w = max(1e-6, 1 - cl - cr) * sw
         crop_h = max(1e-6, 1 - ct - cb) * sh
         fit = min(cw / crop_w, ch / crop_h)
-        bw, bh = crop_w * fit, crop_h * fit
+        return crop_w * fit, crop_h * fit
+
+    def _draw_overlays(self, painter, part, local, cw, ch, draw_scale, bw, bh) -> None:
+        """The part's attached overlay pieces, positioned as fractions of the
+        displayed picture (bw x bh, centred on the origin), rotated about
+        each piece's own centre. Pieces are transparent (ARGB) videos that
+        share the part's source timeline."""
+        for o in part.overlays:
+            if not o.visible or (self._only is not None and o.name != self._only):
+                continue
+            src = self._source(o.source)
+            if src is None:
+                continue
+            pw, ph = (o.width or src.width), (o.height or src.height)
+            Wd = o.w * bw
+            Hd = Wd * ph / max(1, pw)
+            frame = src.frame_at(part.source_time(local))
+            if frame is None:
+                continue
+            dw = max(2, min(src.width, int(math.ceil(Wd * draw_scale))))
+            dh = max(2, min(src.height, int(math.ceil(Hd * draw_scale))))
+            key = (o.source, frame.pts, dw, dh)
+            img = self._frames.get(key)
+            if img is None:
+                img = media.frame_to_qimage(frame, dw, dh)
+                self._frames.put(key, img)
+            painter.save()
+            painter.translate((o.x - 0.5) * bw + Wd / 2, (o.y - 0.5) * bh + Hd / 2)
+            painter.rotate(o.rotation)
+            painter.drawImage(QRectF(-Wd / 2, -Hd / 2, Wd, Hd), img)
+            painter.restore()
+
+    def _draw_picture(self, painter, part, local, tr, cw, ch, draw_scale) -> "tuple[float, float] | None":
+        # Fitted size of the cropped picture in canvas units (before scale).
+        box = self._fit_box(part, tr, cw, ch)
+        if box is None:
+            return None
+        bw, bh = box
+        cl, ct, cr, cb = tr.crop_left, tr.crop_top, tr.crop_right, tr.crop_bottom
         need_w = bw * draw_scale / max(1e-6, 1 - cl - cr)
         need_h = bh * draw_scale / max(1e-6, 1 - ct - cb)
         img = self._picture(part, local, need_w, need_h)
         if img is None:
-            return
+            return None
         iw, ih = img.width(), img.height()
         src_rect = QRectF(cl * iw, ct * ih, (1 - cl - cr) * iw, (1 - ct - cb) * ih)
         painter.drawImage(QRectF(-bw / 2, -bh / 2, bw, bh), img, src_rect)
+        return bw, bh
 
     def _draw_text(self, painter, part, ch, local: float = 0.0, duration: float = 0.0, tip=None) -> None:
         st = part.text
@@ -1432,7 +1517,7 @@ def export(project: Project, out_path: str, progress: "Callable[[float], None] |
     worker threads while encoding runs; and on many-core machines the
     timeline is split into `jobs` pieces rendered + encoded in parallel,
     then joined without re-encoding."""
-    duration = project.duration
+    duration = project.video_duration
     if duration <= EPS:
         raise ValueError("Nothing to export: the timeline is empty.")
     width = width or project.width
@@ -1458,7 +1543,7 @@ def export(project: Project, out_path: str, progress: "Callable[[float], None] |
     audio_done = [0.0]
 
     def encode_audio(out, aus):
-        renderer = Renderer(project)
+        renderer = Renderer(project, overlays=False)
         try:
             total = int(round(n_frames / rate * RATE))
             done = 0
@@ -1481,7 +1566,7 @@ def export(project: Project, out_path: str, progress: "Callable[[float], None] |
 
     def render_range(out, vs, f0, f1, threaded: bool):
         """Encode frames [f0, f1) into vs, pts starting at 0."""
-        renderer = Renderer(project)
+        renderer = Renderer(project, overlays=False)
         frames: "queue.Queue" = queue.Queue(maxsize=8)
         stop = threading.Event()
 

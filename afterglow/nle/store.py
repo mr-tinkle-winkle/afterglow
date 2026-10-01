@@ -30,6 +30,7 @@ import os
 import shutil
 from pathlib import Path
 
+from .. import overlay_support
 from ..config import CONFIG_DIR
 from ..editor import EDIT_BACKUPS_DIRNAME, backup_path_for
 from .model import Project
@@ -115,7 +116,34 @@ def stabilize_sources(project: Project, live_path: "str | Path", has_edit: bool,
                     stable_for_live = _snapshot_path(live)
                     shutil.copy2(live, stable_for_live)
                 p.source = str(stable_for_live)
+    _stabilize_overlays(project, live, stable_for_live)
     return str(backup)
+
+
+def _stabilize_overlays(project: Project, live: Path, stable_clip: "Path | None") -> None:
+    """The overlay pieces of the clip live in `<live>.input/`, which the
+    save replaces with the output's own sidecar. Copy that folder beside the
+    stable source the parts now point at (`<stable>.input/`) and re-point the
+    attached pieces there. (For an unedited clip that IS the Edit Backup's
+    sidecar -- the one Undo Edits restores.)"""
+    live_dir = overlay_support.sidecar_dir(live)
+    if not live_dir.is_dir():
+        return
+    users = [o for s in project.all_segments() for p in s.parts for o in p.overlays
+             if o.source and Path(o.source).parent == live_dir]
+    detached = [p for s in project.all_segments() if s.overlay_piece for p in s.parts
+                if p.source and Path(p.source).parent == live_dir]
+    if not users and not detached:
+        return
+    if stable_clip is None:
+        stable_clip = _snapshot_path(live)           # no part used the live clip itself: still needs a home
+    target = overlay_support.sidecar_dir(stable_clip)
+    if not target.exists():
+        shutil.copytree(live_dir, target)
+    for o in users:
+        o.source = str(target / Path(o.source).name)
+    for p in detached:
+        p.source = str(target / Path(p.source).name)
 
 
 def discard_for_video(video_id: int, live_path: "str | Path | None" = None) -> None:
@@ -139,6 +167,7 @@ def discard_for_video(video_id: int, live_path: "str | Path | None" = None) -> N
                 src = Path(p.source) if p.source else None
                 if src and src.parent == backups and ".src" in src.stem and src.exists():
                     src.unlink()
+                    overlay_support.clear_backup_sidecar(src)      # its `.srcN.input` snapshot
 
 
 def repoint_video_sources(video_id: int, old_path: "str | Path", new_path: "str | Path") -> None:
@@ -157,11 +186,20 @@ def _repoint_file(path: Path, old_s: str, new_s: str) -> None:
     if project is None:
         return
     changed = False
+    old_dir = str(overlay_support.sidecar_dir(old_s))
+    new_dir = str(overlay_support.sidecar_dir(new_s))
     for seg in project.all_segments():
         for part in seg.parts:
             if part.source == old_s:
                 part.source = new_s
                 changed = True
+            elif part.source and os.path.dirname(part.source) == old_dir:      # a detached overlay element
+                part.source = os.path.join(new_dir, os.path.basename(part.source))
+                changed = True
+            for o in part.overlays:
+                if o.source and os.path.dirname(o.source) == old_dir:        # an attached piece
+                    o.source = os.path.join(new_dir, os.path.basename(o.source))
+                    changed = True
     if project.output_path == old_s:
         project.output_path = new_s
         changed = True
