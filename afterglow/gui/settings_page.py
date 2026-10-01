@@ -968,6 +968,7 @@ class SettingsPage(QWidget):
             show_message(self, "Save Failed", str(e))
             return
 
+        self.input_overlay_page.refresh_status()   # which clip types capture the overlay
         self.status_label.setText("Saved.")
 
     def refresh_dynamic_lists(self) -> None:

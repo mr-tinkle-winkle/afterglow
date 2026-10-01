@@ -282,7 +282,16 @@ config.save(s)
 cfg_on = clips.get_clip_config(cfg.id)
 cfg_on = clips.update_clip_config(cfg_on.id, overlay_pieces=["keyboard", "mouse"], overlay_offset_ms=0,
                                   overlay_visible_default=True, overlay_placements={}, length_seconds=8)
+calls_log = work / "calls.jsonl"
+os.environ["FAKE_PUPPETRY_LOG"] = str(calls_log)
 video = clips.trigger_clip(cfg_on.id)
+clips.wait_for_overlays(120)
+del os.environ["FAKE_PUPPETRY_LOG"]
+renders = [json.loads(l) for l in calls_log.read_text().splitlines() if l.startswith('["render"')]
+spans = [float(r[r.index("--end") + 1]) - float(r[r.index("--start") + 1]) for r in renders]
+check(len(renders) == 2 and all(abs(sp - dur(video.path)) < 0.2 for sp in spans),
+      f"each piece is rendered over the CLIP's span only, not the whole replay buffer ({spans})")
+check(not any(l.startswith('["align"') for l in calls_log.read_text().splitlines()), "no align step")
 sc = osup.load_sidecar(video.path)
 check(sc is not None and set(sc["pieces"]) == {"keyboard", "mouse"}, "trigger_clip stores an overlay sidecar next to the clip")
 check(Path(video.path).exists() and abs(dur(video.path) - 8) < 0.5 and abs(dur(Path(sc["dir"]) / "mouse.mov") - dur(video.path)) < 0.15,
@@ -292,10 +301,24 @@ check(osup.placements_of(sc)["mouse"]["rotation"] == 5 and osup.placements_of(sc
 check("/tmp/overlay_ok.wav" in played and "/tmp/overlay_error.wav" not in played, "success sound for the input-overlay keyframe played")
 check(not (clips_dir / (Path(video.path).name + ".input.tmp")).exists(), "no temp leftovers")
 
+# the clip reaches the library BEFORE its overlay is rendered (rendering is slow with the
+# real Puppetry); and a rename while the pieces render carries the finished sidecar along
+os.environ["FAKE_PUPPETRY_DELAY"] = "2"
+t0 = time.time()
+video_r = clips.trigger_clip(cfg_on.id)
+returned_after = time.time() - t0
+check(osup.load_sidecar(video_r.path) is None, "trigger_clip returns before the overlay is rendered")
+renamed = library.rename_video(video_r.id, title="renamed while rendering")
+clips.wait_for_overlays(120)
+del os.environ["FAKE_PUPPETRY_DELAY"]
+check(osup.load_sidecar(renamed.path) is not None and not osup.sidecar_dir(video_r.path).exists(),
+      "renaming the clip while its overlay renders: the sidecar follows it")
+
 # overlay off: no sidecar, no noise
 played.clear()
 cfg_off = clips.update_clip_config(cfg.id, overlay_enabled=False)
 video2 = clips.trigger_clip(cfg_off.id)
+clips.wait_for_overlays(120)
 check(osup.load_sidecar(video2.path) is None and "/tmp/overlay_error.wav" not in played, "overlay off: no sidecar and no error noise")
 
 # overlay on, tool unavailable: clip kept, error noise
@@ -309,6 +332,7 @@ try:
     orig_find = aio.find_tool
     aio.find_tool = lambda: None
     video3 = clips.trigger_clip(cfg_on.id)
+    clips.wait_for_overlays(120)
 finally:
     aio.find_tool = orig_find
     os.environ["PUPPETRY_OVERLAY"] = saved_env
@@ -320,6 +344,7 @@ check(not osup.sidecar_dir(video3.path).exists(), "...with no half-written sidec
 played.clear()
 os.environ["FAKE_PUPPETRY_FAIL"] = "mouse"
 video4 = clips.trigger_clip(cfg_on.id)
+clips.wait_for_overlays(120)
 sc4 = osup.load_sidecar(video4.path)
 check(sc4 is not None and set(sc4["pieces"]) == {"keyboard"}, "one failed piece: the others are still stored")
 del os.environ["FAKE_PUPPETRY_FAIL"]

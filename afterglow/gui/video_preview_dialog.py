@@ -698,11 +698,49 @@ class VideoPreviewContent(QWidget):
             self._overlay_on = prefs.get(video.id, bool(sc.get("visible_by_default", True)))
             self._update_overlay_button()
             self.overlay_btn.show()
+        self._watch_pending_overlay(video if sc is None else None)
         # the info line stays centred: the left spacer mirrors the buttons on the right
         n_buttons = 2 + (1 if sc is not None else 0)
         self._info_row.itemAt(0).spacerItem().changeSize(n_buttons * _HEADER_BTN_SIZE + (n_buttons - 1) * 8, 0)
         self._info_row.itemAt(self._overlay_gap).spacerItem().changeSize(8 if sc is not None else 0, 0)
         self._info_row.invalidate()
+
+    def _watch_pending_overlay(self, video: "library.Video | None") -> None:
+        """A just-captured clip's overlay renders in the background after the
+        clip reaches the library (`<clip>.input.new/` exists meanwhile). Poll
+        for it, and when it lands, reload in place so the toggle and the
+        overlay appear without reopening the previewer."""
+        timer = self.__dict__.get("_overlay_watch")
+        if timer is None:
+            timer = self._overlay_watch = QTimer(self)
+            timer.setInterval(1500)
+            timer.timeout.connect(self._check_pending_overlay)
+        self._overlay_watch_video = video
+        pending = video is not None and overlay_support.sidecar_dir(video.path).with_name(
+            overlay_support.sidecar_dir(video.path).name + ".new").is_dir()
+        if pending:
+            timer.start()
+        else:
+            timer.stop()
+
+    def _check_pending_overlay(self) -> None:
+        video = getattr(self, "_overlay_watch_video", None)
+        if video is None or getattr(self, "_video", None) is None or self._video.id != video.id or not self.isVisible():
+            self._overlay_watch.stop()
+            return
+        if overlay_support.load_sidecar(video.path) is None:
+            pending = overlay_support.sidecar_dir(video.path).with_name(
+                overlay_support.sidecar_dir(video.path).name + ".new")
+            if not pending.is_dir():
+                self._overlay_watch.stop()       # finished without one (failed) -- nothing to show
+            return
+        self._overlay_watch.stop()
+        pos, paused = self._current_pos, self.video_widget.is_paused
+        self._setup_overlay(video)
+        self.video_widget.load(video.path, self._overlay_files, self._overlay_graph())
+        QTimer.singleShot(150, lambda: self.video_widget.seek(pos))     # once the file is open again
+        if not paused:
+            self.video_widget.play()
 
     def _overlay_graph(self) -> str:
         sc = getattr(self, "_overlay_sidecar", None)

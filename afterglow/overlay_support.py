@@ -30,7 +30,7 @@ __all__ = [
     "save_placements", "sidecar_dir", "load_sidecar", "has_sidecar",
     "move_sidecar", "copy_sidecar", "delete_sidecar", "trim_sidecar", "cut_piece",
     "backup_sidecar_dir", "backup_sidecar", "restore_sidecar", "clear_backup_sidecar",
-    "preview_graph", "available",
+    "preview_graph", "available", "freeze_input", "capture_clip",
 ]
 
 MANIFEST = "manifest.json"
@@ -77,6 +77,86 @@ def save_placements(sidecar: dict, placements: dict) -> None:
     for piece, p in placements.items():
         if piece in sidecar["pieces"]:
             sidecar["pieces"][piece]["placement"] = dict(m["pieces"][piece]["placement"])
+
+
+# ---------------------------------------------------------------- capture
+def freeze_input(dest) -> Path:
+    """Copy Puppetry's live input buffer right now (the moment the save is sent)."""
+    Path(dest).parent.mkdir(parents=True, exist_ok=True)
+    return aio.freeze_input(dest)
+
+
+def probe_clip(path) -> tuple:
+    """(duration, fps) of the clip's video."""
+    r = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
+                        "stream=r_frame_rate:format=duration", "-of", "json", str(path)], capture_output=True, text=True)
+    try:
+        d = json.loads(r.stdout or "{}")
+        num, den = (d["streams"][0].get("r_frame_rate") or "60/1").split("/")
+        fps = float(num) / float(den or 1)
+        return float(d["format"]["duration"]), (fps if 1 <= fps <= 1000 else 60.0)
+    except (KeyError, IndexError, ValueError, ZeroDivisionError):
+        raise OverlayError(f"can't read {Path(path).name}'s length") from None
+
+
+def capture_clip(buffer_copy, clip, clip_end: float, pieces: list, placements: dict, offset_ms: float = 0.0,
+                 visible_by_default: bool = True, timeout: float | None = None,
+                 clip_info: "tuple | None" = None) -> dict:
+    """Make `<clip>.input/` for a FINISHED clip that ends at `clip_end` (Unix
+    time), from an input buffer frozen when the save was sent.
+
+    Unlike aio.start_clip/finish_clip (which render the WHOLE replay length
+    -- 20 minutes of frames for a 1200 s buffer -- then cut it down), this
+    renders only the clip's own span, at the clip's own fps, straight into
+    place: no align step, no keyframe-snapped stream-copy cut. Pieces render
+    in parallel. Same sidecar format. Raises OverlayError if no piece could
+    be made (pieces that failed are listed under "errors")."""
+    import threading
+    clip = Path(clip)
+    duration, fps = clip_info or probe_clip(clip)      # (duration, fps) -- probe up front if the clip may move
+    start = clip_end - duration
+    dest = sidecar_dir(clip)
+    tmp = dest.with_name(dest.name + ".new")
+    shutil.rmtree(tmp, ignore_errors=True)
+    tmp.mkdir(parents=True)
+    rendered, errors = {}, {}
+
+    def work(piece):
+        out = tmp / f"{piece}.mov"
+        try:
+            aio._run(["render", "--buffer", buffer_copy, "--mode", piece, "--offset-ms", f"{offset_ms:g}",
+                      "--fps", f"{fps:g}", "--start", f"{start:.6f}", "--end", f"{clip_end:.6f}", out],
+                     timeout=timeout)
+            rendered[piece] = out
+        except OverlayError as e:
+            errors[piece] = str(e)
+    threads = [threading.Thread(target=work, args=(p,), daemon=True) for p in pieces if p in PIECES]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    try:
+        shutil.copyfile(buffer_copy, tmp / "inputs.jsonl")
+        manifest = {"format": "puppetry-overlay-sidecar", "version": 1, "clip": clip.name, "clip_end": clip_end,
+                    "offset_ms": offset_ms, "visible_by_default": visible_by_default, "inputs": "inputs.jsonl",
+                    "pieces": {}, "errors": errors}
+        for piece in [p for p in PIECES if p in rendered]:
+            w, h = aio._probe_size(rendered[piece])
+            pl = dict((placements or {}).get(piece) or aio.DEFAULT_PLACEMENT[piece])
+            pl.setdefault("visible", True)
+            pl["rotation"] = float(pl.get("rotation", 0.0) or 0.0)
+            manifest["pieces"][piece] = {"file": rendered[piece].name, "width": w, "height": h, "placement": pl}
+        if not manifest["pieces"]:
+            raise OverlayError("no overlay piece could be made: " +
+                               "; ".join(f"{k}: {v}" for k, v in errors.items()))
+        (tmp / MANIFEST).write_text(json.dumps(manifest, indent=2))
+        shutil.rmtree(dest, ignore_errors=True)
+        tmp.rename(dest)
+    except BaseException:
+        shutil.rmtree(tmp, ignore_errors=True)
+        raise
+    manifest["dir"] = str(dest)
+    return manifest
 
 
 # ---------------------------------------------------------------- queries

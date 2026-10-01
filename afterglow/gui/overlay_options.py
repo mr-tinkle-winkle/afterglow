@@ -208,6 +208,9 @@ class InputOverlaySettingsPage(QWidget):
         self.status_label = QLabel()
         self.status_label.setWordWrap(True)
         sl.addWidget(self.status_label)
+        self.capture_label = QLabel()
+        self.capture_label.setWordWrap(True)
+        sl.addWidget(self.capture_label)
         refresh = CustomButton("Check again")
         refresh.clicked.connect(self.refresh_status)
         sl.addWidget(refresh, alignment=Qt.AlignLeft)
@@ -232,6 +235,21 @@ class InputOverlaySettingsPage(QWidget):
     def refresh_status(self) -> None:
         ok, why = overlay_support.available()
         self.status_label.setText(("✔ " if ok else "✖ ") + why)
+        # The overlay is captured per clip TYPE (off by default) -- say which, so
+        # "Puppetry is recording but my clips have no overlay" explains itself.
+        try:
+            from .. import clips
+            cfgs = clips.list_clip_configs()
+        except Exception:  # noqa: BLE001 -- no DB yet
+            cfgs = []
+        on = [c.name for c in cfgs if c.overlay_enabled]
+        if on:
+            self.capture_label.setText("Captured with: " + ", ".join(on) +
+                                       ". Each clip's overlay renders right after the clip is saved "
+                                       "(it can take about as long as the clip itself).")
+        else:
+            self.capture_label.setText("⚠ No clip type captures the overlay yet -- tick \"Capture\" in a clip "
+                                       "type's Input overlay row under Clipping.")
 
     def save_into(self, settings) -> None:
         settings.overlay_placements = self.editor.values()

@@ -72,6 +72,38 @@ Findings / deviations worth knowing:
   preview player (the old hit-test used the wrong coordinate space);
   `tests/test_card_click_preview.py`.
 
+### Fix: "the input overlay doesn't show up" (newest session, tested against the REAL Puppetry)
+Puppetry's source was provided, so the capture pipeline was run against the
+real `puppetry-overlay` (not the fake) -- `tests/test_puppetry_capture_real.py`
+(set PUPPETRY_OVERLAY; skips otherwise). Findings:
+- **The capture rendered the WHOLE replay length.** `aio.start_clip` renders
+  each piece over [t_save - replay_length - 2 s, t_save + 0.5 s], then
+  `finish_clip` cuts it down. With a 1200 s buffer that is ~72,000 frames per
+  piece; the real renderer does ~90-330 fps (busy vs idle frames), i.e.
+  several minutes to a quarter hour, and `trigger_clip` blocked on it BEFORE
+  `add_video` (the daemon's 120 s CAPTURE_TIMEOUT just logged "stuck").
+  Now: `on_sent` only freezes the input (`overlay_support.freeze_input`);
+  after the clip is added to the library, `overlay_support.capture_clip`
+  renders ONLY the clip's span at the clip's own fps, straight into
+  `<clip>.input/` (via `<clip>.input.new/`), pieces in parallel, on a
+  background thread (`_OverlayCapture.finish_in_background`;
+  `clips.wait_for_overlays()` for tests/CLI). A 15 s 60 fps clip: ~3 s.
+  The vendored module is untouched (still byte-identical).
+- The real `align` stream-copies Puppetry's qtrle, which is NOT all-intra
+  (keyframe every 12 frames), so `-ss ... -c copy` snapped to an earlier
+  keyframe: up to ~0.2 s misalignment. The new path has no align step.
+  **Puppetry-side suggestion (not done -- Puppetry's code):** add `-g 1` to
+  `overlay_render._encoder_args` for .mov so its own `align` is exact.
+- Also fixed: the CLEANED_UP_MOVED success sound had been replaced by the
+  INPUT_OVERLAY sound (stage was reassigned before add_video).
+- A rename during the background render: the finished sidecar follows the
+  clip (`finish_in_background` checks the video's current path).
+- Previewer: a clip opened while its overlay is still rendering (the
+  `.input.new` dir exists) polls every 1.5 s and reloads in place when the
+  sidecar lands -- the toggle/overlay appear without reopening.
+- Settings > Input Overlay now says which clip types capture the overlay,
+  or warns that none does (Capture is OFF by default per clip type).
+
 ### Original design (kept for reference)
 Puppetry (a separate Linux keyboard/mouse macro daemon)
 keeps a rolling in-RAM record of all keyboard, mouse and controller input

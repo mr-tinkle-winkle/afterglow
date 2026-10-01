@@ -8,7 +8,9 @@ the red channel of a frame at piece-time t is 255*(t mod 16)/16, so a test can
 read a pixel and know exactly which moment of the timeline a frame shows.
 
 Env: FAKE_PUPPETRY_OFF=1 -> status reports the replay buffer disabled;
-     FAKE_PUPPETRY_FAIL=<piece> -> rendering that piece fails.
+     FAKE_PUPPETRY_FAIL=<piece> -> rendering that piece fails;
+     FAKE_PUPPETRY_DELAY=<s> -> every render takes that much longer;
+     FAKE_PUPPETRY_LOG=<file> -> each call's arguments are appended (JSON lines).
 """
 import json
 import os
@@ -32,6 +34,9 @@ def opt(args, name, default=None):
 def main():
     a = sys.argv[1:]
     cmd = a[0]
+    if os.environ.get("FAKE_PUPPETRY_LOG"):
+        with open(os.environ["FAKE_PUPPETRY_LOG"], "a") as f:
+            f.write(json.dumps(a) + "\n")
     if cmd == "status":
         out({"pid": 1, "updated": time.time(), "daemon_connected": True,
              "replay": {"enabled": not os.environ.get("FAKE_PUPPETRY_OFF"), "length_s": 60.0,
@@ -43,6 +48,7 @@ def main():
         mode = opt(a, "--mode", "full")
         if os.environ.get("FAKE_PUPPETRY_FAIL") == mode:
             out({"error": f"fake render failure for {mode}"}, 1)
+        time.sleep(float(os.environ.get("FAKE_PUPPETRY_DELAY", 0)))
         start, end = float(opt(a, "--start")), float(opt(a, "--end"))
         fps = float(opt(a, "--fps", 60))
         w, h = SIZES[mode]

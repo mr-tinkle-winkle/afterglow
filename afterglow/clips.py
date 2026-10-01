@@ -27,6 +27,7 @@ import json
 import shutil
 import sqlite3
 import subprocess
+import threading
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -277,53 +278,93 @@ def _play_error_sound(keyframe: str, settings) -> None:
 
 # ---------------------------------------------------------------- input overlay capture
 
+_OVERLAY_THREADS: "list[threading.Thread]" = []
+_OVERLAY_LOCK = threading.Lock()
+
+
+def wait_for_overlays(timeout: "float | None" = None) -> None:
+    """Block until every background input-overlay render has finished (tests, CLI)."""
+    with _OVERLAY_LOCK:
+        threads = list(_OVERLAY_THREADS)
+    for t in threads:
+        t.join(timeout)
+
+
 class _OverlayCapture:
     """The input-overlay half of one clip capture (Puppetry integration).
 
-    on_sent(t_save) starts the render job the moment the save request is
-    sent; finish() stores the result as `<clip>.input/` once the final clip
-    file is in place. Both swallow every failure into self.error (logged;
-    the error noise plays from finish()) -- a missing overlay never costs
-    a clip. Does nothing at all when the clip type has the overlay off."""
+    on_sent(t_save) only FREEZES Puppetry's input buffer the moment the save
+    request is sent (a file copy -- instant). finish() runs once the final,
+    trimmed clip is in place: it renders just the clip's own span (see
+    overlay_support.capture_clip) into `<clip>.input/`. Rendering the whole
+    replay length up front (aio.start_clip) took ~0.7 s per second of buffer
+    per piece with the real Puppetry -- a quarter hour for a 1200 s buffer --
+    so the sidecar showed up long after the clip did, if at all.
+    Both swallow every failure into self.error (logged; the error noise
+    plays from finish()) -- a missing overlay never costs a clip. Does
+    nothing at all when the clip type has the overlay off."""
 
     def __init__(self, clip_cfg: "ClipConfig", settings):
         self.enabled = bool(clip_cfg.overlay_enabled)
         self._cfg, self._settings = clip_cfg, settings
-        self.job = None
         self.error: str | None = None
-        self.fps: float | None = None
+        self.fps: float | None = None          # unused now (the clip's own fps is probed); kept for callers
         self.t_save: float | None = None
+        self._workdir: Path | None = None
+        self._buffer: Path | None = None
+        self._clip_info: "tuple | None" = None
 
     def on_sent(self, t_save: float) -> None:
         if not self.enabled:
             return
         self.t_save = t_save
-        self._start(t_save)
-
-    def _start(self, t_save: float) -> None:
-        from .input_overlay import OverlaySettings
-        cfg, st = self._cfg, self._settings
         try:
-            placements = overlay_support.resolve_placements(st.overlay_placements, cfg.overlay_placements)
-            self.job = overlay_support.aio.start_clip(t_save, OverlaySettings(
-                pieces=list(cfg.overlay_pieces) or ["keyboard", "mouse"],
-                placements=placements, offset_ms=cfg.overlay_offset_ms,
-                fps=self.fps or 60.0, visible_by_default=cfg.overlay_visible_default))
+            import tempfile
+            self._workdir = Path(tempfile.mkdtemp(prefix="afterglow_input_"))
+            self._buffer = overlay_support.freeze_input(self._workdir / "inputs.jsonl")
         except Exception as e:  # noqa: BLE001
             self.error = str(e)
+            print(f"Input overlay: couldn't freeze Puppetry's input buffer: {e}")
+
+    def finish_in_background(self, video_id: int, clip_path: Path, clip_cfg: "ClipConfig", settings):
+        """finish() on its own thread (returned; None when the overlay is off).
+        If the clip is renamed while its pieces render, the finished sidecar
+        follows it to the new name."""
+        if not self.enabled:
+            return None
+        try:
+            self._clip_info = overlay_support.probe_clip(clip_path)   # now, before the clip can be renamed
+        except Exception as e:  # noqa: BLE001 -- finish() reports it
+            self.error = self.error or str(e)
+
+        def run():
+            self.finish(clip_path, clip_cfg, settings)
+            if overlay_support.has_sidecar(clip_path) and not Path(clip_path).exists():
+                try:
+                    overlay_support.move_sidecar(clip_path, get_video(video_id).path)
+                except Exception as e:  # noqa: BLE001 -- the clip was deleted meanwhile, etc.
+                    print(f"Input overlay: the clip moved while rendering and the overlay couldn't follow: {e}")
+                    overlay_support.delete_sidecar(clip_path)
+        t = threading.Thread(target=run, name="afterglow-input-overlay", daemon=False)
+        with _OVERLAY_LOCK:
+            _OVERLAY_THREADS[:] = [x for x in _OVERLAY_THREADS if x.is_alive()] + [t]
+        t.start()
+        return t
 
     def finish(self, clip_path: Path, clip_cfg: "ClipConfig", settings) -> None:
         if not self.enabled:
             return
         try:
-            if self.job is None:
-                raise overlay_support.OverlayError(self.error or "the input overlay job never started")
-            manifest = overlay_support.aio.finish_clip(self.job, clip_path, clip_end=self.t_save)
-            # Persist the per-piece rotation default (Puppetry's own schema has none).
-            sc = overlay_support.load_sidecar(clip_path)
-            if sc is not None:
-                pl = overlay_support.resolve_placements(settings.overlay_placements, clip_cfg.overlay_placements)
-                overlay_support.save_placements(sc, {k: pl[k] for k in sc["pieces"]})
+            if self._buffer is None:
+                raise overlay_support.OverlayError(self.error or "Puppetry's input was never frozen")
+            pl = overlay_support.resolve_placements(settings.overlay_placements, clip_cfg.overlay_placements)
+            started = time.time()
+            manifest = overlay_support.capture_clip(
+                self._buffer, clip_path, clip_end=self.t_save,
+                pieces=list(clip_cfg.overlay_pieces) or ["keyboard", "mouse"], placements=pl,
+                offset_ms=clip_cfg.overlay_offset_ms, visible_by_default=clip_cfg.overlay_visible_default,
+                clip_info=self._clip_info)
+            print(f"Input overlay: {', '.join(manifest['pieces'])} made in {time.time() - started:.1f}s")
             _play_keyframe_sound(keyframes.INPUT_OVERLAY, clip_cfg, settings)
             if manifest.get("errors"):
                 print(f"Input overlay: some pieces failed: {manifest['errors']}")
@@ -333,8 +374,8 @@ class _OverlayCapture:
             _play_error_sound(keyframes.INPUT_OVERLAY, settings)
             overlay_support.delete_sidecar(clip_path)
         finally:
-            if self.job is not None:
-                self.job.cleanup()
+            if self._workdir is not None:
+                shutil.rmtree(self._workdir, ignore_errors=True)
 
 
 # ---------------------------------------------------------------- trigger pipeline
@@ -461,9 +502,6 @@ def trigger_clip(clip_config_id: int) -> Video:
         final_name = f"{timestamp}{raw_path.suffix}"
         final_path = clips_dir / final_name
         shutil.move(str(raw_path), str(final_path))
-        stage = keyframes.INPUT_OVERLAY  # a failure past this point costs only the overlay, never the clip
-        overlay.finish(final_path, clip_cfg, settings)
-
         video = add_video(
             final_path,
             title=f"{clip_cfg.name} - {timestamp}",
@@ -475,6 +513,12 @@ def trigger_clip(clip_config_id: int) -> Video:
                 add_tag_to_video(video.id, tag_name)
             video = get_video(video.id)
         _play_keyframe_sound(stage, clip_cfg, settings)
+
+        # Input overlay last, in the background: the clip is already safe in
+        # the library, and rendering the pieces takes a while (about as long
+        # as the clip, per piece, in parallel). Its own success/error noise.
+        stage = keyframes.INPUT_OVERLAY
+        overlay.finish_in_background(video.id, final_path, clip_cfg, settings)
 
         return video
     except Exception:

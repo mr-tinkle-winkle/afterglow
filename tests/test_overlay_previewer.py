@@ -87,6 +87,27 @@ check(c.overlay_btn.isHidden() and c.video_widget._mpv["lavfi-complex"] in ("", 
       "loading a clip without an overlay clears the previous clip's graph and files")
 w._preview_overlay.close_overlay(immediate=True); pump(0.3)
 
+# a just-captured clip: its overlay is still rendering when the previewer opens
+# (`<clip>.input.new/` exists) -> it appears in place once it lands
+late = clips_dir / "late.mp4"
+subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "color=c=gray:s=640x360:r=30:d=8",
+                "-c:v", "libx264", "-preset", "ultrafast", str(late)], check=True)
+v_late = library.add_video(late, title="late")
+pending = osup.sidecar_dir(late).with_name(osup.sidecar_dir(late).name + ".new")
+pending.mkdir()
+w._show_preview_overlay(v_late, None); pump(2.0)
+c = w._preview_overlay.content
+check(c.overlay_btn.isHidden(), "overlay still rendering: no toggle yet")
+ts2 = time.time()
+job = aio.start_clip(ts2, aio.OverlaySettings(pieces=["keyboard"], fps=30, visible_by_default=True))
+aio.finish_clip(job, late, clip_end=ts2); job.cleanup()
+pending.rmdir()
+pump(3.5)
+check(not c.overlay_btn.isHidden() and "overlay=" in str(c.video_widget._mpv["lavfi-complex"])
+      and len(c.video_widget._mpv["external-files"]) == 1,
+      "when the overlay lands, the toggle appears and the overlay plays without reopening")
+w._preview_overlay.close_overlay(immediate=True); pump(0.3)
+
 print()
 print("ALL PASS" if not fails else f"{len(fails)} FAILED")
 sys.exit(1 if fails else 0)
