@@ -70,7 +70,7 @@ Writing behaviour:
 {"pid": 1014, "updated": 1790748510.09, "daemon_connected": true,
  "pages": {"full": "http://127.0.0.1:17380/"},
  "elements": [{"id": "keyboard", "type": "keyboard"}, {"id": "mouse", "type": "mouse"},
-              {"id": "comet", "type": "comet"}],
+              {"id": "movement", "type": "mousepad"}],
  "element_urls": {},
  "replay": {"enabled": true, "file": "/run/user/1000/puppetry/input_buffer.jsonl",
             "length_s": 60.0, "length_source": "obs", "extra_s": 5.0},
@@ -106,7 +106,7 @@ prints `{"error": "..."}` and exits 1. Times are Unix seconds.
 Options:
 - `--mode` (the pieces):
   - `full`: the user's whole layout in one picture (by default a TKL
-    keyboard, a mouse and a Comet movement view; any mix of keyboards, mice,
+    keyboard, a mouse and a Mousepad movement view; any mix of keyboards, mice,
     controllers and movement views can be arranged in Puppetry).
   - `el:<id>`: one element of that layout (ids from `status`'s `elements`).
     An unknown id is an error.
@@ -117,8 +117,8 @@ Options:
       as classic, gaming, minimal or buttons only (Puppetry's choice).
     - The controller has sticks that move, triggers that fill, bumpers,
       d-pad, and face buttons labelled Xbox / PlayStation / Nintendo.
-    - Movement views are square: *comet* (a trail behind the pointer, held
-      on its tail or head), *mousepad* (the pointer moving around a pad),
+    - Movement views are square: *comet* (a trail behind the pointer at a
+      fixed scale, so its length shows speed; it follows the head or tail), *mousepad* (the pointer moving around a pad),
       *joystick* (direction and speed). Clicks, scrolls and held buttons
       show as rings, arcs and chevrons around the dot.
   - `simple`: one line of text of what's held.
@@ -167,7 +167,7 @@ simple pieces are much smaller.
         keyboard.mov          one transparent qtrle file per piece, cut to the clip exactly
         mouse.mov
         controller.mov
-        el-comet.mov          an "el:<id>" piece is stored as "el-<id>.mov"
+        el-movement.mov       an "el:<id>" piece is stored as "el-<id>.mov"
 
 `manifest.json`:
 

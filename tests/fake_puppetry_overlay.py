@@ -23,7 +23,7 @@ SIZES = {"full": (640, 200), "keyboard": (540, 160), "mouse": (96, 160), "contro
          "simple": (400, 40), "movement": (96, 96)}
 # the user's layout (FAKE_PUPPETRY_ELEMENTS="id:type,id:type" overrides)
 ELEMENTS = [{"id": i, "type": t} for i, t in (x.split(":") for x in
-            os.environ.get("FAKE_PUPPETRY_ELEMENTS", "keyboard:keyboard,mouse:mouse,comet:comet").split(",") if x)]
+            os.environ.get("FAKE_PUPPETRY_ELEMENTS", "keyboard:keyboard,mouse:mouse,movement:mousepad").split(",") if x)]
 
 
 def out(obj, code=0):

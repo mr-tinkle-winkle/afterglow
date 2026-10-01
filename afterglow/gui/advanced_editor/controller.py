@@ -109,10 +109,6 @@ SFX_PRESETS = {
                   idle_amount=1.0, skew=0.0, jumble=0.1),
     "GULP": _sfx("GULP", "#d0bfff", "#9775fa", "#3b2a74", "", size=0.09, skew=0.0, anim_in="letters",
                  idle="wave", idle_amount=0.8),
-    "OOF": _sfx("OOF", "#ffd8a8", "#ff922b", "#5c1f0a", "cloud", "#ffffff", skew=0.0, anim_in="pop",
-                idle="wobble", idle_amount=0.8, anim_out="shrink"),
-    "BRUH": _sfx("BRUH", "#dee2e6", "#adb5bd", "#343a40", "", skew=0.0, jumble=0.0, anim_in="drop",
-                 anim_in_dur=0.6, idle="float", idle_amount=0.6, anim_out="fall"),
     "YEET!": _sfx("YEET!", "#ffffff", "#ffd43b", "#e8590c", "", skew=-18.0, anim_in="spin", anim_out="fly",
                   idle="swing", idle_amount=0.6),
 }
@@ -618,6 +614,16 @@ class EditorController(QObject):
             new = self.perform("Detach input overlay", lambda p: [e for i in segs for e in ops.detach_overlay(p, i)])
             if new:
                 self.set_selection([e.id for e in new], anchor=new[0].id)
+
+    def split_pair(self) -> None:
+        """A paired comic effect (fuming steam, blush) -> two elements, left
+        and right, each on its own (ops.split_pair)."""
+        ids = list(self.selection)
+        if not ids:
+            return
+        new = self.perform("Split into left + right", lambda p: [s for i in ids for s in ops.split_pair(p, i)])
+        if new:
+            self.set_selection([s.id for s in new], anchor=new[0].id)
 
     def set_overlay(self, piece: "str | None", **values) -> None:
         ids = list(self.selection)

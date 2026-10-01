@@ -192,6 +192,73 @@ def cloud_path(c: QPointF, w: float, h: float, lumps: int = 7, seed: int = 0) ->
     return path.simplified()
 
 
+def comic_cloud_path(r: QRectF, seed: int = 0, bumps: int = 9, irregular: float = 0.45, flat: float = 0.7,
+                     puff: float = 0.55) -> QPainterPath:
+    """A comic-book cloud outline: round scalloped bumps bulging out around
+    an ellipse -- big ones on top, smaller and flatter along the bottom."""
+    c = r.center()
+    rx, ry = r.width() / 2 * 0.80, r.height() / 2 * 0.70
+    weights = [0.65 + irregular * _rand(seed + i * 7) for i in range(bumps)]
+    tot = sum(weights)
+    a = -math.pi / 2 + (_rand(seed + 3) - 0.5) * 0.5
+    angs = []
+    for wgt in weights:
+        angs.append(a)
+        a += 2 * math.pi * wgt / tot
+
+    def P(ang):
+        y = math.sin(ang)
+        return QPointF(c.x() + math.cos(ang) * rx, c.y() + y * ry * (flat if y > 0 else 1.0))
+    path = QPainterPath(P(angs[0]))
+    for i in range(bumps):
+        a0, a1 = angs[i], angs[(i + 1) % bumps] + (2 * math.pi if i == bumps - 1 else 0.0)
+        A, B = P(a0), P(a1)
+        mid = (a0 + a1) / 2
+        nx, ny = math.cos(mid), math.sin(mid) * (0.75 if math.sin(mid) > 0 else 1.0)
+        nl = math.hypot(nx, ny) or 1.0
+        chord = math.hypot(B.x() - A.x(), B.y() - A.y())
+        k = chord * (puff * (0.55 if math.sin(mid) > 0.35 else 1.0)) * (0.85 + 0.3 * _rand(seed + i * 13))
+        path.cubicTo(QPointF(A.x() + nx / nl * k, A.y() + ny / nl * k),
+                     QPointF(B.x() + nx / nl * k, B.y() + ny / nl * k), B)
+    path.closeSubpath()
+    return path
+
+
+def draw_comic_cloud(p: QPainter, r: QRectF, fill, line=INK, seed: int = 0, lw: float = 0.0, shade: bool = True,
+                     curls: bool = True, **kw) -> QPainterPath:
+    """Fill + underside shading + bold outline + a few inner curls (the
+    hand-inked look). Returns the outline path."""
+    path = comic_cloud_path(r, seed, **kw)
+    lw = lw or max(1.0, min(r.width(), r.height()) * 0.045)
+    fill = QColor(fill)
+    if shade:
+        p.setPen(Qt.NoPen)
+        p.setBrush(fill.darker(118))
+        p.drawPath(path)
+        p.setBrush(fill)
+        p.drawPath(path.intersected(path.translated(r.width() * 0.03, -r.height() * 0.11)))
+    else:
+        p.setPen(Qt.NoPen)
+        p.setBrush(fill)
+        p.drawPath(path)
+    p.setBrush(Qt.NoBrush)
+    p.setPen(_pen(line, lw))
+    p.drawPath(path)
+    if curls:
+        p.setPen(_pen(line, lw * 0.6))
+        c = r.center()
+        for j in range(3):
+            ang = math.radians(-150 + 60 * j + 25 * (_rand(seed + j * 5) - 0.5))
+            x = c.x() + math.cos(ang) * r.width() * 0.28
+            y = c.y() + math.sin(ang) * r.height() * 0.22
+            rr = min(r.width(), r.height()) * 0.11
+            curl = QPainterPath()
+            curl.arcMoveTo(QRectF(x - rr, y - rr * 0.8, rr * 2, rr * 1.6), 200 - j * 10)
+            curl.arcTo(QRectF(x - rr, y - rr * 0.8, rr * 2, rr * 1.6), 200 - j * 10, -95)
+            p.drawPath(curl)
+    return path
+
+
 def _cycle(t: float, period: float, offset: float = 0.0) -> float:
     """0..1 sawtooth."""
     return ((t / max(EPS, period)) + offset) % 1.0
@@ -202,10 +269,10 @@ def _cycle(t: float, period: float, offset: float = 0.0) -> float:
 # Each: fn(painter, rect, t, g, out, color). t = idle time (s x speed; 0 when
 # still), g = transition progress (1 = fully shown), out = leaving.
 # =========================================================================
-def fx_scribblenado(p, r, t, g, out, color):
+def fx_scribblenado(p, r, t, g, out, color, **_):
     """Anger: one continuous looping pen stroke narrowing into a funnel,
     spinning; jitter re-seeded 12x/s so it boils. In = winds itself up from
-    the top; out = unwinds back up and shrinks."""
+    the BOTTOM tip; out = unwinds back down into it."""
     boil = int(math.floor(t * BOIL_FPS))
     cx, top, h, w = r.center().x(), r.top(), r.height(), r.width()
     loops, spl = 11, 26
@@ -226,10 +293,10 @@ def fx_scribblenado(p, r, t, g, out, color):
         sway = math.sin(u * math.pi * 1.5 + t * 3.0) * w * 0.06 * u
         pts.append((cx + rx * math.cos(a) + jx + sway, top + h * 0.12 + u * h * 0.76 + ry * math.sin(a) + jy))
     s = 0.55 + 0.45 * ease_out_cubic(g)
-    _scaled(p, QPointF(cx, top + h * 0.15), s)
+    _scaled(p, QPointF(cx, top + h * 0.9), s)
     p.setPen(_pen(color, h * 0.022))
     p.setBrush(Qt.NoBrush)
-    p.drawPath(_partial(pts, ease_out_cubic(g)))
+    p.drawPath(_partial(pts[::-1], ease_out_cubic(g)))           # drawn from the bottom tip up
     if g > 0.85:
         pen = _pen(color, h * 0.014)
         p.setPen(pen)
@@ -252,16 +319,15 @@ def _vein_piece() -> list:
             ((0.20, -0.50), (0.38, -0.50), (0.58, -0.62), (0.72, -0.78))]
 
 
-def fx_vein(p, r, t, g, out, color):
+def fx_vein(p, r, t, g, out, color, **_):
     """Anger: the bulging vein mark -- four thick bent strokes around the
-    centre. In = pops out (overshoot, a twist); idle = throbs like a pulse;
-    out = squeezes back to nothing."""
+    centre. In = pops out (no twist -- a vein doesn't rotate); idle = throbs
+    like a pulse; out = squeezes back to nothing."""
     c = r.center()
     R = min(r.width(), r.height()) / 2 / 1.1
     beat = (math.sin(t * 2 * math.pi * 1.5) * 0.5 + 0.5) ** 4 if t > 0 else 0.0     # short, sharp swells
     s = pop_scale(g, out) * (1.0 + 0.13 * beat)
-    rot = -(1.0 - g) * 35.0 if not out else (1.0 - g) * 25.0
-    _scaled(p, c, s, rot)
+    _scaled(p, c, s)
     pen = QPen(QColor(color), R * (0.21 + 0.03 * beat))
     pen.setCapStyle(Qt.FlatCap)
     pen.setJoinStyle(Qt.RoundJoin)
@@ -280,7 +346,7 @@ def fx_vein(p, r, t, g, out, color):
         p.drawPath(path)
 
 
-def fx_wiggle_lines(p, r, t, g, out, color):
+def fx_wiggle_lines(p, r, t, g, out, color, **_):
     """Unease: wavy lines radiating out over the top three-quarters of a
     circle (an empty middle for the head), waves crawling outward. In = the
     lines grow out from the head one after another; out = they pull back in."""
@@ -314,28 +380,38 @@ def fx_wiggle_lines(p, r, t, g, out, color):
         p.drawPath(path)
 
 
-def fx_steam(p, r, t, g, out, color):
-    """Fuming: puffs of steam jetting up out of both sides, swelling and
-    fading as they rise. In = the jets start; out = they die down."""
+def fx_steam(p, r, t, g, out, color, **_):
+    """Fuming: puffs of steam jetting up out of both sides (or ONE side --
+    Side: left / right; "Split into left + right" makes the pair two
+    elements, each keyframed on its own), swelling and fading as they rise.
+    In = the jets start; out = they die down."""
     w, h = r.width(), r.height()
-    outline = QColor(color).darker(170)
-    jets = [(r.left() + w * 0.18, -1), (r.right() - w * 0.18, 1)]
+    outline = QColor(color).darker(190)
+    side_opt = _.get("side", "")
+    if side_opt in ("left", "right"):
+        sd = -1 if side_opt == "left" else 1
+        jets = [(r.center().x(), sd)]            # the jet's base is the element's centre
+        drift = w * 0.44                       # the box is half as wide as the pair's
+    else:
+        jets = [(r.left() + w * 0.18, -1), (r.right() - w * 0.18, 1)]
+        drift = w * 0.22
     for side_i, (x0, side) in enumerate(jets):
         for k in range(4):
-            life = _cycle(t + 0.11 * side_i, 1.1, k / 4.0)
+            life = _cycle(t + 0.11 * (side > 0), 1.1, k / 4.0)
             a = (1.0 - life) ** 0.8 * _clamp(g * 1.4 - k * 0.1)
             if a <= 0.01:
                 continue
             size = h * (0.10 + 0.22 * life) * (0.6 + 0.4 * g)
-            cx = x0 + side * w * 0.22 * life ** 0.8
+            cx = x0 + side * drift * life ** 0.8
             cy = r.bottom() - h * 0.18 - h * 0.62 * life
-            puff = cloud_path(QPointF(cx, cy), size * 1.3, size, 5, k * 7 + side_i)
-            p.setPen(_pen(_alpha(outline, a), h * 0.012))
-            p.setBrush(_alpha(color, a))
-            p.drawPath(puff)
+            p.save()
+            p.setOpacity(p.opacity() * a)
+            draw_comic_cloud(p, QRectF(cx - size * 0.7, cy - size * 0.55, size * 1.4, size * 1.1), color, outline,
+                             seed=k * 7 + (side > 0), lw=h * 0.014, curls=False, bumps=6, puff=0.6)
+            p.restore()
 
 
-def fx_sweatdrop(p, r, t, g, out, color):
+def fx_sweatdrop(p, r, t, g, out, color, **_):
     """Awkward: the big anime sweat drop. In = slides down into place; idle =
     creeps down a little and wobbles; out = slides away down and fades."""
     w, h = r.width(), r.height()
@@ -360,7 +436,7 @@ def fx_sweatdrop(p, r, t, g, out, color):
     p.drawEllipse(QRectF(cx - bw * 0.30, top + bh * 0.55, bw * 0.16, bh * 0.22))
 
 
-def fx_sweat(p, r, t, g, out, color):
+def fx_sweat(p, r, t, g, out, color, **_):
     """Nervous: little drops springing off in arcs, again and again."""
     c = QPointF(r.center().x(), r.top() + r.height() * 0.62)
     w, h = r.width(), r.height()
@@ -387,53 +463,35 @@ def fx_sweat(p, r, t, g, out, color):
         p.restore()
 
 
-def fx_gloom(p, r, t, g, out, color):
-    """Gloomy / depressed: the manga curtain of vertical lines hanging down,
-    fading toward the bottom. In = the lines drop down one by one; out =
-    they're pulled back up."""
-    n = 17
-    w, h = r.width(), r.height()
-    for i in range(n):
-        gi = _stagger(g, i if not out else n - 1 - i, n, 0.55)
-        if gi <= 0:
-            continue
-        x = r.left() + w * (i + 0.5) / n + (_rand(i * 5) - 0.5) * w / n * 0.5
-        breathe = 0.04 * math.sin(t * 1.3 + i) if t > 0 else 0.0
-        length = h * (0.45 + 0.5 * _rand(i * 11 + 2) + breathe) * ease_out_cubic(gi)
-        grad = QLinearGradient(QPointF(x, r.top()), QPointF(x, r.top() + max(1.0, length)))
-        grad.setColorAt(0.0, QColor(color))
-        grad.setColorAt(1.0, _alpha(color, 0.0))
-        pen = QPen(QBrush(grad), max(0.8, w * (0.008 + 0.01 * _rand(i * 3))))
-        pen.setCapStyle(Qt.FlatCap)
-        p.setPen(pen)
-        p.drawLine(QPointF(x, r.top()), QPointF(x, r.top() + length))
-
-
-def fx_raincloud(p, r, t, g, out, color):
-    """Sad: a little rain cloud raining. In = the cloud puffs up, then the
-    rain starts; out = the rain stops and the cloud shrinks away."""
+def fx_raincloud(p, r, t, g, out, color, **_):
+    """Sad: a little comic rain cloud -- puffy scalloped bumps, inked
+    outline, shaded underside -- with slanted rain streaks pouring out of
+    it. In = the cloud puffs up, then the rain starts; out = the rain stops
+    and the cloud shrinks away."""
     w, h = r.width(), r.height()
     cloud_g = _clamp(g / 0.6) if not out else _clamp((g - 0.4) / 0.6)
     rain_a = _clamp((g - 0.5) / 0.5) if not out else _clamp(g / 0.5)
-    cc = QPointF(r.center().x(), r.top() + h * 0.24)
+    cr = QRectF(r.left() + w * 0.04, r.top() + h * 0.02, w * 0.92, h * 0.5)
     if rain_a > 0.01:
-        rain = QColor("#4dabf7")
-        p.setPen(_pen(_alpha(rain, rain_a), h * 0.018))
-        for k in range(14):
-            x0 = r.left() + w * (0.18 + 0.64 * ((k * 0.618) % 1.0))
-            life = _cycle(t, 0.55, _rand(k * 7))
-            y0 = r.top() + h * 0.38 + h * 0.55 * life
-            p.drawLine(QPointF(x0 - w * 0.02 * life, y0), QPointF(x0 - w * 0.035, y0 + h * 0.08))
+        rain = QColor("#3b6fb6")
+        for k in range(13):
+            x0 = cr.left() + cr.width() * (0.15 + 0.7 * ((k * 0.618) % 1.0))
+            life = _cycle(t, 0.5, _rand(k * 7))
+            length = h * (0.07 + 0.06 * _rand(k * 3))
+            y0 = cr.bottom() - h * 0.06 + (r.bottom() - cr.bottom()) * life
+            a = rain_a * min(1.0, (1.0 - life) * 3.0)
+            p.setPen(_pen(_alpha(rain, a), h * 0.02))
+            p.drawLine(QPointF(x0 - w * 0.06 * life, y0), QPointF(x0 - w * 0.06 * life - length * 0.3, y0 + length))
     if cloud_g > 0.01:
         p.save()
-        _scaled(p, cc, pop_scale(cloud_g, out) * (1.0 + 0.02 * math.sin(t * 1.7)))
-        p.setPen(_pen(QColor(color).darker(150), h * 0.018))
-        p.setBrush(QColor(color))
-        p.drawPath(cloud_path(cc, w * 0.86, h * 0.34, 7, 3))
+        bob = math.sin(t * 1.7) * h * 0.012 if t > 0 else 0.0
+        p.translate(0, bob)
+        _scaled(p, cr.center(), pop_scale(cloud_g, out))
+        draw_comic_cloud(p, cr, color, seed=11, lw=h * 0.022, bumps=8, puff=0.5, flat=0.55)
         p.restore()
 
 
-def fx_dots(p, r, t, g, out, color):
+def fx_dots(p, r, t, g, out, color, **_):
     """Bored / awkward silence: "..." -- the dots pop in one at a time, bob
     in a wave, and vanish in reverse."""
     w, h = r.width(), r.height()
@@ -451,7 +509,7 @@ def fx_dots(p, r, t, g, out, color):
         p.drawEllipse(QPointF(x, y), rad * s, rad * s)
 
 
-def fx_zzz(p, r, t, g, out, color):
+def fx_zzz(p, r, t, g, out, color, **_):
     """Bored / sleepy: "Z z z" floating up and drifting, growing as they go,
     fading out at the top."""
     w, h = r.width(), r.height()
@@ -478,7 +536,7 @@ def _burst_lines(p, c, r_in, r_out, n, color, width, start=-90.0, span=360.0, a=
                    QPointF(c.x() + math.cos(ang) * r_out, c.y() + math.sin(ang) * r_out))
 
 
-def _glyph_mark(p, r, t, g, out, color, text, rock=0.0, shake=0.0, lines=True):
+def _glyph_mark(p, r, t, g, out, color, text, rock=0.0, shake=0.0, lines=False, rock_speed=2.2, twist=True):
     w, h = r.width(), r.height()
     c = r.center()
     boil = int(t * BOIL_FPS)
@@ -492,9 +550,9 @@ def _glyph_mark(p, r, t, g, out, color, text, rock=0.0, shake=0.0, lines=True):
             _burst_lines(p, c, R * 0.62, R * (0.62 + 0.3 * ln), 3, color, R * 0.06,
                          start=(180 if side < 0 else 0) - 35, span=70, a=lg)
     p.save()
-    rot = rock * math.sin(t * 2.2) if t > 0 else 0.0
+    rot = rock * math.sin(t * rock_speed) if t > 0 else 0.0
     p.translate(jx, jy)                       # the quiver
-    _scaled(p, c, pop_scale(g, out), rot + (1.0 - g) * (-20 if not out else 20))
+    _scaled(p, c, pop_scale(g, out), rot + ((1.0 - g) * (-20 if not out else 20) if twist else 0.0))
     path = glyph_path(text, QRectF(r.left() + w * 0.22, r.top() + h * 0.08, w * 0.56, h * 0.84))
     p.setPen(_pen(QColor(color).darker(200), h * 0.03))
     p.setBrush(QColor(color))
@@ -502,22 +560,22 @@ def _glyph_mark(p, r, t, g, out, color, text, rock=0.0, shake=0.0, lines=True):
     p.restore()
 
 
-def fx_exclaim(p, r, t, g, out, color):
-    """Surprise: a big "!" popping in with little pop lines, quivering."""
-    _glyph_mark(p, r, t, g, out, color, "!", shake=0.025)
+def fx_exclaim(p, r, t, g, out, color, **_):
+    """Surprise: a big "!" that just pops into place, then quivers."""
+    _glyph_mark(p, r, t, g, out, color, "!", shake=0.025, twist=False)
 
 
-def fx_question(p, r, t, g, out, color):
+def fx_question(p, r, t, g, out, color, **_):
     """Confused: a "?" popping in, then rocking back and forth."""
     _glyph_mark(p, r, t, g, out, color, "?", rock=10.0, lines=False)
 
 
-def fx_interrobang(p, r, t, g, out, color):
-    """Shocked & confused: "!?" """
-    _glyph_mark(p, r, t, g, out, color, "!?", rock=6.0, shake=0.012)
+def fx_interrobang(p, r, t, g, out, color, **_):
+    """Shocked & confused: "!?" -- pops into place, then wobbles fast."""
+    _glyph_mark(p, r, t, g, out, color, "!?", rock=9.0, shake=0.012, rock_speed=17.0, twist=False)
 
 
-def fx_shock(p, r, t, g, out, color):
+def fx_shock(p, r, t, g, out, color, **_):
     """Surprise lines: short straight lines bursting out in a ring around a
     head. In = they shoot out from the middle; idle = they flicker; out =
     they fly off and fade."""
@@ -543,7 +601,7 @@ def fx_shock(p, r, t, g, out, color):
                    QPointF(c.x() + math.cos(ang) * min(rout, R), c.y() + math.sin(ang) * min(rout, R)))
 
 
-def fx_spiral(p, r, t, g, out, color):
+def fx_spiral(p, r, t, g, out, color, **_):
     """Dizzy: a spinning spiral. In = it winds out from the middle; out = it
     winds back in."""
     c = r.center()
@@ -561,7 +619,7 @@ def fx_spiral(p, r, t, g, out, color):
     p.drawPath(_partial(pts, g))
 
 
-def fx_dizzy_stars(p, r, t, g, out, color):
+def fx_dizzy_stars(p, r, t, g, out, color, **_):
     """Dizzy / knocked out: little stars orbiting around a head, the far ones
     smaller and behind."""
     c = r.center()
@@ -579,7 +637,7 @@ def fx_dizzy_stars(p, r, t, g, out, color):
         p.drawPath(star_path(x, y, s, s * 0.45, 5, -90 + t * 120 + depth * 10))
 
 
-def fx_hearts(p, r, t, g, out, color):
+def fx_hearts(p, r, t, g, out, color, **_):
     """In love: hearts floating up, swaying, swelling then fading."""
     w, h = r.width(), r.height()
     outline = QColor(color).darker(160)
@@ -596,20 +654,93 @@ def fx_hearts(p, r, t, g, out, color):
         p.drawPath(heart_path(x, y, s))
 
 
-def fx_heartbeat(p, r, t, g, out, color):
-    """Smitten: one big heart thumping lub-dub."""
-    c = r.center()
-    s0 = min(r.width(), r.height()) * 1.05
+HEART_VARIANTS = [("Bursting out (separate)", "separate"), ("Bulging under (covered)", "covered"),
+                  ("Just the heart", "plain")]
+
+
+def fx_heartbeat(p, r, t, g, out, color, **_):
+    """Smitten: the cartoon heart beating out of a chest, lub-dub. Variant
+    "separate": the heart in its own color bursts out of the chest on a
+    stretched cone of the shirt (color 2) joined to it by two lines;
+    "covered": the shirt itself bulges out in a heart shape; "plain": just
+    the heart. Put the element on someone's chest."""
+    variant = _.get("variant") or "separate"
+    cover = QColor(_.get("color2") or "#f1f3f5")
+    w, h = r.width(), r.height()
+    cx = r.center().x()
     ph = (t * 1.2) % 1.0 if t > 0 else 0.5
     beat = math.exp(-((ph - 0.1) / 0.05) ** 2) + 0.7 * math.exp(-((ph - 0.28) / 0.05) ** 2)
-    s = pop_scale(g, out) * (1.0 + 0.12 * beat)
-    _scaled(p, c, s)
-    p.setPen(_pen(QColor(color).darker(160), s0 * 0.05))
+    grow = pop_scale(g, out)
+    if variant == "plain":
+        c = r.center()
+        s0 = min(w, h) * 1.05
+        _scaled(p, c, grow * (1.0 + 0.12 * beat))
+        p.setPen(_pen(INK, s0 * 0.05))
+        p.setBrush(QColor(color))
+        p.drawPath(heart_path(c.x(), c.y() + s0 * 0.04, s0 * 0.9))
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(255, 255, 255, 150))
+        p.drawEllipse(QRectF(c.x() - s0 * 0.3, c.y() - s0 * 0.22, s0 * 0.14, s0 * 0.1))
+        return
+    # the chest: an opening low in the box; the heart pushes up and out of it
+    # on every beat, on a membrane that pinches in (concave) between them
+    base = QPointF(cx, r.bottom() - h * 0.08)
+    bw = w * 0.17
+    out_k = grow * (0.78 + 0.22 * beat)                  # how far out it is
+    hs = w * 0.86 * (0.55 + 0.45 * grow) * (1.0 + 0.16 * beat)
+    hc = QPointF(cx, base.y() - (h * 0.62) * out_k)
+    heart = heart_path(hc.x(), hc.y(), hs)
+    lw = w * 0.035
+    lobe_l = QPointF(hc.x() - hs * 0.40, hc.y() + hs * 0.12)
+    lobe_r = QPointF(hc.x() + hs * 0.40, hc.y() + hs * 0.12)
+    neck = (base.y() + lobe_l.y()) / 2
+    cone = QPainterPath(QPointF(base.x() - bw, base.y()))
+    cone.cubicTo(QPointF(base.x() - bw * 0.55, neck), QPointF(lobe_l.x() + hs * 0.1, lobe_l.y() + hs * 0.25), lobe_l)
+    cone.lineTo(lobe_r)
+    cone.cubicTo(QPointF(lobe_r.x() - hs * 0.1, lobe_r.y() + hs * 0.25), QPointF(base.x() + bw * 0.55, neck),
+                 QPointF(base.x() + bw, base.y()))
+    cone.closeSubpath()
+    if variant == "covered":
+        bulge = cone.united(heart)
+        p.setPen(Qt.NoPen)
+        p.setBrush(cover.darker(112))
+        p.drawPath(bulge)
+        p.setBrush(cover)
+        p.drawPath(bulge.intersected(bulge.translated(-w * 0.03, -h * 0.04)))
+        p.setBrush(Qt.NoBrush)
+        p.setPen(_pen(INK, lw))
+        p.drawPath(bulge)
+        p.setPen(_pen(INK, lw * 0.6))           # fabric stretch folds
+        for sd in (-1, 1):
+            f = QPainterPath(QPointF(base.x() + sd * bw * 0.35, base.y() - h * 0.02))
+            f.quadTo(QPointF(base.x() + sd * bw * 0.2, neck), QPointF(hc.x() + sd * hs * 0.16, hc.y() + hs * 0.32))
+            p.drawPath(f)
+        p.setPen(_pen(INK, lw))
+        p.setBrush(cover.darker(150))
+        p.drawEllipse(base, bw * 1.5, h * 0.035)           # where it comes out of the chest
+        return
+    # separate: the stretched cone of shirt with its two edge lines, the heart on top
+    p.setPen(_pen(INK, lw))
+    p.setBrush(cover.darker(150))
+    p.drawEllipse(base, bw * 1.5, h * 0.035)               # the hole in the chest
+    p.setPen(Qt.NoPen)
+    p.setBrush(cover)
+    p.drawPath(cone)
+    p.setPen(_pen(INK, lw))
+    for sd in (-1, 1):
+        lobe = lobe_r if sd > 0 else lobe_l
+        edge = QPainterPath(QPointF(base.x() + sd * bw, base.y()))
+        edge.cubicTo(QPointF(base.x() + sd * bw * 0.55, neck), QPointF(lobe.x() - sd * hs * 0.1, lobe.y() + hs * 0.25), lobe)
+        p.drawPath(edge)
+    p.setPen(_pen(INK, lw))
     p.setBrush(QColor(color))
-    p.drawPath(heart_path(c.x(), c.y() + s0 * 0.04, s0 * 0.9))
+    p.drawPath(heart)
     p.setPen(Qt.NoPen)
     p.setBrush(QColor(255, 255, 255, 150))
-    p.drawEllipse(QRectF(c.x() - s0 * 0.3, c.y() - s0 * 0.22, s0 * 0.14, s0 * 0.1))
+    p.drawEllipse(QRectF(hc.x() - hs * 0.3, hc.y() - hs * 0.26, hs * 0.14, hs * 0.1))
+    if beat > 0.3:                                       # little "thump" lines at the beat
+        _burst_lines(p, hc, hs * 0.62, hs * (0.62 + 0.18 * beat), 3, INK, lw * 0.7, start=-150, span=50)
+        _burst_lines(p, hc, hs * 0.62, hs * (0.62 + 0.18 * beat), 3, INK, lw * 0.7, start=-80, span=50)
 
 
 def _note(p, x, y, s, color, double=False):
@@ -636,7 +767,7 @@ def _note(p, x, y, s, color, double=False):
         p.drawPath(flag)
 
 
-def fx_music(p, r, t, g, out, color):
+def fx_music(p, r, t, g, out, color, **_):
     """Happy / humming: music notes bobbing up and away."""
     w, h = r.width(), r.height()
     for k in range(4):
@@ -650,7 +781,7 @@ def fx_music(p, r, t, g, out, color):
         _note(p, x, y, s, _alpha(color, a), double=(k % 2 == 1))
 
 
-def fx_sparkles(p, r, t, g, out, color):
+def fx_sparkles(p, r, t, g, out, color, **_):
     """Shiny / cool / clean: four-point twinkles blinking in turn."""
     w, h = r.width(), r.height()
     spots = [(0.25, 0.3, 1.0), (0.72, 0.22, 0.7), (0.6, 0.7, 0.85), (0.2, 0.75, 0.55), (0.88, 0.55, 0.5)]
@@ -678,7 +809,7 @@ def fx_sparkles(p, r, t, g, out, color):
         p.restore()
 
 
-def fx_bulb(p, r, t, g, out, color):
+def fx_bulb(p, r, t, g, out, color, **_):
     """Idea!: a light bulb pops up and lights, its rays pulsing."""
     w, h = r.width(), r.height()
     c = QPointF(r.center().x(), r.top() + h * 0.42)
@@ -725,15 +856,18 @@ def fx_bulb(p, r, t, g, out, color):
     p.restore()
 
 
-def fx_blush(p, r, t, g, out, color):
+def fx_blush(p, r, t, g, out, color, **_):
     """Embarrassed: two pink cheek ovals with diagonal blush hatching."""
     w, h = r.width(), r.height()
     a = ease_out_cubic(g)
     shimmer = 0.85 + 0.15 * math.sin(t * 3.0) if t > 0 else 1.0
-    for side in (-1, 1):
-        cx = r.center().x() + side * w * 0.3
+    side_opt = _.get("side", "")
+    cheeks = (-1, 1) if not side_opt else (0,)
+    wb = w if not side_opt else w * 2.4 / 1.1          # one cheek: sized as in the pair
+    for side in cheeks:
+        cx = r.center().x() + side * wb * 0.3
         cy = r.center().y()
-        ow, oh = w * 0.36 * (0.7 + 0.3 * a), h * 0.62 * (0.7 + 0.3 * a)
+        ow, oh = wb * 0.36 * (0.7 + 0.3 * a), h * 0.62 * (0.7 + 0.3 * a)
         grad = QRadialGradient(QPointF(cx, cy), ow / 2)
         grad.setColorAt(0.0, _alpha(color, 0.75 * a))
         grad.setColorAt(1.0, _alpha(color, 0.0))
@@ -746,55 +880,92 @@ def fx_blush(p, r, t, g, out, color):
             p.drawLine(QPointF(x - ow * 0.06, cy + oh * 0.2), QPointF(x + ow * 0.06, cy - oh * 0.2))
 
 
-def _thumb(p, r, color):
-    """A thumbs-up hand in r (fist with fingers toward the viewer, sleeve cuff)."""
+def _glove(p, r, color):
+    """A thumbs-up in a classic white cartoon glove (Mickey-style): puffy
+    rounded fist, curled fingers stacked on the front, three stitch lines on
+    the back of the hand, a rolled cuff at the wrist. Black ink outline."""
     w, h = r.width(), r.height()
     X = lambda u: r.left() + w * u     # noqa: E731
     Y = lambda v: r.top() + h * v      # noqa: E731
-    outline = QColor(color).darker(260)
-    lw = h * 0.035
-    p.setPen(_pen(outline, lw))
-    p.setBrush(QColor("#4c6ef5"))
-    p.drawRoundedRect(QRectF(X(0.30), Y(0.86), w * 0.44, h * 0.13), h * 0.03, h * 0.03)
-    p.setBrush(QColor(color))
-    thumb = QPainterPath()
-    thumb.addRoundedRect(QRectF(X(0.22), Y(0.04), w * 0.26, h * 0.52), w * 0.13, w * 0.13)
+    lw = h * 0.04
+    fill = QColor(color)
+    shade = fill.darker(112)
+    p.setPen(_pen(INK, lw))
+    # cuff (rolled): a flared band below the fist
+    cuff = QPainterPath(QPointF(X(0.24), Y(0.80)))
+    cuff.cubicTo(QPointF(X(0.20), Y(0.92)), QPointF(X(0.22), Y(0.99)), QPointF(X(0.30), Y(0.99)))
+    cuff.lineTo(X(0.66), Y(0.99))
+    cuff.cubicTo(QPointF(X(0.74), Y(0.99)), QPointF(X(0.76), Y(0.92)), QPointF(X(0.70), Y(0.80)))
+    cuff.closeSubpath()
+    p.setBrush(fill)
+    p.drawPath(cuff)
+    p.setPen(_pen(INK, lw * 0.7))
+    roll = QPainterPath(QPointF(X(0.24), Y(0.88)))
+    roll.quadTo(QPointF(X(0.47), Y(0.93)), QPointF(X(0.72), Y(0.88)))
+    p.drawPath(roll)
+    p.setPen(_pen(INK, lw))
+    # the fist and the thumb are one soft shape (no seam between them)
     fist = QPainterPath()
-    fist.addRoundedRect(QRectF(X(0.16), Y(0.40), w * 0.68, h * 0.50), h * 0.12, h * 0.12)
-    p.drawPath(fist.united(thumb))
+    fist.addRoundedRect(QRectF(X(0.12), Y(0.40), w * 0.60, h * 0.46), h * 0.18, h * 0.18)
+    thumb = QPainterPath()
+    thumb.addRoundedRect(QRectF(-w * 0.15, -h * 0.40, w * 0.30, h * 0.50), w * 0.15, w * 0.15)
+    from PySide6.QtGui import QTransform
+    tt = QTransform()
+    tt.translate(X(0.31), Y(0.46))
+    tt.rotate(-10)
+    hand = fist.united(tt.map(thumb))
+    p.setBrush(fill)
+    p.drawPath(hand)
+    p.setPen(_pen(INK, lw * 0.7))                    # the crease where the thumb folds onto the fist
+    crease = QPainterPath(QPointF(X(0.20), Y(0.47)))
+    crease.quadTo(QPointF(X(0.30), Y(0.52)), QPointF(X(0.42), Y(0.47)))
+    p.drawPath(crease)
+    # three stitch lines on the back of the hand
+    p.setPen(_pen(INK, lw * 0.6))
     for k in range(3):
-        y = Y(0.53 + 0.11 * k)
-        seg = QPainterPath(QPointF(X(0.86), y))
-        seg.quadTo(QPointF(X(0.6), y - h * 0.015), QPointF(X(0.44), y + h * 0.01))
-        p.setBrush(Qt.NoBrush)
-        p.drawPath(seg)
-    nail = QPainterPath()
-    nail.addRoundedRect(QRectF(X(0.27), Y(0.08), w * 0.13, h * 0.11), w * 0.05, w * 0.05)
-    p.setBrush(QColor(255, 255, 255, 110))
-    p.setPen(_pen(outline, lw * 0.6))
-    p.drawPath(nail)
+        x = X(0.21 + 0.07 * k)
+        seam = QPainterPath(QPointF(x, Y(0.58)))
+        seam.quadTo(QPointF(x - w * 0.015, Y(0.65)), QPointF(x, Y(0.73)))
+        p.drawPath(seam)
+    # curled fingers on the front: four puffy rolls, a soft shadow under each
+    p.setPen(_pen(INK, lw))
+    for k in range(4):
+        fy = Y(0.40 + 0.108 * k)
+        roll_r = QRectF(X(0.48), fy, w * (0.42 - 0.035 * k), h * 0.118)
+        f = QPainterPath()
+        f.addRoundedRect(roll_r, h * 0.059, h * 0.059)
+        p.setBrush(fill)
+        p.drawPath(f)
+        p.setPen(Qt.NoPen)
+        p.setBrush(shade)
+        p.drawRoundedRect(QRectF(roll_r.left() + lw, roll_r.bottom() - h * 0.035, roll_r.width() - lw * 2,
+                                 h * 0.025), h * 0.012, h * 0.012)
+        p.setPen(_pen(INK, lw))
 
 
-def fx_thumbs_up(p, r, t, g, out, color):
-    """Thumbs up: springs up with a twist, then gives little pumps."""
+def fx_thumbs_up(p, r, t, g, out, color, **_):
+    """Thumbs up (white cartoon glove): pops up, then gives little pumps."""
     c = QPointF(r.center().x(), r.bottom())
     pump = (math.sin(t * 2 * math.pi * 1.1) * 0.5 + 0.5) ** 3 if t > 0 else 0.0
-    rot = (1.0 - g) * (-45 if not out else 30) - 6 * pump
     p.translate(0, -pump * r.height() * 0.05)
-    _scaled(p, c, pop_scale(g, out), rot)
-    _thumb(p, r, color)
+    _scaled(p, c, pop_scale(g, out), -6 * pump)
+    _glove(p, r, color)
 
 
-def fx_thumbs_down(p, r, t, g, out, color):
-    """Thumbs down: drops in turning over, then wags disapprovingly."""
+def fx_thumbs_down(p, r, t, g, out, color, **_):
+    """Thumbs down: the thumbs up MIRRORED top to bottom (same hand, thumb
+    pointing down), popping in and giving disapproving little shakes."""
     c = r.center()
-    wag = math.sin(t * 2 * math.pi * 1.3) * 8 if t > 0 else 0.0
-    rot = 180 + (1.0 - g) * (45 if not out else -30) + wag
-    _scaled(p, c, pop_scale(g, out), rot)
-    _thumb(p, r, color)
+    shake = (math.sin(t * 2 * math.pi * 1.3) * 0.5 + 0.5) ** 3 if t > 0 else 0.0
+    p.translate(0, shake * r.height() * 0.05)
+    _scaled(p, QPointF(c.x(), r.top()), pop_scale(g, out), 6 * shake)
+    p.translate(c)
+    p.scale(1, -1)
+    p.translate(-c.x(), -c.y())
+    _glove(p, r, color)
 
 
-def fx_skull(p, r, t, g, out, color):
+def fx_skull(p, r, t, g, out, color, **_):
     """Dead / cringe: a skull floating, its jaw chattering a laugh."""
     w, h = r.width(), r.height()
     bob = math.sin(t * 2.0) * h * 0.03 if t > 0 else 0.0
@@ -834,7 +1005,7 @@ def _flame(cx, base, w, hgt, sway) -> QPainterPath:
     return path
 
 
-def fx_fire(p, r, t, g, out, color):
+def fx_fire(p, r, t, g, out, color, **_):
     """Fired up / furious: flickering flames. In = they flare up from the
     bottom; out = they die down."""
     w, h = r.width(), r.height()
@@ -851,7 +1022,7 @@ def fx_fire(p, r, t, g, out, color):
             p.drawPath(_flame(r.left() + w * u, base, w * ww * k_size, h * hh * fl * k_size * grow, sway * k_size))
 
 
-def fx_focus_lines(p, r, t, g, out, color):
+def fx_focus_lines(p, r, t, g, out, color, **_):
     """Manga focus / concentration lines: dark wedges rushing in from the
     edges toward a clear oval in the middle. In = they rush in; idle = they
     flicker; out = they pull back out. Make it as big as the frame."""
@@ -880,27 +1051,6 @@ def fx_focus_lines(p, r, t, g, out, color):
         p.drawPath(wedge)
 
 
-def fx_speed_lines(p, r, t, g, out, color):
-    """Speed / whoosh: streaks racing past horizontally."""
-    w, h = r.width(), r.height()
-    a = ease_out_cubic(g)
-    p.setPen(Qt.NoPen)
-    for k in range(26):
-        y = r.top() + h * ((k * 0.618 + 0.1) % 1.0)
-        L = w * (0.18 + 0.35 * _rand(k * 9))
-        if t > 0:
-            x = r.right() + L - (w + 2 * L) * _cycle(t, 0.5 + 0.4 * _rand(k), _rand(k * 3))
-        else:
-            x = r.left() + w * _rand(k * 5)
-        th = h * (0.006 + 0.014 * _rand(k * 7))
-        streak = QPainterPath(QPointF(x, y))
-        streak.lineTo(x + L, y - th)
-        streak.lineTo(x + L, y + th)
-        streak.closeSubpath()
-        p.setBrush(_alpha(color, a * (0.5 + 0.5 * _rand(k * 11))))
-        p.drawPath(streak)
-
-
 def burst_path(c: QPointF, rx: float, ry: float, spikes: int, seed: int, depth: float = 0.35) -> QPainterPath:
     path = QPainterPath()
     for i in range(spikes * 2):
@@ -917,44 +1067,40 @@ def burst_path(c: QPointF, rx: float, ry: float, spikes: int, seed: int, depth: 
     return path
 
 
-def fx_impact(p, r, t, g, out, color):
-    """Impact / POW burst (without words): a jagged starburst exploding out,
-    its points boiling."""
-    c = r.center()
-    boil = int(t * 8.0)
-    s = pop_scale(g, out)
-    rx, ry = r.width() / 2 * s, r.height() / 2 * s
-    pen = _pen(QColor("#e03131"), min(rx, ry) * 0.07, join=Qt.MiterJoin)
-    pen.setMiterLimit(2.0)
-    p.setPen(pen)
-    p.setBrush(QColor(color))
-    p.drawPath(burst_path(c, rx, ry, 13, boil * 17 + 3))
-    p.setPen(Qt.NoPen)
-    p.setBrush(QColor("#ff922b"))
-    p.drawPath(burst_path(c, rx * 0.55, ry * 0.55, 11, boil * 29 + 7, 0.3))
-
-
-def fx_poof(p, r, t, g, out, color):
-    """Poof! a puff of smoke bursting out, churning, then thinning away."""
+def fx_poof(p, r, t, g, out, color, **_):
+    """Poof!: a comic smoke burst -- a big scalloped cloud with little puffs
+    flung around it and a few speed curls. In = it bursts out; idle = the
+    puffs churn; out = it breaks up into the small puffs, which drift off
+    and shrink away."""
     c = r.center()
     w, h = r.width(), r.height()
-    spread = ease_out_back(g, 1.4) if not out else 1.0 + (1.0 - g) * 0.4
-    a = 1.0
-    p.setOpacity(p.opacity() * (1.0 if not out else g))       # fades as one cloud, not lump by lump
-    outline = QColor(color).darker(150)
-    for k in range(8):
-        ang = 2 * math.pi * k / 8 + 0.3 * _rand(k)
-        churn = math.sin(t * 2.0 + k) * 0.04 if t > 0 else 0.0
-        d = (0.28 + 0.06 * _rand(k * 3) + churn) * spread
-        x = c.x() + math.cos(ang) * w * d
-        y = c.y() + math.sin(ang) * h * d
-        rr = min(w, h) * (0.17 + 0.06 * _rand(k * 5)) * min(1.0, spread)
-        p.setPen(_pen(_alpha(outline, a), h * 0.015))
-        p.setBrush(_alpha(color, a))
-        p.drawEllipse(QPointF(x, y), rr, rr)
-    p.setPen(Qt.NoPen)
-    p.setBrush(_alpha(color, a))
-    p.drawEllipse(c, w * 0.28 * min(1.0, spread), h * 0.26 * min(1.0, spread))
+    line = INK
+    if not out:
+        main_k = ease_out_back(g, 1.6)
+        spread = ease_out_back(g, 1.2)
+        fade = 1.0
+    else:
+        main_k = g ** 0.7
+        spread = 1.0 + (1.0 - g) * 0.6
+        fade = _clamp(g * 1.6)
+    churn = (lambda k: math.sin(t * 2.0 + k * 1.7) * 0.03) if t > 0 else (lambda k: 0.0)
+    lw = min(w, h) * 0.03
+    p.save()
+    p.setOpacity(p.opacity() * fade)
+    for k in range(6):                                   # satellites
+        ang = 2 * math.pi * k / 6 + 0.4 * _rand(k * 3)
+        d = (0.40 + 0.06 * _rand(k * 5) + churn(k)) * spread
+        sz = min(w, h) * (0.15 + 0.06 * _rand(k * 9)) * min(1.0, spread) * (1.0 if not out else 0.6 + 0.4 * g)
+        x, y = c.x() + math.cos(ang) * w * d, c.y() + math.sin(ang) * h * d
+        draw_comic_cloud(p, QRectF(x - sz, y - sz * 0.8, sz * 2, sz * 1.6), color, line, seed=k * 31,
+                         lw=lw * 0.8, curls=False, bumps=5, puff=0.6)
+    if main_k > 0.01:
+        p.save()
+        _scaled(p, c, main_k * (1.0 + churn(9)))
+        draw_comic_cloud(p, QRectF(c.x() - w * 0.36, c.y() - h * 0.32, w * 0.72, h * 0.64), color, line,
+                         seed=5, lw=lw, bumps=9, puff=0.55, flat=0.85)
+        p.restore()
+    p.restore()
 
 
 # =========================================================================
@@ -968,8 +1114,7 @@ EFFECTS = {
     "wiggle_lines": ("Unease lines", "Unease", fx_wiggle_lines, 1.0, "#2f3b55", 0.3),
     "sweatdrop": ("Sweat drop", "Unease", fx_sweatdrop, 0.6, "#74c0fc", 0.14),
     "sweat": ("Nervous sweat", "Unease", fx_sweat, 1.4, "#74c0fc", 0.2),
-    "gloom": ("Gloom lines", "Sad", fx_gloom, 1.2, "#3b3b6d", 0.35),
-    "raincloud": ("Rain cloud", "Sad", fx_raincloud, 1.1, "#868e96", 0.3),
+    "raincloud": ("Rain cloud", "Sad", fx_raincloud, 1.1, "#9aa5b1", 0.3),
     "dots": ("… (dots)", "Bored", fx_dots, 2.4, "#1a1a1a", 0.08),
     "zzz": ("Zzz", "Bored", fx_zzz, 1.0, "#f8f9fa", 0.25),
     "exclaim": ("!", "Surprise", fx_exclaim, 1.0, "#e03131", 0.2),
@@ -979,23 +1124,34 @@ EFFECTS = {
     "spiral": ("Dizzy spiral", "Surprise", fx_spiral, 1.0, "#1a1a1a", 0.18),
     "dizzy_stars": ("Dizzy stars", "Surprise", fx_dizzy_stars, 1.8, "#fcc419", 0.16),
     "hearts": ("Floating hearts", "Love & joy", fx_hearts, 0.9, "#ff4d6d", 0.3),
-    "heartbeat": ("Beating heart", "Love & joy", fx_heartbeat, 1.0, "#ff4d6d", 0.18),
+    "heartbeat": ("Beating heart", "Love & joy", fx_heartbeat, 0.8, "#ff4d6d", 0.24),
     "music": ("Music notes", "Love & joy", fx_music, 1.3, "#1a1a1a", 0.22),
     "sparkles": ("Sparkles", "Love & joy", fx_sparkles, 1.2, "#fff3bf", 0.25),
     "bulb": ("Idea bulb", "Idea", fx_bulb, 0.85, "#ffd43b", 0.24),
     "blush": ("Blush", "Embarrassed", fx_blush, 2.4, "#ff8fab", 0.08),
-    "thumbs_up": ("Thumbs up", "Reactions", fx_thumbs_up, 0.85, "#ffcc4d", 0.26),
-    "thumbs_down": ("Thumbs down", "Reactions", fx_thumbs_down, 0.85, "#ffcc4d", 0.26),
+    "thumbs_up": ("Thumbs up", "Reactions", fx_thumbs_up, 0.85, "#ffffff", 0.26),
+    "thumbs_down": ("Thumbs down", "Reactions", fx_thumbs_down, 0.85, "#ffffff", 0.26),
     "skull": ("Skull", "Reactions", fx_skull, 0.85, "#f1f3f5", 0.22),
     "focus_lines": ("Focus lines", "Action", fx_focus_lines, 16 / 9, "#000000", 1.0),
-    "speed_lines": ("Speed lines", "Action", fx_speed_lines, 16 / 9, "#f8f9fa", 1.0),
-    "impact": ("Impact burst", "Action", fx_impact, 1.3, "#ffd43b", 0.35),
-    "poof": ("Poof cloud", "Action", fx_poof, 1.3, "#f1f3f5", 0.3),
+    "poof": ("Poof cloud", "Action", fx_poof, 1.3, "#ffffff", 0.3),
 }
 GROUPS = ["Anger", "Unease", "Sad", "Bored", "Surprise", "Love & joy", "Idea", "Embarrassed", "Reactions", "Action"]
 COMIC_EFFECTS = [("None", "")] + [(f"{EFFECTS[k][1]}: {EFFECTS[k][0]}", k)
                                   for grp in GROUPS for k in EFFECTS if EFFECTS[k][1] == grp]
 EFFECT_ASPECT = {k: v[3] for k, v in EFFECTS.items()}
+# effects drawn as a left/right PAIR: (aspect of ONE side, how far each side's
+# centre sits from the pair's centre as a fraction of the pair's width) --
+# Side: left / right draws one; ops.split_pair() makes them two elements.
+PAIRED = {"steam": (0.65, 0.32), "blush": (1.1, 0.3)}
+SIDES = [("Both", ""), ("Left only", "left"), ("Right only", "right")]
+EFFECT_VARIANTS = {"heartbeat": HEART_VARIANTS}
+EFFECT_COLOR2 = {"heartbeat": ("Shirt", "#f1f3f5")}       # label of the second color + its default
+
+
+def effect_aspect(name: str, side: str = "") -> float:
+    if side and name in PAIRED:
+        return PAIRED[name][0]
+    return EFFECT_ASPECT.get(name, 1.0)
 DEFAULT_EFFECT_COLOR = {k: v[4] for k, v in EFFECTS.items()}
 DEFAULT_EFFECT_SIZE = {k: v[5] for k, v in EFFECTS.items()}
 
@@ -1028,7 +1184,7 @@ def effect_progress(st, local: float, duration: float) -> "tuple[float, bool]":
 
 
 def draw_comic_effect(painter: QPainter, name: str, rect: QRectF, t: float, color: QColor,
-                      animated: bool = True, g: float = 1.0, out: bool = False) -> None:
+                      animated: bool = True, g: float = 1.0, out: bool = False, **opts) -> None:
     """Draw effect `name` filling `rect`: `t` = idle time (already x speed),
     `g` / `out` = its in/out transition (see effect_progress)."""
     name = valid_effect(name)
@@ -1039,7 +1195,7 @@ def draw_comic_effect(painter: QPainter, name: str, rect: QRectF, t: float, colo
     painter.save()
     painter.setRenderHint(QPainter.Antialiasing)
     try:
-        EFFECTS[name][2](painter, rect, max(0.0, t), _clamp(g), out, QColor(color))
+        EFFECTS[name][2](painter, rect, max(0.0, t), _clamp(g), out, QColor(color), **opts)
     finally:
         painter.restore()
 
@@ -1312,27 +1468,38 @@ def valid_backdrop(name: str) -> str:
 
 
 def _splat_path(c: QPointF, rx: float, ry: float, seed: int) -> QPainterPath:
+    """A comic paint splat: a lumpy body throwing out arms that end in round
+    blobs, with droplets flung past the longer ones."""
     path = QPainterPath()
     path.setFillRule(Qt.WindingFill)
-    n = 22
+    arms = 8
+    ang = [2 * math.pi * (i + 0.4 * (_rand(seed + i) - 0.5)) / arms for i in range(arms)]
+    length = [0.14 + 0.30 * _rand(seed + 11 + i * 3) for i in range(arms)]
+    width = [0.22 + 0.12 * _rand(seed + 23 + i * 5) for i in range(arms)]
+    n = 180
     pts = []
-    for i in range(n):
-        a = 2 * math.pi * i / n
-        k = 0.78 + 0.3 * _rand(seed + i * 5)
-        if i % 5 == 2:
-            k += 0.25                                     # a few longer drips
-        pts.append(QPointF(c.x() + math.cos(a) * rx * k, c.y() + math.sin(a) * ry * k))
+    for j in range(n):
+        a = 2 * math.pi * j / n
+        rr = 0.8 + 0.05 * math.sin(5 * a + seed)
+        for i in range(arms):
+            d = (a - ang[i] + math.pi) % (2 * math.pi) - math.pi
+            rr += length[i] * math.exp(-(d / width[i]) ** 2 * 2.2)
+        pts.append(QPointF(c.x() + math.cos(a) * rx * rr * 0.78, c.y() + math.sin(a) * ry * rr * 0.78))
     path.moveTo((pts[-1] + pts[0]) / 2)
-    for i in range(n):
-        nxt = pts[(i + 1) % n]
-        path.quadTo(pts[i], (pts[i] + nxt) / 2)
+    for j in range(n):
+        path.quadTo(pts[j], (pts[j] + pts[(j + 1) % n]) / 2)
     path.closeSubpath()
-    for j in range(5):                                    # flung droplets
-        a = 2 * math.pi * _rand(seed + 97 + j)
-        d = 1.2 + 0.25 * _rand(seed + 131 + j)
-        rr = min(rx, ry) * (0.06 + 0.07 * _rand(seed + 71 + j))
-        path.addEllipse(QPointF(c.x() + math.cos(a) * rx * d, c.y() + math.sin(a) * ry * d), rr, rr)
-    return path
+    for i in range(arms):                                  # round blobs on the arm tips
+        tip = (0.8 + length[i]) * 0.78
+        br = min(rx, ry) * (0.09 + 0.12 * length[i])
+        path.addEllipse(QPointF(c.x() + math.cos(ang[i]) * rx * (tip - 0.02), c.y() + math.sin(ang[i]) * ry * (tip - 0.02)),
+                        br, br)
+        if length[i] > 0.28:                               # droplets flung beyond
+            dd = tip + 0.18 + 0.1 * _rand(seed + 57 + i)
+            dr = br * (0.55 + 0.3 * _rand(seed + 61 + i))
+            path.addEllipse(QPointF(c.x() + math.cos(ang[i] + 0.08) * rx * dd, c.y() + math.sin(ang[i] + 0.08) * ry * dd),
+                            dr, dr)
+    return path.simplified()
 
 
 def backdrop_path(kind: str, rect: QRectF, seed: int = 0) -> QPainterPath:
@@ -1342,8 +1509,9 @@ def backdrop_path(kind: str, rect: QRectF, seed: int = 0) -> QPainterPath:
         return burst_path(c, rx, ry, 12, seed + 5, 0.3)
     if kind == "jagged":
         return burst_path(c, rx, ry, 15, seed + 11, 0.42)
-    if kind == "boom":
-        return cloud_path(c, rx * 2.05, ry * 2.0, 9, seed + 3)
+    if kind == "boom":                                      # comic explosion cloud: big irregular puffs
+        return comic_cloud_path(QRectF(c.x() - rx * 1.12, c.y() - ry * 1.18, rx * 2.24, ry * 2.36), seed + 3,
+                                bumps=11, irregular=0.9, flat=0.95, puff=0.62)
     if kind == "cloud":
         path = QPainterPath()
         path.addRoundedRect(QRectF(c.x() - rx * 0.92, c.y() - ry * 0.8, rx * 1.84, ry * 1.6), ry * 0.8, ry * 0.8)
@@ -1409,11 +1577,24 @@ def draw_backdrop(painter: QPainter, st, text_rect: QRectF, local: float, ch: fl
             painter.drawPath(wedge)
     else:
         path = backdrop_path(kind, rect, boil)
-        pen = _pen(line, lw, join=Qt.MiterJoin)
+        pen = _pen(line, lw, join=Qt.MiterJoin if kind in ("burst", "jagged") else Qt.RoundJoin)
         pen.setMiterLimit(2.0)                            # sharp points without long black needles
         painter.setPen(pen)
         painter.setBrush(fill)
         painter.drawPath(path)
+        if kind == "boom":                                # a hot, lighter core of smaller puffs
+            core = QColor(fill).lighter(135)
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(core)
+            painter.drawPath(backdrop_path("boom", QRectF(rect.center().x() - w * 0.27, rect.center().y() - h * 0.25,
+                                                          w * 0.54, h * 0.5), boil + 77))
+            painter.setBrush(QColor(255, 255, 255, 120))
+            painter.drawPath(backdrop_path("boom", QRectF(rect.center().x() - w * 0.12, rect.center().y() - h * 0.11,
+                                                          w * 0.24, h * 0.22), boil + 91))
+        if kind == "splat":                               # a wet highlight
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(QColor(255, 255, 255, 110))
+            painter.drawEllipse(QRectF(rect.center().x() - w * 0.24, rect.center().y() - h * 0.26, w * 0.12, h * 0.1))
         if kind in ("burst", "jagged"):                   # a lighter core
             core = QColor(fill).lighter(130)
             painter.setPen(Qt.NoPen)

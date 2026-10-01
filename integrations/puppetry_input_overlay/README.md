@@ -1,10 +1,18 @@
-# Input visualizer prep: Puppetry → afterglow input overlay (v4)
+# Input visualizer prep: Puppetry → afterglow input overlay (v5)
 
 Prepared on the Puppetry side for the afterglow project: what Puppetry
 provides, the design for the afterglow side, a drop-in module, and a
 passing integration test.
 
-**Changed since v3:**
+**Changed since v4:**
+- The default layout's movement view is now a Mousepad with the id
+  `movement` (it was a Comet with the id `comet`). Movement views get ids
+  `movement`, `movement2`, ... whatever their style, so an `el:<id>` piece
+  keeps its id when its style is switched in Puppetry.
+- Puppetry bundles 21 fonts for the overlay (Puppetry's own setting);
+  rendered pieces use them, nothing to do on the afterglow side.
+
+**Changed in v4:**
 - Puppetry's visualizer is now a layout the user arranges (*Edit layout*):
   any number of keyboards (full, 80%, 60%, left half), mice (classic,
   gaming, minimal, buttons only), controllers and mouse-movement views.
@@ -157,7 +165,7 @@ next to the clip type's toggle.
 ## Measured (offscreen sandbox, not the target machine)
 
 - Capture to sidecar for a 4 s clip with four pieces (keyboard, mouse,
-  controller, a comet element) at 30 fps: about 3.3 s, mostly while OBS would still be
+  controller, a movement element) at 30 fps: about 3.3 s, mostly while OBS would still be
   writing.
 - Transparent qtrle pieces: about 1 MB per second of heavy keyboard
   activity; controller and mouse pieces are much smaller. Rendering runs at

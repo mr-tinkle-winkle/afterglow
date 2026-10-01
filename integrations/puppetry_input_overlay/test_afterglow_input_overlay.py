@@ -83,15 +83,15 @@ def main() -> int:
     t0 = time.time()
     glob = {"mouse": {"x": 0.9, "y": 0.1, "w": 0.08}, "keyboard": {"x": 0.3, "y": 0.3, "w": 0.3}}
     ctype = {"keyboard": {"x": 0.01, "y": 0.8, "w": 0.3},      # this clip type moves only the keyboard
-             "el:comet": {"x": 0.7, "y": 0.1, "w": 0.1}}       # ... and places one layout element
-    starting = aio.resolve_placements(glob, ctype, element_types={"comet": "comet"})
+             "el:movement": {"x": 0.7, "y": 0.1, "w": 0.1}}       # ... and places one layout element
+    starting = aio.resolve_placements(glob, ctype, element_types={"movement": "mousepad"})
     check("placement defaults: clip type > global > built-in, per piece",
           starting["keyboard"]["x"] == 0.01 and starting["mouse"]["x"] == 0.9
           and starting["controller"] == dict(aio.DEFAULT_PLACEMENT["controller"], visible=True)
-          and starting["el:comet"]["x"] == 0.7 and starting["mousepad"]["visible"] is True)
+          and starting["el:movement"]["x"] == 0.7 and starting["mousepad"]["visible"] is True)
     check("el:<id> pieces default by element type", aio.resolve_placements(
         {"el:pad2": {}}, None, {"pad2": "controller"})["el:pad2"]["w"] == aio.DEFAULT_PLACEMENT["controller"]["w"])
-    job = aio.start_clip(t_save, aio.OverlaySettings(pieces=["keyboard", "mouse", "controller", "el:comet"], fps=30,
+    job = aio.start_clip(t_save, aio.OverlaySettings(pieces=["keyboard", "mouse", "controller", "el:movement"], fps=30,
                                                      placements=starting))
     buf.write_text("")                     # the live buffer moves on; the job froze its own copy
     manifest = aio.finish_clip(job, clip)
@@ -99,8 +99,8 @@ def main() -> int:
     job.cleanup()
     side = aio.sidecar_dir(clip)
     check("finish_clip writes a sidecar with every piece + the inputs + a manifest",
-          set(manifest["pieces"]) == {"keyboard", "mouse", "controller", "el:comet"} and (side / "inputs.jsonl").exists()
-          and (side / "el-comet.mov").exists()
+          set(manifest["pieces"]) == {"keyboard", "mouse", "controller", "el:movement"} and (side / "inputs.jsonl").exists()
+          and (side / "el-movement.mov").exists()
           and (side / "manifest.json").exists() and not manifest["errors"])
     check("the clip itself is untouched", clip.read_bytes() == clip_bytes)
     kb = side / "keyboard.mov"

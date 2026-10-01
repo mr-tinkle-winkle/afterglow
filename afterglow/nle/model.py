@@ -174,6 +174,14 @@ class TextStyle:
     effect_speed: float = 1.0
     effect_in: float = 0.0
     effect_out: float = 0.0
+    # per-effect options (comic.EFFECT_VARIANTS / EFFECT_COLOR2 / PAIRED):
+    # effect_variant e.g. the beating heart's "separate" / "covered" / "plain";
+    # effect_color2 its second color ("" = default, e.g. the shirt); effect_side
+    # "" (both) / "left" / "right" for a pair (fuming steam, blush) -- one side
+    # alone, so the two can be separate, independently keyframed elements.
+    effect_variant: str = ""
+    effect_color2: str = ""
+    effect_side: str = ""
     # Comic lettering (onomatopoeia -- POW!, BAM!...): fill2 = a second fill
     # color for a top-to-bottom gradient ("" = flat); extrude = depth of a
     # 3D block shadow (px at 1080p, 0 = off) in extrude_color; skew = slant

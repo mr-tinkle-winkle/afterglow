@@ -15,8 +15,8 @@
       "type": "mouse"
     },
     {
-      "id": "comet",
-      "type": "comet"
+      "id": "movement",
+      "type": "mousepad"
     }
   ],
   "element_urls": {},

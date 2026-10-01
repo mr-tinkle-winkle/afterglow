@@ -24,11 +24,12 @@ Rules from the spec implemented here:
 from __future__ import annotations
 
 import copy
+import math
 import os
 from dataclasses import replace
 
 from .model import (
-    EPS, KIND_AV, MAX_SPEED, MAX_VOLUME, MIN_SPEED, MIN_VOLUME, Keyframe,
+    EPS, KIND_AV, KIND_TEXT, MAX_SPEED, MAX_VOLUME, MIN_SPEED, MIN_VOLUME, Keyframe,
     OverlayPiece, Part, Project, Segment, Track, Transform, Transition, empty_track, new_id,
 )
 
@@ -635,6 +636,52 @@ def detach_audio(project: Project, seg_id: str) -> "Segment | None":
 
 
 # =========================================================================
+# comic effects drawn as a pair (fuming steam, blush): split into two elements
+# =========================================================================
+
+def split_pair(project: Project, seg_id: str) -> "list[Segment]":
+    """Turn a paired comic effect (both sides drawn, comic.PAIRED) into two
+    elements -- left side only and right side only -- each placed exactly
+    where its half was (its transform and x/y keyframes shifted), so each
+    can be moved, keyframed and timed on its own. The original becomes the
+    left one; the right one goes on the track above. Returns [left, right]
+    (empty when there's nothing to split)."""
+    from . import comic
+    track, seg = project.find_segment(seg_id)
+    if seg is None or seg.locked:
+        return []
+    tp = next((p for p in seg.parts if p.kind == KIND_TEXT and p.text is not None
+               and p.text.comic_effect in comic.PAIRED and not p.text.effect_side), None)
+    if tp is None:
+        return []
+    st = tp.text
+    _single, off = comic.PAIRED[st.comic_effect]
+    pair_w = st.effect_size * project.height * comic.EFFECT_ASPECT[st.comic_effect]
+    dist = off * pair_w * seg.transform.scale
+    rot = math.radians(seg.transform.rotation)
+    dxf = math.cos(rot) * dist / max(1, project.width)
+    dyf = math.sin(rot) * dist / max(1, project.height)
+    right = copy.deepcopy(seg)
+    right.id = new_id()
+    base = seg.name or comic.effect_label(st.comic_effect)
+    for sg, sign, side in ((seg, -1, "left"), (right, 1, "right")):
+        sg.transform.x += sign * dxf
+        sg.transform.y += sign * dyf
+        for k in sg.keyframes.get("x", []):
+            k.value += sign * dxf
+        for k in sg.keyframes.get("y", []):
+            k.value += sign * dyf
+        for p in sg.parts:
+            if p.kind == KIND_TEXT and p.text is not None and p.text.comic_effect == st.comic_effect:
+                p.text.effect_side = side
+                if side == "right":
+                    p.text.text = ""          # words (if any) stay with the left one
+        sg.name = f"{base} ({side})"
+    place(project, right, project.track_index(track.id), seg.start, prefer=-1)
+    return [seg, right]
+
+
+# =========================================================================
 # input overlay (Puppetry): attached pieces and "Detach Input Overlay"
 # =========================================================================
 
@@ -876,7 +923,7 @@ def clean_up(project: Project) -> None:
 # copy / paste colors and properties
 # =========================================================================
 
-TEXT_COLOR_FIELDS = ("color", "outline_color", "bubble_fill", "bubble_outline", "effect_color",
+TEXT_COLOR_FIELDS = ("color", "outline_color", "bubble_fill", "bubble_outline", "effect_color", "effect_color2",
                      "bubble_fill_transparency", "bubble_outline_transparency")
 SEG_COLOR_FIELDS = ("shadow_color",)
 # Properties = everything about how an element looks and behaves, except

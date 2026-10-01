@@ -497,7 +497,8 @@ class Renderer:
                 speed = max(0.0, st.effect_speed)
                 g, leaving = comic.effect_progress(st, local, duration)
                 comic.draw_comic_effect(painter, lay["effect"], lay["image_rect"], max(0.0, local) * speed,
-                                        comic.effect_color(st), animated=speed > EPS, g=g, out=leaving)
+                                        comic.effect_color(st), animated=speed > EPS, g=g, out=leaving,
+                                        variant=st.effect_variant, color2=st.effect_color2, side=st.effect_side)
                 painter.restore()
         elif lay.get("image") is not None:
             a = 1.0
@@ -735,7 +736,7 @@ def text_layout(st, ch: float) -> dict:
         # the words; the whole block stays centered
         if effect:
             ih = max(2.0, getattr(st, "effect_size", 0.22) * ch)
-            iw = ih * comic.EFFECT_ASPECT[effect]
+            iw = ih * comic.effect_aspect(effect, getattr(st, "effect_side", ""))
         else:
             ih = max(2.0, getattr(st, "image_size", 0.18) * ch)
             iw = ih * img.width() / max(img.height(), 1)

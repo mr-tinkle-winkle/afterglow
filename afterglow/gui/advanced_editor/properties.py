@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
 from ... import config as config_module
 from ...nle import ops
 from ...nle.model import KIND_TEXT, MAX_SPEED, MIN_SPEED, Segment
+from ...nle import comic as _comic
 from ...nle.comic import ANIM_IN, ANIM_OUT, BACKDROPS, BOUNCE_SIDES, COMIC_EFFECTS, IDLES, effect_label
 from ...nle.render import eval_keyframes, zoom_factor
 from ..custom_button import CustomButton
@@ -429,6 +430,33 @@ class PropertiesPanel(QWidget):
             fx_out.setToolTip("The effect's own exit at the end (it unwinds, pulls back in, shrinks away...) -- 0 = off")
             fx_out.valueChanged.connect(lambda v: self._edit("Effect out", lambda p: self._set_text(p, effect_out=v)))
             fx_speed.setToolTip("How fast its idle loop runs while it's on screen (0 = still)")
+            eff_now = text_part.text.comic_effect
+            if eff_now in _comic.EFFECT_VARIANTS:
+                fx_var = self._combo(_comic.EFFECT_VARIANTS[eff_now])
+                fx_var.currentIndexChanged.connect(lambda *_: self._once(
+                    "Effect variant", lambda p: self._set_text(p, effect_variant=fx_var.currentData())))
+                form_fx.addRow(self._lbl("Style"), fx_var)
+                self._fields["effect_variant"] = fx_var
+            if eff_now in _comic.EFFECT_COLOR2:
+                lbl2, _d = _comic.EFFECT_COLOR2[eff_now]
+                fx_c2 = CustomButton(lbl2)
+                fx_c2.setToolTip("The effect's second color")
+                fx_c2.clicked.connect(lambda: self._pick_color("effect_color2"))
+                form_fx.addRow(self._lbl(lbl2 + " color"), fx_c2)
+                self._fields["effect_color2_btn"] = fx_c2
+            if eff_now in _comic.PAIRED:
+                fx_side = self._combo(_comic.SIDES)
+                fx_side.setToolTip("Draw both sides, or just one (so the two can be separate elements)")
+                fx_side.currentIndexChanged.connect(lambda *_: self._once(
+                    "Effect side", lambda p: self._set_text(p, effect_side=fx_side.currentData())))
+                form_fx.addRow(self._lbl("Side"), fx_side)
+                split = CustomButton("Split into left + right")
+                split.setToolTip("Make the two sides two elements, each placed where it was -- then move, time "
+                                 "and keyframe each on its own")
+                split.clicked.connect(self.ctl.split_pair)
+                split.setEnabled(single and not text_part.text.effect_side)
+                form_fx.addRow(self._lbl(""), split)
+                self._fields.update(effect_side=fx_side, split_pair_btn=split)
             form_fx.addRow(self._lbl("Idle speed"), fx_speed)
             form_fx.addRow(self._lbl("In"), fx_in)
             form_fx.addRow(self._lbl("Out"), fx_out)
@@ -883,6 +911,13 @@ class PropertiesPanel(QWidget):
             self._set("jiggle_in", st.jiggle_in)
             self._set("jiggle_out", st.jiggle_out)
             self._set("effect_in", st.effect_in)
+            self._set("effect_variant", st.effect_variant or (
+                _comic.EFFECT_VARIANTS[st.comic_effect][0][1] if st.comic_effect in _comic.EFFECT_VARIANTS else ""))
+            self._set("effect_side", st.effect_side)
+            if "split_pair_btn" in self._fields:
+                self._fields["split_pair_btn"].setEnabled(not st.effect_side)
+            if "effect_color2_btn" in self._fields and st.comic_effect in _comic.EFFECT_COLOR2:
+                self._fields["effect_color2_btn"].set_fill_color(st.effect_color2 or _comic.EFFECT_COLOR2[st.comic_effect][1])
             self._set("effect_out", st.effect_out)
             self._set("anim_in", st.anim_in)
             self._set("anim_in_dur", st.anim_in_dur)
@@ -1283,6 +1318,8 @@ class PropertiesPanel(QWidget):
             start = effect_color(tp.text)
         elif attr == "fill2" and not tp.text.fill2:
             start = QColor(tp.text.color)
+        elif attr == "effect_color2" and not tp.text.effect_color2:
+            start = QColor(_comic.EFFECT_COLOR2.get(tp.text.comic_effect, ("", "#ffffff"))[1])
         else:
             start = QColor(getattr(tp.text, attr))
         c = QColorDialog.getColor(start, self, "Text color",

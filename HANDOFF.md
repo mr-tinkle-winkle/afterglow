@@ -732,7 +732,41 @@ plain QSS rule is unavoidable.
 Seven consecutive batches of Library/Settings/appearance
 features/bug fixes, given together each time. Newest first.
 
-### This session (newest -- feedback round 15: expressions library, onomatopoeia, transitions, global overlay toggle)
+### This session (newest -- feedback round 16: comic polish)
+- Scribblenado grows from its BOTTOM tip (path revealed bottom-up, scaled
+  about the bottom) and unwinds back into it.
+- Anger vein: pops + pulses only (no rotation).
+- "!" and "!?": just pop into place (no twist, no side lines); "!" keeps its
+  quiver, "!?" wobbles fast (9 deg at 17 rad/s). "?" unchanged.
+- Paired effects (fuming steam, blush): new TextStyle `effect_side` (""/
+  "left"/"right") draws one side (comic.PAIRED: single-side aspect + offset);
+  Properties > Comic Effect "Side" + "Split into left + right"
+  (`ops.split_pair` / `EditorController.split_pair`): the pair becomes two
+  elements on separate tracks, each where its half was (transform + x/y
+  keyframes shifted, rotation/scale respected) -- independently keyframed.
+- Beating heart: cartoon heart beating out of a chest. `effect_variant`
+  "separate" (heart in its color bursting out on a pinched shirt membrane
+  joined by two lines, hole in the chest), "covered" (the shirt bulges out
+  heart-shaped, stretch folds), "plain"; `effect_color2` = shirt color
+  (Properties "Style" + "Shirt color"; comic.EFFECT_VARIANTS /
+  EFFECT_COLOR2).
+- Thumbs up/down: classic white cartoon glove (Mickey-style) -- one soft
+  fist+thumb shape, curled finger rolls, 3 stitch lines, rolled cuff, black
+  ink; thumbs down = thumbs up MIRRORED top-to-bottom.
+- Removed: speed lines, gloom lines, impact burst (effects; old projects
+  just don't draw them), OOF and BRUH (onomatopoeia presets).
+- Comic-style redraws: `comic.comic_cloud_path` / `draw_comic_cloud`
+  (scalloped bumps, inked outline, shaded underside, inner curls) used by
+  the rain cloud (+ slanted rain streaks), poof (big cloud + flung puffs that
+  break up on exit), the steam puffs and the BOOM backdrop (irregular
+  explosion cloud with a hot lighter core); SPLAT backdrop = lumpy body with
+  club-tipped arms and flung droplets.
+- Puppetry prep v5: module unchanged (still byte-identical); docs/sample/
+  test in integrations/ and tests/test_puppetry_integration.py updated (the
+  default layout's movement view is now a Mousepad with id "movement").
+Tests: tests/test_comic_text.py (round 16 section).
+
+### Previous session (feedback round 15: expressions library, onomatopoeia, transitions, global overlay toggle)
 1. **Previewer input-overlay toggle is ONE global, saved setting**
    (`AppSettings.preview_input_overlay`, default on): the previewer's
    button flips and saves it; every clip opens in that state (the clip's

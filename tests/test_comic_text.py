@@ -329,5 +329,115 @@ f["effect_out"].setValue(0.4)
 props._end_edit()
 check((S().comic_effect, S().effect_in, S().effect_out) == ("thumbs_up", 0.6, 0.4), "Properties: effect in/out lengths")
 
+# =========================================================================
+# round 16 feedback
+# =========================================================================
+check(not any(k in comic.EFFECTS for k in ("speed_lines", "gloom", "impact")), "speed lines / gloom / impact removed")
+from afterglow.gui.advanced_editor.controller import SFX_PRESETS, TEXT_PRESETS as TP
+check("OOF" not in SFX_PRESETS and "BRUH" not in SFX_PRESETS and "OOF" not in TP, "OOF / BRUH removed")
+check(R.text_layout(TextStyle(text="", comic_effect="gloom"), H)["effect"] == "", "an old project's removed effect just isn't drawn")
+
+
+def ink_rows(img):
+    ys = [yy for yy in range(img.height()) for xx in range(0, img.width(), 4) if img.pixelColor(xx, yy).alpha() > 30]
+    return (min(ys), max(ys)) if ys else (None, None)
+
+
+top_half, bot_half = ink_rows(fx_img("scribblenado", 0.0, 0.3))
+_, bot_full = ink_rows(fx_img("scribblenado", 0.0, 1.0))
+check(top_half is not None and top_half > 60 and abs(bot_half - bot_full) < 25,
+      f"scribblenado grows from the bottom (partial ink rows {top_half}-{bot_half}, full bottom {bot_full})")
+
+
+def mirror_lr_score(img):
+    """How left-right symmetric the 4-fold vein is when NOT rotated: compare with its 90-degree turn."""
+    from PySide6.QtGui import QTransform
+    rot = img.transformed(QTransform().rotate(90))
+    return sum(1 for yy in range(0, 220, 4) for xx in range(0, 220, 4)
+               if (img.pixelColor(xx, yy).alpha() > 30) != (rot.pixelColor(xx, yy).alpha() > 30))
+
+
+full_v, half_v = fx_img("vein", 0.0, 1.0), fx_img("vein", 0.0, 0.5)
+from PySide6.QtGui import QTransform
+scaled_full = full_v
+check(inked(half_v) > 0 and mirror_lr_score(half_v) < 40, "vein pops in without rotating (still 4-fold symmetric mid-pop)")
+ex = fx_img("exclaim", 0.0, 1.0)
+cols = [xx for xx in range(0, 220, 2) if any(ex.pixelColor(xx, yy).alpha() > 30 for yy in range(0, 220, 2))]
+check(max(cols) - min(cols) < 220 * 0.4, f"! has no side lines (ink {max(cols) - min(cols)} px wide)")
+check(not same(fx_img("interrobang", 0.30, 1.0), fx_img("interrobang", 0.42, 1.0)), "!? wobbles fast")
+for v in ("separate", "covered", "plain"):
+    img = QImage(220, 220, QImage.Format_ARGB32)
+    img.fill(0)
+    pp = QPainter(img)
+    comic.draw_comic_effect(pp, "heartbeat", QRectF(40, 20, 140, 180), 0.5, QColor("#ff0000"), True, 1.0, False,
+                            variant=v, color2="#00ff00")
+    pp.end()
+    reds = sum(1 for yy in range(0, 220, 2) for xx in range(0, 220, 2) if img.pixelColor(xx, yy).red() > 200
+               and img.pixelColor(xx, yy).green() < 60)
+    greens = sum(1 for yy in range(0, 220, 2) for xx in range(0, 220, 2) if img.pixelColor(xx, yy).green() > 200
+                 and img.pixelColor(xx, yy).red() < 60)
+    want = {"separate": (reds > 100 and greens > 30), "covered": (reds < 5 and greens > 100), "plain": (reds > 100 and greens < 5)}[v]
+    check(want, f"beating heart '{v}': heart color / shirt color where they belong (red {reds}, shirt {greens})")
+up, down = fx_img("thumbs_up", 0.0, 1.0), fx_img("thumbs_down", 0.0, 1.0)
+check(up.mirrored(False, True).constBits().tobytes() == down.constBits().tobytes() or
+      sum(1 for yy in range(0, 220, 3) for xx in range(0, 220, 3)
+          if (up.mirrored(False, True).pixelColor(xx, yy).alpha() > 30) != (down.pixelColor(xx, yy).alpha() > 30)) < 40,
+      "thumbs down is the thumbs up mirrored top-to-bottom")
+whites = sum(1 for yy in range(0, 220, 3) for xx in range(0, 220, 3) if up.pixelColor(xx, yy).lightness() > 240
+             and up.pixelColor(xx, yy).alpha() > 200)
+check(whites > 300, "thumbs: white glove by default")
+for name in ("steam", "blush"):
+    imgs = []
+    for side in ("", "left"):
+        img = QImage(440, 220, QImage.Format_ARGB32)
+        img.fill(0)
+        pp = QPainter(img)
+        hh = 100
+        ww = hh * comic.effect_aspect(name, side)
+        comic.draw_comic_effect(pp, name, QRectF(220 - ww / 2, 60, ww, hh), 0.6, QColor(comic.DEFAULT_EFFECT_COLOR[name]),
+                                True, 1.0, False, side=side)
+        pp.end()
+        imgs.append(img)
+    a_, b_ = inked(imgs[0]), inked(imgs[1])
+    check(0 < b_ < a_ * 0.75, f"{name}: Side = left draws one side only ({b_} vs {a_})")
+
+# Split into left + right: two elements, each where its half was, keyframes shifted, own timing
+p2 = project_with(TextStyle(text="", comic_effect="steam", effect_size=0.3), x=0.1, y=-0.2)
+seg0 = next(iter(p2.all_segments()))
+seg0.keyframes["x"] = [model_kf(0.0, 0.1), model_kf(2.0, 0.3)] if False else []
+from afterglow.nle.model import Keyframe
+seg0.keyframes["x"] = [Keyframe(0.0, 0.1), Keyframe(2.0, 0.3)]
+pair = R.Renderer(p2).frame(1.0, W, H)
+left, right = ops.split_pair(p2, seg0.id)
+check(left.parts[0].text.effect_side == "left" and right.parts[0].text.effect_side == "right" and left.id != right.id
+      and left.transform.x < 0.1 < right.transform.x and abs((left.transform.x + right.transform.x) / 2 - 0.1) < 1e-9,
+      "split: a left element and a right element, either side of where the pair was")
+check(abs(left.keyframes["x"][1].value - (0.3 - (0.1 - left.transform.x))) < 1e-9 and
+      abs(right.keyframes["x"][0].value - right.transform.x) < 1e-9, "…their X keyframes shifted with them")
+check(p2.find_segment(left.id)[0] is not p2.find_segment(right.id)[0], "…on separate tracks, each its own element")
+split_img = R.Renderer(p2).frame(1.0, W, H)
+diff_px = sum(1 for yy in range(0, H, 3) for xx in range(0, W, 3) if pair.pixelColor(xx, yy) != split_img.pixelColor(xx, yy))
+check(diff_px < 200, f"…and together they look like the pair did ({diff_px} sampled px differ)")
+right.keyframes["y"] = [Keyframe(0.0, -0.2), Keyframe(2.0, 0.2)]
+check(left.keyframes.get("y") in (None, []) and right.keyframes["y"][1].value == 0.2, "each side keyframes on its own")
+check(ops.split_pair(p2, left.id) == [], "an already-split side isn't split again")
+seg = ctl.add_text("Blush")
+app.processEvents()
+f = props._fields
+check("split_pair_btn" in f and "effect_side" in f, "Properties: Side + Split for paired effects")
+f["split_pair_btn"].click()
+app.processEvents()
+sides = sorted(ctl.project.find_segment(i)[1].parts[0].text.effect_side for i in ctl.selection)
+check(sides == ["left", "right"], f"the Split button makes the two elements and selects them ({sides})")
+ctl.undo()
+check(ctl.project.find_segment(seg.id)[1].parts[0].text.effect_side == "", "…undoable")
+seg = ctl.add_text("Beating heart")
+app.processEvents()
+f = props._fields
+check("effect_variant" in f and "effect_color2_btn" in f, "Properties: beating heart Style + Shirt color")
+f["effect_variant"].setCurrentIndex(f["effect_variant"].findData("covered"))
+app.processEvents()
+check(ctl.project.find_segment(seg.id)[1].parts[0].text.effect_variant == "covered", "…Style edits the element")
+
 print("ALL PASS" if not FAILS else f"{len(FAILS)} FAILED: {FAILS}")
 sys.exit(1 if FAILS else 0)
