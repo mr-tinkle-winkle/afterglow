@@ -1,10 +1,17 @@
-# Input visualizer prep: Puppetry → afterglow input overlay (v5)
+# Input visualizer prep: Puppetry → afterglow input overlay (v6)
 
 Prepared on the Puppetry side for the afterglow project: what Puppetry
 provides, the design for the afterglow side, a drop-in module, and a
 passing integration test.
 
-**Changed since v4:**
+**Changed since v5:**
+- The `mouse` piece includes mouse movement again: the mouse plus the
+  layout's movement view(s), as arranged in Puppetry. (Since v4 it had
+  been the mouse alone, so clips captured with `keyboard` + `mouse` showed
+  no movement.) Nothing changes on the afterglow side; clips captured
+  before the fix can get it back with `aio.rerender(clip, sc, "mouse")`.
+
+**Changed in v5:**
 - The default layout's movement view is now a Mousepad with the id
   `movement` (it was a Comet with the id `comet`). Movement views get ids
   `movement`, `movement2`, ... whatever their style, so an `el:<id>` piece

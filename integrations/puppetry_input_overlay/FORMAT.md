@@ -112,7 +112,9 @@ Options:
     An unknown id is an error.
   - `keyboard`, `mouse`, `controller`, `comet`, `mousepad`, `joystick`: the
     first element of that type in the layout, or a default one when the
-    layout has none.
+    layout has none. `mouse` also includes the layout's movement view(s),
+    arranged as in the layout (mouse clicks and mouse movement in one
+    piece); `el:<id>` of the mouse gives the mouse alone.
     - Keyboards come as full size, 80% (TKL), 60% or the left half; mice
       as classic, gaming, minimal or buttons only (Puppetry's choice).
     - The controller has sticks that move, triggers that fill, bumpers,

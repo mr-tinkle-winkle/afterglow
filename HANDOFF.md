@@ -732,6 +732,15 @@ plain QSS rule is unavoidable.
 Seven consecutive batches of Library/Settings/appearance
 features/bug fixes, given together each time. Newest first.
 
+### Puppetry prep v6 (latest drop)
+The vendored module and its test are unchanged from v5 (still byte-identical).
+Docs updated in integrations/puppetry_input_overlay/: the `mouse` piece
+includes the layout's movement view(s) again (it was the mouse alone in
+v4/v5, so clips captured with keyboard + mouse then show no movement --
+re-render them from input: Editor > Properties > Input Overlay > Render
+"Mouse + movement", i.e. `aio.rerender(clip, sc, "mouse")`). The piece's
+label is now "Mouse + movement".
+
 ### This session (newest -- performance: clip capture + Editor saves)
 Measured on a 1080p60 x264 source (2 s keyframes) in a 2-core sandbox;
 on a real desktop everything scales down further.

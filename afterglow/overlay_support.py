@@ -85,7 +85,7 @@ def save_placements(sidecar: dict, placements: dict) -> None:
 PIECE_LABELS = {
     "full": "Whole layout (one picture)",
     "keyboard": "Keyboard",
-    "mouse": "Mouse",
+    "mouse": "Mouse + movement",
     "controller": "Controller",
     "comet": "Movement: comet",
     "mousepad": "Movement: mousepad",
