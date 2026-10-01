@@ -26,7 +26,7 @@ from ..custom_scrollbar import CustomScrollBar
 from ..custom_spinbox import CustomDoubleSpinBox
 from ..segment_button import SegmentButton
 from ..theme import Theme
-from .controller import TEXT_PRESETS, EditorController
+from .controller import COMIC_PRESET_GROUPS, COMIC_PRESET_NAMES, TEXT_PRESETS, EditorController
 from .timeline import MIME_ITEM
 
 MEDIA_FILTER = ("Media (*.mp4 *.mkv *.mov *.webm *.avi *.flv *.m4v *.ts *.mp3 *.wav *.flac *.ogg *.opus *.m4a *.aac "
@@ -118,7 +118,7 @@ class BrowserPanel(QWidget):
         self._group = QButtonGroup(self)
         self._group.setExclusive(True)
         self.stack = QStackedWidget()
-        names = ["Media", "Text", "Audio", "Transitions", "Effects"]
+        names = ["Media", "Text", "Comic", "Audio", "Transitions", "Effects"]
         for i, name in enumerate(names):
             pos = "left" if i == 0 else "right" if i == len(names) - 1 else "middle"
             b = SegmentButton(None, pos, text=name)
@@ -131,6 +131,7 @@ class BrowserPanel(QWidget):
 
         self.stack.addWidget(self._media_page())
         self.stack.addWidget(self._text_page())
+        self.stack.addWidget(self._comic_page())
         self.stack.addWidget(self._audio_page())
         self.stack.addWidget(self._transitions_page())
         self.stack.addWidget(self._effects_page())
@@ -283,11 +284,38 @@ class BrowserPanel(QWidget):
         self._refresh_text_list()
         return w
 
+    # ---- Comic ---------------------------------------------------------------
+    def _comic_page(self) -> QWidget:
+        w = QWidget()
+        lay = QVBoxLayout(w)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.addWidget(self._note("Expressions and sound effects -- double-click or drag one onto the timeline, put it "
+                                 "over someone's head. Each has its own in/out animation and idle loop; change "
+                                 "anything in Properties (Comic Effect, Lettering, Text Transitions)."))
+        self.comic_list = _DragList()
+        self.comic_list.itemDoubleClicked.connect(self._activate_item)
+        from ...nle import comic
+        for group, names in COMIC_PRESET_GROUPS:
+            self._header_item(self.comic_list, group)
+            for name in names:
+                it = QListWidgetItem(name)
+                st = TEXT_PRESETS[name]
+                if st.comic_effect:
+                    it.setToolTip((comic.EFFECTS[st.comic_effect][2].__doc__ or "").strip().replace("\n    ", " "))
+                else:
+                    it.setToolTip("Onomatopoeia -- edit the word, colors, 3D, backdrop and animations in Properties")
+                it.setData(Qt.UserRole, {"type": "text", "preset": name})
+                self.comic_list.addItem(it)
+        lay.addWidget(self.comic_list, stretch=1)
+        return w
+
     def _refresh_text_list(self) -> None:
         from ...nle import globals as gl
         lst = self.text_list
         lst.clear()
         for name in TEXT_PRESETS:
+            if name in COMIC_PRESET_NAMES:          # those live on the Comic tab
+                continue
             it = QListWidgetItem(name)
             it.setData(Qt.UserRole, {"type": "text", "preset": name})
             lst.addItem(it)

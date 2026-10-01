@@ -357,7 +357,8 @@ class _OverlayCapture:
         try:
             if self._buffer is None:
                 raise overlay_support.OverlayError(self.error or "Puppetry's input was never frozen")
-            pl = overlay_support.resolve_placements(settings.overlay_placements, clip_cfg.overlay_placements)
+            pl = overlay_support.resolve_placements(settings.overlay_placements, clip_cfg.overlay_placements,
+                                                    overlay_support.element_types())
             started = time.time()
             manifest = overlay_support.capture_clip(
                 self._buffer, clip_path, clip_end=self.t_save,

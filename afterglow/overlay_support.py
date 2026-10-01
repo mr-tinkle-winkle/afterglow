@@ -30,7 +30,7 @@ __all__ = [
     "save_placements", "sidecar_dir", "load_sidecar", "has_sidecar",
     "move_sidecar", "copy_sidecar", "delete_sidecar", "trim_sidecar", "cut_piece",
     "backup_sidecar_dir", "backup_sidecar", "restore_sidecar", "clear_backup_sidecar",
-    "preview_graph", "available", "freeze_input", "capture_clip",
+    "preview_graph", "video_color", "PIECE_LABELS", "piece_label", "all_pieces", "layout_elements", "available", "freeze_input", "capture_clip",
 ]
 
 MANIFEST = "manifest.json"
@@ -44,11 +44,13 @@ def _norm(p: dict) -> dict:
     return out
 
 
-def resolve_placements(global_defaults: dict | None = None, clip_type_defaults: dict | None = None) -> dict:
-    """aio.resolve_placements, plus `rotation` (degrees) on every piece.
+def resolve_placements(global_defaults: dict | None = None, clip_type_defaults: dict | None = None,
+                       element_types: dict | None = None) -> dict:
+    """aio.resolve_placements, plus `rotation` (degrees) on every piece
+    (including "el:<id>" layout elements named in either layer).
     Per piece: clip type > global > built-in."""
-    out = aio.resolve_placements(global_defaults, clip_type_defaults)
-    for piece in PIECES:
+    out = aio.resolve_placements(global_defaults, clip_type_defaults, element_types)
+    for piece in out:
         rot = 0.0
         for layer in (global_defaults or {}, clip_type_defaults or {}):
             if layer.get(piece) and "rotation" in layer[piece]:
@@ -77,6 +79,67 @@ def save_placements(sidecar: dict, placements: dict) -> None:
     for piece, p in placements.items():
         if piece in sidecar["pieces"]:
             sidecar["pieces"][piece]["placement"] = dict(m["pieces"][piece]["placement"])
+
+
+# ---------------------------------------------------------------- Puppetry's layout
+PIECE_LABELS = {
+    "full": "Whole layout (one picture)",
+    "keyboard": "Keyboard",
+    "mouse": "Mouse",
+    "controller": "Controller",
+    "comet": "Movement: comet",
+    "mousepad": "Movement: mousepad",
+    "joystick": "Movement: joystick",
+    "simple": "Held inputs (text)",
+    "movement": "Movement page view",
+}
+_elements_cache: "tuple[float, list] | None" = None
+
+
+def layout_elements(max_age: float = 5.0) -> list:
+    """The elements of the user's Puppetry input-visualizer layout
+    ([{"id", "type"}], each renderable as the piece "el:<id>"); [] when
+    Puppetry isn't running. Cached for a few seconds (it's a subprocess)."""
+    import time
+    global _elements_cache
+    now = time.time()
+    if _elements_cache is not None and now - _elements_cache[0] < max_age:
+        return list(_elements_cache[1])
+    try:
+        els = [e for e in aio.elements() if isinstance(e, dict) and e.get("id")]
+    except Exception:  # noqa: BLE001 -- not running, old Puppetry...
+        els = []
+    _elements_cache = (now, els)
+    return list(els)
+
+
+def element_types() -> dict:
+    return {e["id"]: e.get("type", "") for e in layout_elements()}
+
+
+def element_type(piece: str) -> str:
+    return element_types().get(piece[3:], "") if piece.startswith("el:") else ""
+
+
+def piece_label(piece: str) -> str:
+    """Human name of a piece: "Keyboard", "Layout: Left pad (controller)"..."""
+    if piece in PIECE_LABELS:
+        return PIECE_LABELS[piece]
+    if piece.startswith("el:"):
+        t = element_type(piece)
+        return f"Layout: {piece[3:]}" + (f" ({t})" if t and t != piece[3:] else "")
+    return piece
+
+
+def all_pieces(extra=()) -> list:
+    """Every piece a user can pick: the standard ones, then each element of
+    Puppetry's current layout as "el:<id>", then any other "el:" piece named
+    in `extra` (e.g. stored in a clip type but no longer in the layout)."""
+    out = list(PIECES) + [f"el:{e['id']}" for e in layout_elements()]
+    for p in extra:
+        if p not in out and aio.is_piece(p):
+            out.append(p)
+    return out
 
 
 # ---------------------------------------------------------------- capture
@@ -122,7 +185,7 @@ def capture_clip(buffer_copy, clip, clip_end: float, pieces: list, placements: d
     rendered, errors = {}, {}
 
     def work(piece):
-        out = tmp / f"{piece}.mov"
+        out = tmp / aio.piece_file(piece)
         try:
             aio._run(["render", "--buffer", buffer_copy, "--mode", piece, "--offset-ms", f"{offset_ms:g}",
                       "--fps", f"{fps:g}", "--start", f"{start:.6f}", "--end", f"{clip_end:.6f}", out],
@@ -130,7 +193,7 @@ def capture_clip(buffer_copy, clip, clip_end: float, pieces: list, placements: d
             rendered[piece] = out
         except OverlayError as e:
             errors[piece] = str(e)
-    threads = [threading.Thread(target=work, args=(p,), daemon=True) for p in pieces if p in PIECES]
+    threads = [threading.Thread(target=work, args=(p,), daemon=True) for p in dict.fromkeys(pieces) if aio.is_piece(p)]
     for t in threads:
         t.start()
     for t in threads:
@@ -140,9 +203,9 @@ def capture_clip(buffer_copy, clip, clip_end: float, pieces: list, placements: d
         manifest = {"format": "puppetry-overlay-sidecar", "version": 1, "clip": clip.name, "clip_end": clip_end,
                     "offset_ms": offset_ms, "visible_by_default": visible_by_default, "inputs": "inputs.jsonl",
                     "pieces": {}, "errors": errors}
-        for piece in [p for p in PIECES if p in rendered]:
+        for piece in aio._order(rendered):
             w, h = aio._probe_size(rendered[piece])
-            pl = dict((placements or {}).get(piece) or aio.DEFAULT_PLACEMENT[piece])
+            pl = dict((placements or {}).get(piece) or aio.default_placement(piece, element_type(piece)))
             pl.setdefault("visible", True)
             pl["rotation"] = float(pl.get("rotation", 0.0) or 0.0)
             manifest["pieces"][piece] = {"file": rendered[piece].name, "width": w, "height": h, "placement": pl}
@@ -312,19 +375,66 @@ def _rot_step(i: int, p: dict, w: int, h: int) -> tuple:
     return f"rotate=a={rad:.6f}:c=none:ow=rotw({rad:.6f}):oh=roth({rad:.6f})"
 
 
-def preview_graph(sidecar: dict, video_w: int, video_h: int, enabled: bool) -> tuple:
+_OVERLAY_FORMATS = {        # source pix_fmt family -> (overlay format=, piece pix_fmt before blending)
+    "420": ("yuv420", "yuva420p"), "420p10": ("yuv420p10", "yuva420p10"),
+    "422": ("yuv422", "yuva422p"), "422p10": ("yuv422p10", "yuva422p10"),
+    "444": ("yuv444", "yuva444p"), "444p10": ("yuv444p10", "yuva444p10"),
+    "rgb": ("gbrp", "gbrap"),
+}
+_MATRICES = {"bt709": "bt709", "bt470bg": "bt601", "smpte170m": "smpte170m", "bt2020nc": "bt2020",
+             "bt2020c": "bt2020", "fcc": "fcc", "smpte240m": "smpte240m"}
+
+
+def video_color(path) -> dict:
+    """The clip's pixel format family, YUV matrix and range -- what the
+    previewer's overlay graph must keep so that switching the overlay on/off
+    doesn't change how the VIDEO looks (format=auto converted it to RGB with
+    swscale's own matrix: a visible brightness/saturation shift)."""
+    out = {"family": "420", "matrix": "bt709", "range": "tv"}
+    try:
+        r = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
+                            "stream=pix_fmt,color_space,color_range", "-of", "json", str(path)],
+                           capture_output=True, text=True, timeout=10)
+        st = json.loads(r.stdout or "{}").get("streams", [{}])[0]
+    except Exception:  # noqa: BLE001
+        return out
+    pf = st.get("pix_fmt") or ""
+    deep = any(t in pf for t in ("p10", "p12", "p16", "p010", "p016"))
+    if pf.startswith(("gbr", "rgb", "bgr", "argb", "abgr", "0rgb", "0bgr")):
+        out["family"] = "rgb"
+    elif "444" in pf:
+        out["family"] = "444p10" if deep else "444"
+    elif "422" in pf or pf in ("yuyv422", "uyvy422", "nv16"):
+        out["family"] = "422p10" if deep else "422"
+    else:
+        out["family"] = "420p10" if (deep or pf == "p010le") else "420"
+    out["matrix"] = _MATRICES.get(st.get("color_space") or "", "bt709")
+    out["range"] = "pc" if (st.get("color_range") == "pc" or pf.startswith("yuvj")) else "tv"
+    return out
+
+
+def preview_graph(sidecar: dict, video_w: int, video_h: int, enabled: bool, color: "dict | None" = None) -> tuple:
     """Previewer: (external_files, lavfi_complex) -- the whole overlay on/off
     at the clip's saved placements, WITH rotation (decision 6). A rotated
     piece is scaled, rotated about its centre (the canvas grows to hold the
-    corners) and overlaid offset by half the growth so it stays centred."""
+    corners) and overlaid offset by half the growth so it stays centred.
+    `color` = video_color(clip): the blend happens in the clip's own pixel
+    format (never format=auto, which turned the whole video into RGB)."""
     import math
     placements = placements_of(sidecar)
     d = Path(sidecar["dir"])
-    order = [p for p in PIECES if p in sidecar["pieces"]]
+    order = aio._order(sidecar["pieces"])
     files = [str(d / sidecar["pieces"][p]["file"]) for p in order]
     shown = [(i, p) for i, p in enumerate(order) if enabled and placements.get(p, {}).get("visible", True)]
     if not shown:
         return files, "[vid1] null [vo]"
+    color = color or {"family": "420", "matrix": "bt709", "range": "tv"}
+    ov_fmt, piece_fmt = _OVERLAY_FORMATS.get(color.get("family"), _OVERLAY_FORMATS["420"])
+    if ov_fmt == "gbrp":
+        to_main = f"format={piece_fmt}"
+    else:   # the pieces are RGB: convert them with the VIDEO's own matrix/range, so their colors are right too
+        to_main = (f"scale=out_color_matrix={color.get('matrix', 'bt709')}:out_range={color.get('range', 'tv')},"
+                   f"format={piece_fmt}")
     chain, last = [], "vid1"
     for n, (i, p) in enumerate(shown, start=1):
         pl = placements[p]
@@ -332,15 +442,15 @@ def preview_graph(sidecar: dict, video_w: int, video_h: int, enabled: bool) -> t
         out = "vo" if n == len(shown) else f"o{n}"
         rot = pl.get("rotation", 0.0)
         if abs(rot) < 1e-6:
-            chain.append(f"[vid{i + 2}] scale={w}:{h} [s{n}]; [{last}][s{n}] overlay=x={x}:y={y}:"
-                         f"format=auto:eof_action=pass [{out}]")
+            chain.append(f"[vid{i + 2}] scale={w}:{h},{to_main} [s{n}]; [{last}][s{n}] overlay=x={x}:y={y}:"
+                         f"format={ov_fmt}:eof_action=pass [{out}]")
         else:
             rad = math.radians(rot)
             rw = abs(w * math.cos(rad)) + abs(h * math.sin(rad))
             rh = abs(w * math.sin(rad)) + abs(h * math.cos(rad))
             ox = x - (rw - w) / 2
             oy = y - (rh - h) / 2
-            chain.append(f"[vid{i + 2}] scale={w}:{h},format=argb,{_rot_step(i, pl, w, h)} [s{n}]; "
-                         f"[{last}][s{n}] overlay=x={ox:.2f}:y={oy:.2f}:format=auto:eof_action=pass [{out}]")
+            chain.append(f"[vid{i + 2}] scale={w}:{h},format=argb,{_rot_step(i, pl, w, h)},{to_main} [s{n}]; "
+                         f"[{last}][s{n}] overlay=x={ox:.2f}:y={oy:.2f}:format={ov_fmt}:eof_action=pass [{out}]")
         last = out
     return files, "; ".join(chain)

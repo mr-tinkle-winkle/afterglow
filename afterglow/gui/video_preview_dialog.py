@@ -681,11 +681,9 @@ class VideoPreviewContent(QWidget):
     # ------------------------------------------------------------ input overlay
 
     def _setup_overlay(self, video: "library.Video") -> None:
-        """Reads the clip's overlay sidecar (None -> no toggle at all). The
-        initial state is the manifest's visible_by_default, except that a
-        choice made in this previewer sticks for that clip (e.g. across a
-        Save Trim reload)."""
-        prefs = self.__dict__.setdefault("_overlay_prefs", {})
+        """Reads the clip's overlay sidecar (None -> no toggle at all). On/off
+        is ONE global, saved setting (AppSettings.preview_input_overlay) for
+        every clip -- the toggle button flips and saves it."""
         self._overlay_sidecar = overlay_support.load_sidecar(video.path)
         self._overlay_files = []
         sc = self._overlay_sidecar
@@ -694,8 +692,9 @@ class VideoPreviewContent(QWidget):
             self.overlay_btn.hide()
         else:
             self._overlay_size = _video_size_of(video.path)
+            self._overlay_color = overlay_support.video_color(video.path)
             self._overlay_files = overlay_support.preview_graph(sc, *self._overlay_size, False)[0]
-            self._overlay_on = prefs.get(video.id, bool(sc.get("visible_by_default", True)))
+            self._overlay_on = bool(config_module.load_readonly().preview_input_overlay)    # global, saved
             self._update_overlay_button()
             self.overlay_btn.show()
         self._watch_pending_overlay(video if sc is None else None)
@@ -746,7 +745,8 @@ class VideoPreviewContent(QWidget):
         sc = getattr(self, "_overlay_sidecar", None)
         if sc is None:
             return ""
-        return overlay_support.preview_graph(sc, *self._overlay_size, self._overlay_on)[1]
+        return overlay_support.preview_graph(sc, *self._overlay_size, self._overlay_on,
+                                             getattr(self, "_overlay_color", None))[1]
 
     def _update_overlay_button(self) -> None:
         self.overlay_btn.set_icon_pixmap(overlay_icon(self._overlay_on))
@@ -756,7 +756,9 @@ class VideoPreviewContent(QWidget):
         if getattr(self, "_overlay_sidecar", None) is None:
             return
         self._overlay_on = not self._overlay_on
-        self.__dict__.setdefault("_overlay_prefs", {})[self._video.id] = self._overlay_on
+        settings = config_module.load()                  # one saved, global on/off for every clip
+        settings.preview_input_overlay = self._overlay_on
+        config_module.save(settings)
         self._update_overlay_button()
         self.video_widget.set_overlay_graph(self._overlay_graph())
         if self.video_widget.is_paused:

@@ -150,7 +150,7 @@ check(any(pt.source == entry["file"] for s in ctl.project.all_segments() for pt 
 browser._group.button(1).click()
 pump(0.2)
 browser.grab().save(f"{OUT}/r11_text_tab.png")
-browser._group.button(2).click()
+browser._group.button(3).click()
 pump(0.2)
 browser.grab().save(f"{OUT}/r11_audio_tab.png")
 

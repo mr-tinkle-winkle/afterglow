@@ -81,6 +81,25 @@ check(len(c.video_widget._mpv["external-files"]) == 2 and "overlay=" in str(c.vi
 QTest.mouseClick(c.undo_edits_btn, Qt.LeftButton); pump(2.5)
 check(abs(c._duration - 8) < 0.3, f"Undo Edits reloads the original clip ({c._duration:.2f}s)")
 
+# the toggle is ONE global, saved setting: off here -> off for another clip, and remembered
+check(config.load().preview_input_overlay is False or c._overlay_on, "(state check)")
+was = c._overlay_on
+if was:
+    QTest.mouseClick(c.overlay_btn, Qt.LeftButton); pump(0.5)
+check(config.load().preview_input_overlay is False, "turning the overlay off is saved globally (Settings file)")
+other = clips_dir / "other.mp4"
+subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "color=c=teal:s=640x360:r=30:d=6",
+                "-c:v", "libx264", "-preset", "ultrafast", str(other)], check=True)
+v_other = library.add_video(other, title="other")
+ts3 = time.time()
+job = aio.start_clip(ts3, aio.OverlaySettings(pieces=["keyboard"], fps=30, visible_by_default=True))
+aio.finish_clip(job, other, clip_end=ts3); job.cleanup()
+c._load_video(library.get_video(v_other.id)); pump(1.5)
+check(not c.overlay_btn.isHidden() and not c._overlay_on and "overlay=" not in str(c.video_widget._mpv["lavfi-complex"]),
+      "another clip opens with the overlay OFF too (global, despite its own visible_by_default)")
+QTest.mouseClick(c.overlay_btn, Qt.LeftButton); pump(0.5)
+check(config.load().preview_input_overlay is True and c._overlay_on, "turning it back on is saved globally as well")
+
 # switching to a clip without an overlay (what Prev/Next does) drops the graph
 c._load_video(library.get_video(v_plain.id)); pump(1.5)
 check(c.overlay_btn.isHidden() and c.video_widget._mpv["lavfi-complex"] in ("", None) and not c.video_widget._mpv["external-files"],

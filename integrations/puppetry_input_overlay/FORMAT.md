@@ -69,6 +69,9 @@ Writing behaviour:
 ```json
 {"pid": 1014, "updated": 1790748510.09, "daemon_connected": true,
  "pages": {"full": "http://127.0.0.1:17380/"},
+ "elements": [{"id": "keyboard", "type": "keyboard"}, {"id": "mouse", "type": "mouse"},
+              {"id": "comet", "type": "comet"}],
+ "element_urls": {},
  "replay": {"enabled": true, "file": "/run/user/1000/puppetry/input_buffer.jsonl",
             "length_s": 60.0, "length_source": "obs", "extra_s": 5.0},
  "obs": "connected; replay buffer 60 s"}
@@ -77,7 +80,10 @@ Writing behaviour:
 Rewritten about every 2 s. If `updated` is more than about 10 s old, the
 helper is not running. `length_source` is `obs` when OBS reported its
 replay-buffer length over obs-websocket (polled every 30 s), or `fallback`
-when the setting in Puppetry was used.
+when the setting in Puppetry was used. `elements` is the user's
+input-visualizer layout (arranged in Puppetry's *Edit layout*); each element
+can be rendered alone as `--mode el:<id>`. `element_urls` lists their OBS
+pages when Puppetry serves each element separately (empty otherwise).
 
 ## Command: `puppetry-overlay`
 
@@ -99,15 +105,24 @@ prints `{"error": "..."}` and exits 1. Times are Unix seconds.
 
 Options:
 - `--mode` (the pieces):
-  - `full`: keyboard + mouse + movement arrow in one picture.
-  - `keyboard`: the keyboard only.
-  - `mouse`: the mouse + movement arrow only.
-  - `controller`: a gamepad, with sticks that move, triggers that fill,
-    bumpers, d-pad, and face buttons labelled Xbox / PlayStation / Nintendo
-    per Puppetry's setting.
+  - `full`: the user's whole layout in one picture (by default a TKL
+    keyboard, a mouse and a Comet movement view; any mix of keyboards, mice,
+    controllers and movement views can be arranged in Puppetry).
+  - `el:<id>`: one element of that layout (ids from `status`'s `elements`).
+    An unknown id is an error.
+  - `keyboard`, `mouse`, `controller`, `comet`, `mousepad`, `joystick`: the
+    first element of that type in the layout, or a default one when the
+    layout has none.
+    - Keyboards come as full size, 80% (TKL), 60% or the left half; mice
+      as classic, gaming, minimal or buttons only (Puppetry's choice).
+    - The controller has sticks that move, triggers that fill, bumpers,
+      d-pad, and face buttons labelled Xbox / PlayStation / Nintendo.
+    - Movement views are square: *comet* (a trail behind the pointer, held
+      on its tail or head), *mousepad* (the pointer moving around a pad),
+      *joystick* (direction and speed). Clicks, scrolls and held buttons
+      show as rings, arcs and chevrons around the dot.
   - `simple`: one line of text of what's held.
-  - `movement`: the movement arrow alone. This mode was called `mouse`
-    before the pieces were split.
+  - `movement`: the movement view chosen for Puppetry's movement page.
 - `--piece FILE:X:Y:W`: X and Y are the top-left corner and W the width, all
   fractions of the clip (0 to 1). Height follows the piece's aspect ratio.
   Repeat the option for several pieces; later ones are drawn on top.
@@ -124,14 +139,14 @@ Options:
 - `coverage`: `full` when the buffer reaches back to the clip's start,
   `partial` when it doesn't. A partial render still works; earlier inputs
   are simply absent.
-- Look (colors, key size, timers, arrow, fonts, controller labels) comes
+- Look (colors, key size, timers, movement views, fonts, controller labels) comes
   from Puppetry's `~/.config/macro-daemon/overlay.json`, the same settings
   as the OBS pages.
 
 ### Transparency
 
 Every piece is drawn on a fully transparent background (alpha 0 wherever
-there's no key, button or arrow), and keys are slightly translucent by
+there's no key, button or trail), and keys are slightly translucent by
 default. Formats:
 
 | Format | Alpha when decoded | Size (10 s, heavy activity) | Decode | Notes |
@@ -152,6 +167,7 @@ simple pieces are much smaller.
         keyboard.mov          one transparent qtrle file per piece, cut to the clip exactly
         mouse.mov
         controller.mov
+        el-comet.mov          an "el:<id>" piece is stored as "el-<id>.mov"
 
 `manifest.json`:
 

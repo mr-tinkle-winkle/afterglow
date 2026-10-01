@@ -310,6 +310,10 @@ class AppSettings:
     # single pieces (clip_configs.overlay_placements). Edited on
     # Settings > Input Overlay.
     overlay_placements: dict[str, dict[str, float]] = field(default_factory=dict)
+    # The previewer's input-overlay toggle: ONE global, saved on/off for every
+    # clip (flipped by the previewer's overlay button, remembered across
+    # clips and restarts).
+    preview_input_overlay: bool = True
     obs: OBSSettings = field(default_factory=OBSSettings)
     youtube: YouTubeSettings = field(default_factory=YouTubeSettings)
     filter_display: FilterDisplaySettings = field(default_factory=FilterDisplaySettings)

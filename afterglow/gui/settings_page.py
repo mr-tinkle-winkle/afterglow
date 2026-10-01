@@ -949,6 +949,8 @@ class SettingsPage(QWidget):
         a.card_text_outline_width = self.card_text_outline_width_spin.value()
 
         self.input_overlay_page.save_into(self._settings)
+        # flipped from the previewer since this page loaded its copy: keep the latest
+        self._settings.preview_input_overlay = config_module.load().preview_input_overlay
         config_module.save(self._settings)
         self.filters_settings_page.save()
 

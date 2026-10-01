@@ -23,7 +23,7 @@ from PySide6.QtWidgets import (
 
 from .. import config as config_module
 from .. import overlay_support
-from ..input_overlay import PIECES, DEFAULT_PLACEMENT
+from ..input_overlay import default_placement
 from .custom_button import CustomButton
 from .custom_checkbox import CustomCheckBox
 from .custom_group_box import CustomGroupBox
@@ -31,14 +31,11 @@ from .custom_spinbox import CustomDoubleSpinBox
 from .rounded_rect import rounded_rect_path
 from .theme import Theme
 
-PIECE_LABELS = {
-    "full": "Keyboard + mouse (one picture)",
-    "keyboard": "Keyboard",
-    "mouse": "Mouse",
-    "controller": "Controller",
-    "simple": "Held inputs (text)",
-    "movement": "Mouse-movement arrow",
-}
+PIECE_LABELS = overlay_support.PIECE_LABELS       # (kept for importers)
+
+
+def _default(piece: str) -> dict:
+    return default_placement(piece, overlay_support.element_type(piece))
 
 
 def _pct_spin(lo: float, hi: float, value: float, suffix: str = " %") -> CustomDoubleSpinBox:
@@ -54,10 +51,11 @@ def _pct_spin(lo: float, hi: float, value: float, suffix: str = " %") -> CustomD
 class PlacementEditor(QWidget):
     """Rows of {visible, x, y, w, rotation} per piece in ``pieces``."""
 
-    def __init__(self, pieces=PIECES, inherit: bool = False, parent=None):
+    def __init__(self, pieces=None, inherit: bool = False, parent=None):
         super().__init__(parent)
         self._inherit = inherit
         self._rows: dict[str, dict] = {}
+        pieces = list(pieces) if pieces is not None else overlay_support.all_pieces()
         grid = QGridLayout(self)
         grid.setContentsMargins(0, 0, 0, 0)
         heads = (["Piece"] + (["Use global"] if inherit else []) + ["Shown", "X", "Y", "Size", "Rotation"])
@@ -65,8 +63,8 @@ class PlacementEditor(QWidget):
             lab = QLabel(f"<b>{h}</b>")
             grid.addWidget(lab, 0, c)
         for r, piece in enumerate(pieces, start=1):
-            d = DEFAULT_PLACEMENT[piece]
-            row = {"label": QLabel(PIECE_LABELS.get(piece, piece))}
+            d = _default(piece)
+            row = {"label": QLabel(overlay_support.piece_label(piece))}
             c = 0
             grid.addWidget(row["label"], r, c)
             c += 1
@@ -102,7 +100,7 @@ class PlacementEditor(QWidget):
             if self._inherit:
                 row["inherit"].setChecked(not have)
             p = values.get(piece) or {}
-            d = DEFAULT_PLACEMENT[piece]
+            d = _default(piece)
             row["visible"].setChecked(bool(p.get("visible", True)))
             row["x"].setValue(float(p.get("x", d["x"])) * 100)
             row["y"].setValue(float(p.get("y", d["y"])) * 100)
@@ -136,14 +134,18 @@ class OverlayOptionsDialog(QDialog):
         layout.setContentsMargins(20, 20, 20, 20)
 
         layout.addWidget(QLabel("<b>Pieces captured with each clip</b>"))
+        note = QLabel("\"Layout:\" pieces are single elements of your Puppetry layout (Edit layout).")
+        note.setWordWrap(True)
+        layout.addWidget(note)
         self._piece_checks: dict[str, CustomCheckBox] = {}
-        for piece in PIECES:
-            cb = CustomCheckBox(PIECE_LABELS[piece])
+        self._all = overlay_support.all_pieces(extra=list(pieces) + list(placements or {}))
+        for piece in self._all:
+            cb = CustomCheckBox(overlay_support.piece_label(piece))
             cb.setChecked(piece in pieces)
             self._piece_checks[piece] = cb
             layout.addWidget(cb)
 
-        self.show_default_check = CustomCheckBox("Show the overlay by default (previewer and Editor)")
+        self.show_default_check = CustomCheckBox("Show the overlay by default in the Editor (the previewer's toggle is one global on/off)")
         self.show_default_check.setChecked(visible_default)
         layout.addWidget(self.show_default_check)
 
@@ -161,7 +163,7 @@ class OverlayOptionsDialog(QDialog):
 
         layout.addWidget(QLabel("<b>Placement for this clip type</b> -- pieces set to \"Use global\" follow "
                                 "Settings › Input Overlay"))
-        self.placements = PlacementEditor(inherit=True)
+        self.placements = PlacementEditor(self._all, inherit=True)
         self.placements.set_values(placements)
         layout.addWidget(self.placements)
 
@@ -188,7 +190,7 @@ class OverlayOptionsDialog(QDialog):
 
     def result_values(self) -> dict:
         return {
-            "overlay_pieces": [p for p in PIECES if self._piece_checks[p].isChecked()] or ["keyboard", "mouse"],
+            "overlay_pieces": [p for p in self._all if self._piece_checks[p].isChecked()] or ["keyboard", "mouse"],
             "overlay_visible_default": self.show_default_check.isChecked(),
             "overlay_offset_ms": float(self.offset_spin.value()),
             "overlay_placements": self.placements.values(),
@@ -222,11 +224,13 @@ class InputOverlaySettingsPage(QWidget):
                       "single pieces (its \"…\" button under Clipping). Pieces are placed in the Editor per clip.")
         note.setWordWrap(True)
         gl.addWidget(note)
-        self.editor = PlacementEditor()
-        self.editor.set_values(overlay_support.resolve_placements(settings.overlay_placements))
+        self.editor = PlacementEditor(overlay_support.all_pieces(extra=list(settings.overlay_placements)))
+        self.editor.set_values(overlay_support.resolve_placements(settings.overlay_placements, None,
+                                                                  overlay_support.element_types()))
         gl.addWidget(self.editor)
         reset = CustomButton("Reset to built-in defaults")
-        reset.clicked.connect(lambda: self.editor.set_values(overlay_support.resolve_placements({})))
+        reset.clicked.connect(lambda: self.editor.set_values(overlay_support.resolve_placements(
+            {}, None, overlay_support.element_types())))
         gl.addWidget(reset, alignment=Qt.AlignLeft)
         outer.addWidget(group)
         outer.addStretch(1)

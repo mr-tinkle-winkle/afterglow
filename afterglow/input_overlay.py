@@ -46,10 +46,18 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-# The pieces Puppetry can render. "full" is keyboard + mouse in one picture;
-# "keyboard" / "mouse" are the same two apart; "controller" a gamepad;
-# "simple" one line of text (what's held); "movement" the mouse-movement arrow.
-PIECES = ("full", "keyboard", "mouse", "controller", "simple", "movement")
+# The pieces Puppetry can render:
+#   "full"        the user's whole input-visualizer layout in one picture
+#   "keyboard", "mouse", "controller"
+#                 one element of that type (the first in the layout, with its
+#                 preset / look; a default one when the layout has none)
+#   "comet", "mousepad", "joystick"
+#                 a mouse-movement view of that style
+#   "simple"      one line of text (what's held)
+#   "movement"    the movement view chosen for Puppetry's movement page
+#   "el:<id>"     one specific element of the layout by id (see elements());
+#                 its file is "el-<id>.mov"
+PIECES = ("full", "keyboard", "mouse", "controller", "comet", "mousepad", "joystick", "simple", "movement")
 
 # Where each piece starts out, as fractions of the video: top-left x, y and
 # width (height follows the piece's aspect ratio). These are the built-in
@@ -61,9 +69,13 @@ DEFAULT_PLACEMENT = {
     "keyboard": {"x": 0.02, "y": 0.76, "w": 0.34},
     "mouse": {"x": 0.88, "y": 0.66, "w": 0.1},
     "controller": {"x": 0.39, "y": 0.74, "w": 0.22},
+    "comet": {"x": 0.88, "y": 0.5, "w": 0.1},
+    "mousepad": {"x": 0.88, "y": 0.5, "w": 0.1},
+    "joystick": {"x": 0.88, "y": 0.5, "w": 0.1},
     "simple": {"x": 0.02, "y": 0.02, "w": 0.5},
     "movement": {"x": 0.88, "y": 0.02, "w": 0.1},
 }
+_EL_DEFAULT = {"x": 0.02, "y": 0.02, "w": 0.25}     # an "el:<id>" piece whose type isn't known
 SIDECAR_SUFFIX = ".input"
 _FALLBACK_PATHS = ("/run/current-system/sw/bin/puppetry-overlay",
                    "/etc/profiles/per-user/{user}/bin/puppetry-overlay")
@@ -71,6 +83,29 @@ _FALLBACK_PATHS = ("/run/current-system/sw/bin/puppetry-overlay",
 
 class OverlayError(Exception):
     pass
+
+
+def is_piece(piece: str) -> bool:
+    return piece in PIECES or (piece.startswith("el:") and len(piece) > 3)
+
+
+def piece_file(piece: str) -> str:
+    """The piece's file name in the sidecar ("keyboard.mov", "el-pad1.mov")."""
+    return piece.replace(":", "-", 1) + ".mov"
+
+
+def default_placement(piece: str, element_type: str | None = None) -> dict:
+    """The built-in starting placement of a piece. An "el:<id>" piece uses
+    its element type's default when `element_type` is given."""
+    if piece in DEFAULT_PLACEMENT:
+        return dict(DEFAULT_PLACEMENT[piece])
+    return dict(DEFAULT_PLACEMENT.get(element_type or "", _EL_DEFAULT))
+
+
+def _order(pieces) -> list:
+    """Drawing order: PIECES order, then "el:" pieces in the order given."""
+    pieces = list(pieces)
+    return [p for p in PIECES if p in pieces] + [p for p in pieces if p not in PIECES]
 
 
 def find_tool() -> "str | None":
@@ -134,18 +169,30 @@ def available() -> tuple:
     return True, f"recording {rp.get('length_s', 0):g} s of input ({rp.get('length_source')})"
 
 
+def elements() -> list:
+    """The elements of the user's input-visualizer layout, as
+    [{"id", "type"}] -- each can be rendered as the piece "el:<id>" (for a
+    settings list such as "Keyboard (keyboard)", "Left pad (controller)")."""
+    return list(status().get("elements", []))
+
+
 # ---------------------------------------------------------------------------
 # Capture: one clip
 # ---------------------------------------------------------------------------
-def resolve_placements(global_defaults: dict | None = None, clip_type_defaults: dict | None = None) -> dict:
+def resolve_placements(global_defaults: dict | None = None, clip_type_defaults: dict | None = None,
+                       element_types: dict | None = None) -> dict:
     """The starting placement of every piece for a new clip:
     {piece: {"x", "y", "w", "visible"}}. Per piece, the clip type's default
     wins when it has one for that piece, else the global default, else the
     built-in DEFAULT_PLACEMENT. (A clip type can override just one piece --
-    e.g. move only the controller -- and inherit the rest.)"""
+    e.g. move only the controller -- and inherit the rest.) "el:<id>" pieces
+    named in either layer are included too; `element_types` ({id: type},
+    from elements()) picks their built-in default by type."""
     out = {}
-    for piece in PIECES:
-        base = dict(DEFAULT_PLACEMENT[piece])
+    extra = [p for layer in (global_defaults or {}, clip_type_defaults or {}) for p in layer
+             if p not in PIECES and is_piece(p)]
+    for piece in list(PIECES) + list(dict.fromkeys(extra)):
+        base = default_placement(piece, (element_types or {}).get(piece[3:]))
         base["visible"] = True
         for layer in (global_defaults or {}, clip_type_defaults or {}):
             if piece in layer and layer[piece]:
@@ -157,7 +204,7 @@ def resolve_placements(global_defaults: dict | None = None, clip_type_defaults: 
 @dataclass
 class OverlaySettings:
     """What afterglow would store per clip type."""
-    pieces: list = field(default_factory=lambda: ["full"])   # which of PIECES to make
+    pieces: list = field(default_factory=lambda: ["full"])   # which of PIECES (or "el:<id>") to make
     # starting placements for this clip type's clips -- pass
     # resolve_placements(global_defaults, clip_type_defaults); None = built-in
     placements: dict | None = None
@@ -199,8 +246,8 @@ def start_clip(t_save: float, settings: OverlaySettings | None = None, replay_le
     frame); finish_clip() cuts each one to the clip exactly."""
     settings = settings or OverlaySettings()
     for p in settings.pieces:
-        if p not in PIECES:
-            raise OverlayError(f"unknown piece {p!r} (one of {', '.join(PIECES)})")
+        if not is_piece(p):
+            raise OverlayError(f"unknown piece {p!r} (one of {', '.join(PIECES)}, or el:<id>)")
     job = ClipJob(t_save, settings)
     job.buffer_copy = freeze_input(job.workdir / "inputs.jsonl")
     if replay_length_s is None:
@@ -211,7 +258,7 @@ def start_clip(t_save: float, settings: OverlaySettings | None = None, replay_le
     job.overlay_start = t_save - replay_length_s - lead_s
 
     def work(piece):
-        out = job.workdir / f"{piece}.mov"
+        out = job.workdir / piece_file(piece)
         try:
             _run(["render", "--buffer", job.buffer_copy, "--mode", piece, "--offset-ms", settings.offset_ms,
                   "--fps", f"{settings.fps:g}", "--start", f"{job.overlay_start:.6f}",
@@ -249,7 +296,7 @@ def finish_clip(job: ClipJob, clip, clip_end: float | None = None, dest=None) ->
                 "offset_ms": job.settings.offset_ms, "visible_by_default": job.settings.visible_by_default,
                 "inputs": "inputs.jsonl", "pieces": {}, "errors": dict(job.errors)}
     for piece, path in job.rendered.items():
-        out = dest / f"{piece}.mov"
+        out = dest / piece_file(piece)
         try:
             _run(["align", "--overlay", path, "--overlay-start", f"{job.overlay_start:.6f}", "--clip", clip,
                   "--clip-end", f"{clip_end:.6f}", out])
@@ -257,7 +304,7 @@ def finish_clip(job: ClipJob, clip, clip_end: float | None = None, dest=None) ->
             manifest["errors"][piece] = str(e)
             continue
         w, h = _probe_size(out)
-        start = (job.settings.placements or {}).get(piece) or dict(DEFAULT_PLACEMENT[piece], visible=True)
+        start = (job.settings.placements or {}).get(piece) or dict(default_placement(piece), visible=True)
         manifest["pieces"][piece] = {"file": out.name, "width": w, "height": h, "placement": dict(start)}
     if not manifest["pieces"]:
         raise OverlayError("no overlay piece could be made: " + "; ".join(f"{k}: {v}" for k, v in
@@ -297,7 +344,7 @@ def placements_of(sidecar: dict) -> dict:
     (which only reads them -- it just toggles the whole overlay)."""
     out = {}
     for piece, info in sidecar["pieces"].items():
-        p = dict(info.get("placement") or DEFAULT_PLACEMENT[piece])
+        p = dict(info.get("placement") or default_placement(piece))
         p.setdefault("visible", True)
         out[piece] = p
     return out
@@ -334,7 +381,7 @@ def mpv_overlay_args(sidecar: dict, placements: dict, video_w: int, video_h: int
     set lavfi-complex to "[vid1] null [vo]"). Pieces are transparent qtrle,
     which ffmpeg/mpv decode with their alpha."""
     d = Path(sidecar["dir"])
-    order = [p for p in PIECES if p in sidecar["pieces"]]
+    order = _order(sidecar["pieces"])
     files = [str(d / sidecar["pieces"][p]["file"]) for p in order]
     shown = [(i, p) for i, p in enumerate(order) if enabled and placements.get(p, {}).get("visible", True)]
     if not shown:
@@ -352,7 +399,7 @@ def export(clip, sidecar: dict, placements: dict, out, crf: int = 18) -> dict:
     """Burn the visible pieces onto a copy of the clip at their placements."""
     d = Path(sidecar["dir"])
     args = ["layer", "--clip", clip, "--crf", crf]
-    for piece in PIECES:
+    for piece in _order(sidecar["pieces"]):
         p = placements.get(piece)
         if piece in sidecar["pieces"] and p and p.get("visible", True):
             args += ["--piece", f"{d / sidecar['pieces'][piece]['file']}:{p['x']}:{p['y']}:{p['w']}"]
@@ -365,13 +412,13 @@ def export(clip, sidecar: dict, placements: dict, out, crf: int = 18) -> dict:
 def rerender(clip, sidecar: dict, piece: str, fps: float = 60.0) -> dict:
     """Re-make one piece from the stored inputs (after changing Puppetry's
     look, or adding a piece that wasn't made at save time)."""
-    if piece not in PIECES:
+    if not is_piece(piece):
         raise OverlayError(f"unknown piece {piece!r}")
     d = Path(sidecar["dir"])
     clip_end = float(sidecar["clip_end"])
     dur = _probe_duration(clip)
-    out = d / f"{piece}.mov"
-    tmp = d / f".{piece}.tmp.mov"
+    out = d / piece_file(piece)
+    tmp = d / f".{piece_file(piece)}.tmp.mov"
     _run(["render", "--buffer", d / sidecar.get("inputs", "inputs.jsonl"), "--mode", piece,
           "--offset-ms", sidecar.get("offset_ms", 0), "--fps", f"{fps:g}",
           "--start", f"{clip_end - dur:.6f}", "--end", f"{clip_end:.6f}", tmp])
@@ -380,7 +427,7 @@ def rerender(clip, sidecar: dict, piece: str, fps: float = 60.0) -> dict:
     w, h = _probe_size(out)
     old = m["pieces"].get(piece, {})
     m["pieces"][piece] = {"file": out.name, "width": w, "height": h,
-                          "placement": old.get("placement", dict(DEFAULT_PLACEMENT[piece]))}
+                          "placement": old.get("placement", dict(default_placement(piece), visible=True))}
     (d / "manifest.json").write_text(json.dumps(m, indent=2))
     return m["pieces"][piece]
 

@@ -5,6 +5,21 @@
   "pages": {
     "full": "http://127.0.0.1:17380/"
   },
+  "elements": [
+    {
+      "id": "keyboard",
+      "type": "keyboard"
+    },
+    {
+      "id": "mouse",
+      "type": "mouse"
+    },
+    {
+      "id": "comet",
+      "type": "comet"
+    }
+  ],
+  "element_urls": {},
   "replay": {
     "enabled": true,
     "file": "/run/user/1000/puppetry/input_buffer.jsonl",

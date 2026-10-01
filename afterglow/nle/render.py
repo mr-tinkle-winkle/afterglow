@@ -44,9 +44,9 @@ from typing import Callable
 import av
 import numpy as np
 from PySide6.QtCore import QPointF, QRectF, Qt
-from PySide6.QtGui import QColor, QFont, QImage, QLinearGradient, QPainter, QPainterPath, QPen
+from PySide6.QtGui import QBrush, QColor, QFont, QImage, QLinearGradient, QPainter, QPainterPath, QPen
 
-from . import media
+from . import comic, media
 from .model import EPS, KIND_AV, KIND_GIF, KIND_IMAGE, KIND_TEXT, Keyframe, OverlayPiece, Part, Project, Segment, Track
 
 RATE = media.AUDIO_RATE
@@ -325,9 +325,21 @@ class Renderer:
                 continue
             painter.save()
             painter.setOpacity(max(0.0, min(1.0, opacity)))
-            painter.translate(cw / 2 + x * cw, ch / 2 + y * ch)
-            painter.rotate(rotation)
-            painter.scale(scale, scale)
+            mdx = mdy = mrot = 0.0
+            msx = msy = 1.0
+            if part.kind == KIND_TEXT and part.text is not None and comic.has_motion(part.text):
+                # Bounce / Jiggle / Animate in-out / Idle: screen-space offset, extra
+                # spin, scale and opacity on top of the transform (nle/comic.py)
+                mdx, mdy, mrot, msx, msy, malpha = comic.text_motion(
+                    part.text, max(0.0, min(local - part.offset, part.duration)), part.duration, cw, ch)
+                if malpha < 1.0:
+                    painter.setOpacity(painter.opacity() * max(0.0, malpha))
+                if abs(msx) < 1e-4 or abs(msy) < 1e-4 or malpha <= 0.001:
+                    painter.restore()
+                    continue
+            painter.translate(cw / 2 + x * cw + mdx, ch / 2 + y * ch + mdy)
+            painter.rotate(rotation + mrot)
+            painter.scale(scale * msx, scale * msy)
             if self._only is not None and not seg.overlay_piece:
                 # frame_piece(): another clip -- its picture isn't part of the
                 # overlay sidecar; only its attached pieces of this name are.
@@ -344,9 +356,9 @@ class Renderer:
                     # local (rotated/scaled) space.
                     dx = eval_keyframes(kf.get("tail_x"), local, st.tail_x) * cw
                     dy = eval_keyframes(kf.get("tail_y"), local, st.tail_y) * ch
-                    a = -math.radians(rotation)
-                    lx = (dx * math.cos(a) - dy * math.sin(a)) / max(scale, 1e-6)
-                    ly = (dx * math.sin(a) + dy * math.cos(a)) / max(scale, 1e-6)
+                    a = -math.radians(rotation + mrot)
+                    lx = (dx * math.cos(a) - dy * math.sin(a)) / max(scale * abs(msx), 1e-6)
+                    ly = (dx * math.sin(a) + dy * math.cos(a)) / max(scale * abs(msy), 1e-6)
                     tip = QPointF(lx, ly)
                 self._draw_text(painter, part, ch, local=max(0.0, min(local - part.offset, part.duration)),
                                 duration=part.duration, tip=tip)
@@ -425,10 +437,13 @@ class Renderer:
 
     def _draw_text(self, painter, part, ch, local: float = 0.0, duration: float = 0.0, tip=None) -> None:
         st = part.text
-        if st is None or not (st.text or bubble_image(st.image_path) is not None):
+        if st is None or not (st.text or comic.valid_effect(st.comic_effect)
+                              or bubble_image(st.image_path) is not None):
             return
         lay = text_layout(st, ch)
         text_alpha = 1.0
+        if st.backdrop and comic.valid_backdrop(st.backdrop) and (st.text or lay.get("effect")):
+            comic.draw_backdrop(painter, st, lay["rect"], local, ch, duration)
         if st.bubble:
             g = grow_progress(st, local, duration)
             variant = valid_variant(st.bubble, st.bubble_variant)
@@ -470,8 +485,21 @@ class Renderer:
         self._draw_content(painter, st, lay, ch, local, duration)
 
     def _draw_content(self, painter, st, lay, ch, local: float, duration: float) -> None:
-        """The picture (if any) and the words, laid out by text_layout."""
-        if lay.get("image") is not None:
+        """The picture or comic effect (if any) and the words, laid out by text_layout."""
+        if lay.get("effect"):
+            a = 1.0
+            if has_text_in(st):
+                tm = text_timing(st, duration)
+                a = max(0.0, min(1.0, (local - tm["ts"]) / 0.25))
+            if a > 0.001:
+                painter.save()
+                painter.setOpacity(painter.opacity() * a)
+                speed = max(0.0, st.effect_speed)
+                g, leaving = comic.effect_progress(st, local, duration)
+                comic.draw_comic_effect(painter, lay["effect"], lay["image_rect"], max(0.0, local) * speed,
+                                        comic.effect_color(st), animated=speed > EPS, g=g, out=leaving)
+                painter.restore()
+        elif lay.get("image") is not None:
             a = 1.0
             if has_text_in(st):
                 # with a type/delay effect the picture pops in as the words start
@@ -496,47 +524,98 @@ class Renderer:
             self._draw_text_body(painter, st, lay, ch, local, duration)
 
     def _draw_text_body(self, painter, st, lay, ch, local: float, duration: float) -> None:
+        """The words: typewriter, Delay fades, comic lettering (gradient fill,
+        3D extrude, skew) and the per-letter motions (letters in/out,
+        explode, wave, jitter, jumble -- nle/comic.py)."""
         shown, cursor = typed_state(st, local, duration)
         alphas = delay_alphas(st, local, duration)        # None = all fully visible
+        per_letter = alphas is not None or comic.has_letter_motion(st)
         pen = None
         if st.outline_width > 0:
             pen = QPen(QColor(st.outline_color), st.outline_width * ch / 1080 * 2)
             pen.setJoinStyle(Qt.RoundJoin)
+        if st.fill2:
+            grad = QLinearGradient(QPointF(0, -lay["total_h"] / 2), QPointF(0, lay["total_h"] / 2))
+            grad.setColorAt(0.0, QColor(st.color))
+            grad.setColorAt(1.0, QColor(st.fill2))
+            fill = QBrush(grad)
+        else:
+            fill = QBrush(QColor(st.color))
+        depth = max(0.0, st.extrude) * ch / 1080
+        steps = int(min(36, math.ceil(depth))) if depth > 0.5 else 0
+        ext_col = QColor(st.extrude_color)
         fm = lay["fm"]
+        em = lay["font"].pixelSize()
         base_opacity = painter.opacity()
-        path = QPainterPath()
+        painter.save()
+        if abs(st.skew) > 0.01:
+            painter.shear(-math.tan(math.radians(max(-60.0, min(60.0, st.skew)))), 0.0)
+
+        def extrusion(path):
+            if steps:
+                k = depth / steps
+                for j in range(steps, 0, -1):
+                    painter.fillPath(path.translated(k * j * 0.75, k * j), ext_col)
+                if pen is not None:
+                    painter.strokePath(path.translated(depth * 0.75, depth), pen)
+
+        def front(path):
+            if pen is not None:
+                painter.strokePath(path, pen)
+            painter.fillPath(path, fill)
+
+        glyphs = []                                        # (char, x, baseline, index)
         remaining = shown
         cursor_at = None
-        index = 0                                          # character index into st.text
+        index = 0
         for i, line in enumerate(lay["lines"]):
             vis = line[:max(0, remaining)]
             x0 = -lay["widths"][i] / 2
             baseline = -lay["total_h"] / 2 + lay["ascent"] + i * lay["spacing"]
-            if vis:
-                if alphas is None:
-                    path.addText(QPointF(x0, baseline), lay["font"], vis)
-                else:
-                    for j, chh in enumerate(vis):
-                        a = alphas[index + j]
-                        if a <= 0.001 or chh.isspace():
-                            continue
-                        cp = QPainterPath()
-                        cp.addText(QPointF(x0 + fm.horizontalAdvance(line[:j]), baseline), lay["font"], chh)
-                        painter.setOpacity(base_opacity * a)
-                        if pen is not None:
-                            painter.strokePath(cp, pen)
-                        painter.fillPath(cp, QColor(st.color))
-                    painter.setOpacity(base_opacity)
+            for j, chh in enumerate(vis):
+                glyphs.append((chh, x0 + fm.horizontalAdvance(line[:j]), baseline, index + j))
             if remaining >= 0:
                 cursor_at = (x0 + fm.horizontalAdvance(vis), baseline)
             index += len(line) + 1
-            remaining -= len(line) + 1          # +1 for the newline
+            remaining -= len(line) + 1
             if remaining < 0:
                 break
-        if alphas is None and not path.isEmpty():
-            if pen is not None:
-                painter.strokePath(path, pen)
-            painter.fillPath(path, QColor(st.color))
+        if not per_letter:
+            path = QPainterPath()
+            for chh, gx, gy, _i in glyphs:
+                path.addText(QPointF(gx, gy), lay["font"], chh)
+            if not path.isEmpty():
+                extrusion(path)
+                front(path)
+        else:
+            n = max(1, len(st.text))
+            items = []
+            for chh, gx, gy, gi in glyphs:
+                if chh.isspace():
+                    continue
+                a = 1.0 if alphas is None else alphas[gi]
+                ldx, ldy, lrot, ls, la = comic.letter_motion(st, gi, n, local, duration, em)
+                a *= la
+                if a <= 0.001 or ls <= 0.001:
+                    continue
+                cp = QPainterPath()
+                cp.addText(QPointF(gx, gy), lay["font"], chh)
+                cx = gx + fm.horizontalAdvance(chh) / 2
+                cy = gy - lay["ascent"] * 0.35
+                from PySide6.QtGui import QTransform
+                tr = QTransform()
+                tr.translate(cx + ldx, cy + ldy)
+                tr.rotate(lrot)
+                tr.scale(ls, ls)
+                tr.translate(-cx, -cy)
+                items.append((tr.map(cp), a))
+            for cp, a in items:                            # all the 3D sides first, then the faces
+                painter.setOpacity(base_opacity * a)
+                extrusion(cp)
+            for cp, a in items:
+                painter.setOpacity(base_opacity * a)
+                front(cp)
+            painter.setOpacity(base_opacity)
         if cursor and cursor_at is not None:
             w = max(1.0, fm.height() * 0.07)
             r = QRectF(cursor_at[0] + w * 0.6, cursor_at[1] - fm.ascent(), w, fm.ascent() + fm.descent())
@@ -545,6 +624,7 @@ class Renderer:
                 cp.addRect(r)
                 painter.strokePath(cp, pen)
             painter.fillRect(r, QColor(st.color))
+        painter.restore()
 
     # ---- audio -----------------------------------------------------------
     def audio(self, t0: float, n: int) -> np.ndarray:
@@ -647,11 +727,18 @@ def text_layout(st, ch: float) -> dict:
            "spacing": fm.lineSpacing(), "ascent": fm.ascent(),
            "rect": QRectF(-tw / 2, -th / 2, tw, th), "text_offset": QPointF(0.0, 0.0),
            "image": None, "image_rect": None}
-    img = bubble_image(getattr(st, "image_path", ""))
-    if img is not None:
-        # the picture sits beside the words; the whole block stays centered
-        ih = max(2.0, getattr(st, "image_size", 0.18) * ch)
-        iw = ih * img.width() / max(img.height(), 1)
+    effect = comic.valid_effect(getattr(st, "comic_effect", ""))
+    img = None if effect else bubble_image(getattr(st, "image_path", ""))
+    lay["effect"] = effect
+    if img is not None or effect:
+        # the picture (or the comic effect, which takes its place) sits beside
+        # the words; the whole block stays centered
+        if effect:
+            ih = max(2.0, getattr(st, "effect_size", 0.22) * ch)
+            iw = ih * comic.EFFECT_ASPECT[effect]
+        else:
+            ih = max(2.0, getattr(st, "image_size", 0.18) * ch)
+            iw = ih * img.width() / max(img.height(), 1)
         gap = fm.height() * 0.35 if st.text else 0.0
         place = getattr(st, "image_place", "above")
         if place in ("left", "right"):

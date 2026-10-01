@@ -82,8 +82,7 @@ def contributions(project: Project) -> "dict[str, list[Contribution]]":
 
 def overlay_names(project: Project) -> list[str]:
     """Names of the overlay pieces with visible content (what a sidecar would hold)."""
-    return [n for n in overlay_support.PIECES if n in contributions(project)] + \
-           [n for n in contributions(project) if n not in overlay_support.PIECES]
+    return overlay_support.aio._order(contributions(project))
 
 
 def has_overlay_content(project: Project) -> bool:
@@ -267,7 +266,7 @@ def write_sidecar(project: Project, out_path: "str | Path", progress: "Callable[
             items = items_by_name[name]
             sizes = _source_sizes(items)
             plan = _static_plan(project, name, items, sizes)
-            dst = tmp / f"{name}.mov"
+            dst = tmp / overlay_support.aio.piece_file(name)
 
             def sub(frac, i=idx):
                 if progress is not None:

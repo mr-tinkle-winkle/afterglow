@@ -1,10 +1,28 @@
-# Input visualizer prep: Puppetry → afterglow input overlay (v2)
+# Input visualizer prep: Puppetry → afterglow input overlay (v4)
 
 Prepared on the Puppetry side for the afterglow project: what Puppetry
 provides, the design for the afterglow side, a drop-in module, and a
 passing integration test.
 
-**Changed since v1:**
+**Changed since v3:**
+- Puppetry's visualizer is now a layout the user arranges (*Edit layout*):
+  any number of keyboards (full, 80%, 60%, left half), mice (classic,
+  gaming, minimal, buttons only), controllers and mouse-movement views.
+  `full` renders that whole layout; `el:<id>` renders one element of it
+  (`aio.elements()` lists them); `keyboard` / `mouse` / `controller` /
+  `comet` / `mousepad` / `joystick` render the first element of that type,
+  or a default one.
+- The movement arrow is replaced by three square movement views: Comet
+  (a trail behind the pointer), Mousepad and Joystick. New pieces `comet`,
+  `mousepad`, `joystick` with their own default placements.
+- `resolve_placements` accepts `el:<id>` pieces in the global / clip-type
+  layers and takes `element_types` (`{id: type}`) to give them their type's
+  built-in default. Their files are `el-<id>.mov` (`aio.piece_file`).
+
+**Changed in v3:** placements default per clip type over global; the
+previewer only toggles.
+
+**Changed in v2:**
 - The overlay is no longer burned into the saved clip. It is stored beside
   the clip as transparent video pieces plus the raw input. afterglow shows
   it live in the previewer and editor, where it can be toggled, moved and
@@ -19,12 +37,12 @@ passing integration test.
 
 - **OBS pages** (Input Visualizer page → *OBS & replay overlay*). Each is a
   local page for an OBS Browser Source, or is created by **Add to OBS**.
-  - *keyboard + mouse* is one page, or two with "separate pieces".
-  - *controller* is its own page.
+  - the whole layout is one page, and optionally every element is also its
+    own page.
   - *simple input list* is one line of text of what's held, with an
-    optional arrow-only *mouse movement* page.
-  - Held keys show a millisecond hold timer. A curved arrow shows the last
-    mouse movement.
+    optional *mouse movement* page (one movement view).
+  - Held keys show a millisecond hold timer. Movement views draw the
+    pointer's recent path with clicks and scrolls.
 - **Layered Replay Buffer.** A rolling record of all keyboard, mouse and
   controller input in RAM (`$XDG_RUNTIME_DIR/puppetry/input_buffer.jsonl`).
   It is as long as OBS's replay buffer, which Puppetry reads over
@@ -41,7 +59,7 @@ passing integration test.
 | Setting | Values | Default |
 |---|---|---|
 | Input overlay | on / off (whether to capture it for this clip type) | off |
-| Pieces | any of: full (keyboard + mouse), keyboard, mouse, controller, simple, movement | full |
+| Pieces | any of: full (the whole layout), keyboard, mouse, controller, comet, mousepad, joystick, simple, movement, or a layout element `el:<id>` | full |
 | Show by default | overlay starts visible in the previewer/editor | on |
 | Timing offset | ms (calibration, see FORMAT.md) | 0 |
 | Piece placements | where each piece starts on new clips of this type; "use global" per piece | use global |
@@ -138,8 +156,8 @@ next to the clip type's toggle.
 
 ## Measured (offscreen sandbox, not the target machine)
 
-- Capture to sidecar for a 4 s clip with three pieces (keyboard, mouse,
-  controller) at 30 fps: about 3.5 s, mostly while OBS would still be
+- Capture to sidecar for a 4 s clip with four pieces (keyboard, mouse,
+  controller, a comet element) at 30 fps: about 3.3 s, mostly while OBS would still be
   writing.
 - Transparent qtrle pieces: about 1 MB per second of heavy keyboard
   activity; controller and mouse pieces are much smaller. Rendering runs at

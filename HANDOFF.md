@@ -732,7 +732,115 @@ plain QSS rule is unavoidable.
 Seven consecutive batches of Library/Settings/appearance
 features/bug fixes, given together each time. Newest first.
 
-### This session (newest -- feedback round 12)
+### This session (newest -- feedback round 15: expressions library, onomatopoeia, transitions, global overlay toggle)
+1. **Previewer input-overlay toggle is ONE global, saved setting**
+   (`AppSettings.preview_input_overlay`, default on): the previewer's
+   button flips and saves it; every clip opens in that state (the clip's
+   own `visible_by_default` now only matters in the Editor). Settings' Save
+   re-reads it from disk first so it never clobbers a previewer change.
+2. **Anger vein redrawn to match the comic mark** the user sent: four
+   thick, flat-capped bent strokes (bend toward the centre, the left arm
+   steeper -> pinwheel), `comic._vein_piece`.
+3. **Expressions library** (`nle/comic.py` EFFECTS registry: key -> label,
+   group, draw fn, aspect, default color, default size). 30 effects in 10
+   groups: Anger (scribblenado, vein, fuming steam, flames), Unease
+   (unease lines, sweat drop, nervous sweat), Sad (gloom lines, rain cloud),
+   Bored (dots, Zzz), Surprise (!, ?, !?, shock lines, dizzy spiral, dizzy
+   stars), Love & joy (floating hearts, beating heart, music notes,
+   sparkles), Idea (bulb), Embarrassed (blush), Reactions (thumbs up/down,
+   skull), Action (focus lines, speed lines, impact burst, poof). Each draw
+   fn takes (t = idle time, g = in/out progress, out) -- EVERY effect has
+   its own entrance/exit (scribble winds up/unwinds, unease lines grow
+   out/pull in, vein pops, gloom lines drop down, thumbs spring up with a
+   twist...) and an idle loop (vein throbs, rain falls, hearts float...).
+   New TextStyle fields `effect_in` / `effect_out` (s); `effect_speed` is
+   now "Idle speed". All deterministic in t (12 fps "boil" re-seeding).
+4. **Onomatopoeia / comic lettering** (TextStyle `fill2` gradient,
+   `extrude` 3D block shadow + `extrude_color`, `skew`, `jumble`,
+   `backdrop` = burst / jagged / boom / cloud / splat / flash +
+   `backdrop_fill` / `backdrop_outline`; Properties > "Lettering"). 18
+   presets in the bundled Bangers font (POW!, BAM!, BOOM!, KAPOW!, WHAM!,
+   CRASH!, ZAP!, BZZT, BONK!, SPLAT!, THUD, WHOOSH, SNAP!, DING!, GULP,
+   OOF, BRUH, YEET!), each with its own entrance/exit/idle. A backdrop
+   boils while the idle is Shake/Jitter and pops in/out with per-letter
+   animations (`comic.backdrop_scale`).
+5. **More text transitions** (any text): "Animate in" (pop, slam, spin,
+   stretch, drop, zoom, flip, letters pop in, letters rain in), "Animate
+   out" (pop, shrink, spin, fly up, fall, flip, letters pop out, explode)
+   with lengths, and "Idle" (shake, pulse, wobble, float, swing, wave,
+   jitter) with strength + speed. `comic.text_motion` now returns
+   (dx, dy, rot, sx, sy, alpha); per-letter styles go through
+   `comic.letter_motion` in the rewritten `render._draw_text_body` (which
+   also does gradient/extrude/skew, extrusions drawn before all faces).
+   Bounce + Animate-in run together, Jiggle in after them; Animate out and
+   Jiggle out end together; all scaled to fit short elements.
+6. **Comic tab** in the Editor's browser (Media, Text, **Comic**, Audio,
+   Transitions, Effects): every expression grouped by feeling + the
+   onomatopoeia; they're TEXT_PRESETS entries (`COMIC_PRESET_GROUPS`) but
+   hidden from the Text tab.
+7. **Puppetry input visualizer v4** (prep package `input_visualizer_prep_v4`,
+   vendored byte-identical into `afterglow/input_overlay.py`;
+   `integrations/puppetry_input_overlay/` updated, incl. `sample/`):
+   Puppetry's visualizer is now a user-arranged LAYOUT. New pieces
+   `comet` / `mousepad` / `joystick` (movement views) and single layout
+   elements `el:<id>` (file `el-<id>.mov`, `aio.piece_file`). afterglow:
+   `overlay_support.layout_elements()` (cached `aio.elements()`),
+   `all_pieces()`, `piece_label()`, `element_types()`; the clip type
+   "..." dialog and Settings > Input Overlay list every layout element (an
+   element stored on a clip type that left the layout is still shown); the
+   capture, previewer graph, Editor (attach / Properties / Render from
+   input) and the exported sidecar all handle `el:` pieces; an element no
+   longer in the layout fails alone (logged), never costing the clip.
+   tests/test_overlay_layout_v4.py (fake Puppetry with a layout);
+   tests/test_puppetry_integration.py is now the v4 prep test -- it needs
+   the UPDATED Puppetry (the copy tested here was pre-v4, so its el:comet
+   checks fail against it; skips without Puppetry).
+
+Tests: tests/test_comic_text.py (all 30 effects draw / have in+out /
+idle / determinism; every Animate in/out style and Idle; lettering;
+backdrop pop; presets; Properties), test_overlay_previewer.py (global
+toggle). Demo renders were made with the real Renderer (not in the repo).
+Open: no "Bounce out" yet (only asked for in); the Editor preview's
+handles show the rest position during motion.
+
+### Previous session (feedback round 14: comic effects, bounce/jiggle, overlay color)
+1. **Comic effects** (`nle/comic.py`, drawn by `render._draw_content`): procedural,
+   animated, deterministic drawings in a text element's PICTURE SLOT
+   (`TextStyle.comic_effect` = "scribblenado" | "wiggle_lines" | "vein"; it
+   replaces the picture while set; `image_place` is shared). Fields:
+   `effect_color` ("" = the effect's own: near-black / slate blue / red),
+   `effect_size` (fraction of canvas height), `effect_speed` (0 = still).
+   Scribblenado = one continuous looping stroke narrowing into a funnel,
+   spinning, re-jittered 12x/s ("boil"); wiggle lines = 11 wavy lines
+   radiating over the top 3/4 of a circle, waves crawling outward; vein =
+   four tapered curved brackets bulging out around a "+" gap, throbbing.
+   An element can be effect-only (empty text). Text presets "Anger
+   scribble" / "Unease lines" / "Anger vein" under a "Comic effects" header
+   in the Text tab (named after the preset). Properties > "Comic Effect"
+   group (effect, color + Default, size, animation speed, place).
+   `effect_color` is part of Copy/Paste Colors.
+2. **Bounce in / Jiggle in-out** (Properties > Text Transitions;
+   `comic.text_motion`, applied in `render._draw_segment` as a screen-space
+   offset + extra rotation on text parts, on top of the transform/keyframes):
+   `bounce_in` (s) + `bounce_from` ("down"/"up"/"left"/"right" = comes from
+   below/above/left/right) starts 1.25 canvases away (off-screen), eases in
+   with an ease-out-back overshoot (~10%) and lands exactly in place.
+   `jiggle_in` (s) wobbles (+-11 deg, small shifts, decaying) while settling
+   -- it starts when the bounce lands, if there is one; `jiggle_out` (s)
+   builds up a wobble before the end. All three are scaled down together to
+   fit a too-short element. Preview handles show the rest position.
+3. **Previewer overlay toggle changed the video's brightness/saturation.**
+   Measured in real mpv: the graph's `overlay=...:format=auto` turned the
+   whole video into ARGB (swscale's own matrix) -- mean |diff| ~3.6/765 vs
+   no graph. Now the blend happens in the clip's own pixel format
+   (`overlay_support.video_color()` -> overlay `format=yuv420|yuv420p10|
+   yuv422|...|gbrp`), and the RGB pieces are converted with the clip's own
+   matrix/range first (`scale=out_color_matrix=..:out_range=..`): on, off and
+   no graph are now pixel-identical (8-bit BT.709, 10-bit and full range
+   checked in tests/test_overlay_mpv.py).
+Tests: tests/test_comic_text.py (new), tests/test_overlay_mpv.py (color checks).
+
+### Previous session (feedback round 12)
 1. **Animated GIFs in text / bubbles.** `render._load_picture` reads every
    frame with QImageReader (its own per-frame delay; <20 ms counts as
    100 ms like browsers; frames downscaled to GIF_MAX_SIDE=640; max 1000

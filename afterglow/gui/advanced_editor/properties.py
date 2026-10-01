@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
 from ... import config as config_module
 from ...nle import ops
 from ...nle.model import KIND_TEXT, MAX_SPEED, MIN_SPEED, Segment
+from ...nle.comic import ANIM_IN, ANIM_OUT, BACKDROPS, BOUNCE_SIDES, COMIC_EFFECTS, IDLES, effect_label
 from ...nle.render import eval_keyframes, zoom_factor
 from ..custom_button import CustomButton
 from ..custom_checkbox import CustomCheckBox
@@ -391,6 +392,97 @@ class PropertiesPanel(QWidget):
             pic_speed.setEnabled(has_pic and image_is_animated(text_part.text.image_path))
             self._fields.update(image_place=pic_place, image_size=pic_size, image_speed=pic_speed)
 
+            g_fx, form_fx = self._group(lay, "Comic Effect")
+            fx = self._combo(COMIC_EFFECTS)
+            fx.setToolTip("A comic effect drawn with the text (it takes the picture's place). Leave the text empty "
+                          "for just the effect -- e.g. over someone's head")
+            fx.currentIndexChanged.connect(lambda *_: (self._once("Comic effect", lambda p: self._set_text(
+                p, comic_effect=fx.currentData())), QTimer.singleShot(0, self._rebuild)))
+            fx_col = CustomButton("Color")
+            fx_col.clicked.connect(lambda: self._pick_color("effect_color"))
+            fx_def = CustomButton("Default")
+            fx_def.setToolTip("Back to the effect's own color")
+            fx_def.clicked.connect(lambda: self._once("Effect color", lambda p: self._set_text(p, effect_color="")))
+            fx_size = _spin(2, 150, 1, 0, " %")
+            fx_size.setToolTip("The effect's height, as a share of the video's height")
+            fx_size.valueChanged.connect(lambda v: self._edit("Effect size", lambda p: self._set_text(
+                p, effect_size=v / 100)))
+            fx_speed = _spin(0, 5, 0.1, 2, "x")
+            fx_speed.setToolTip("How fast it animates (0 = still)")
+            fx_speed.valueChanged.connect(lambda v: self._edit("Effect speed", lambda p: self._set_text(
+                p, effect_speed=v)))
+            fx_place = self._combo([("Above the text", "above"), ("Below the text", "below"),
+                                    ("Left of the text", "left"), ("Right of the text", "right")])
+            fx_place.setToolTip("Where it sits next to the words (shared with the picture's place)")
+            fx_place.currentIndexChanged.connect(lambda *_: self._once(
+                "Effect place", lambda p: self._set_text(p, image_place=fx_place.currentData())))
+            frow = QHBoxLayout()
+            frow.addWidget(fx_col)
+            frow.addWidget(fx_def)
+            form_fx.addRow(self._lbl("Effect"), fx)
+            form_fx.addRow(self._lbl("Color"), frow)
+            form_fx.addRow(self._lbl("Size"), fx_size)
+            fx_in = _spin(0, 30, 0.05, 2, " s")
+            fx_in.setToolTip("The effect's own entrance (a scribble winds up, lines grow out, a vein pops...) -- 0 = off")
+            fx_in.valueChanged.connect(lambda v: self._edit("Effect in", lambda p: self._set_text(p, effect_in=v)))
+            fx_out = _spin(0, 30, 0.05, 2, " s")
+            fx_out.setToolTip("The effect's own exit at the end (it unwinds, pulls back in, shrinks away...) -- 0 = off")
+            fx_out.valueChanged.connect(lambda v: self._edit("Effect out", lambda p: self._set_text(p, effect_out=v)))
+            fx_speed.setToolTip("How fast its idle loop runs while it's on screen (0 = still)")
+            form_fx.addRow(self._lbl("Idle speed"), fx_speed)
+            form_fx.addRow(self._lbl("In"), fx_in)
+            form_fx.addRow(self._lbl("Out"), fx_out)
+            form_fx.addRow(self._lbl("Place"), fx_place)
+            has_fx = bool(text_part.text.comic_effect)
+            for w_ in (fx_col, fx_def, fx_size, fx_speed, fx_place, fx_in, fx_out):
+                w_.setEnabled(has_fx)
+            self._fields.update(comic_effect=fx, effect_color_btn=fx_col, effect_size=fx_size,
+                                effect_speed=fx_speed, effect_place=fx_place, effect_in=fx_in, effect_out=fx_out)
+
+            # ---- comic lettering (onomatopoeia)
+            g_l, form_l = self._group(lay, "Lettering")
+            grad_btn = CustomButton("Gradient")
+            grad_btn.setToolTip("Second fill color: the letters fade from the text color (top) to this (bottom)")
+            grad_btn.clicked.connect(lambda: self._pick_color("fill2"))
+            grad_off = CustomButton("Flat")
+            grad_off.clicked.connect(lambda: self._once("Gradient", lambda p: self._set_text(p, fill2="")))
+            grow_ = QHBoxLayout()
+            grow_.addWidget(grad_btn)
+            grow_.addWidget(grad_off)
+            form_l.addRow(self._lbl("Fill"), grow_)
+            ext = _spin(0, 80, 1, 0, " px")
+            ext.setToolTip("3D block shadow behind the letters (0 = off)")
+            ext.valueChanged.connect(lambda v: self._edit("Extrude", lambda p: self._set_text(p, extrude=v)))
+            ext_col = CustomButton("Color")
+            ext_col.clicked.connect(lambda: self._pick_color("extrude_color"))
+            erow = QHBoxLayout()
+            erow.addWidget(ext, stretch=1)
+            erow.addWidget(ext_col)
+            form_l.addRow(self._lbl("3D depth"), erow)
+            skew = _spin(-45, 45, 1, 0, "°")
+            skew.setToolTip("Slant the letters (negative leans forward)")
+            skew.valueChanged.connect(lambda v: self._edit("Skew", lambda p: self._set_text(p, skew=v)))
+            form_l.addRow(self._lbl("Slant"), skew)
+            jum = _spin(0, 100, 5, 0, " %")
+            jum.setToolTip("Scramble the letters a little -- tilted, bumped, sized -- like hand-drawn comic sound effects")
+            jum.valueChanged.connect(lambda v: self._edit("Jumble", lambda p: self._set_text(p, jumble=v / 100)))
+            form_l.addRow(self._lbl("Jumble"), jum)
+            bd = self._combo(BACKDROPS)
+            bd.setToolTip("A shape behind the words (POW! burst, BOOM cloud, splat...)")
+            bd.currentIndexChanged.connect(lambda *_: self._once("Backdrop", lambda p: self._set_text(
+                p, backdrop=bd.currentData())))
+            form_l.addRow(self._lbl("Backdrop"), bd)
+            bd_fill = CustomButton("Fill")
+            bd_fill.clicked.connect(lambda: self._pick_color("backdrop_fill"))
+            bd_line = CustomButton("Outline")
+            bd_line.clicked.connect(lambda: self._pick_color("backdrop_outline"))
+            brow_ = QHBoxLayout()
+            brow_.addWidget(bd_fill)
+            brow_.addWidget(bd_line)
+            form_l.addRow(self._lbl("Backdrop colors"), brow_)
+            self._fields.update(fill2_btn=grad_btn, extrude=ext, extrude_color_btn=ext_col, skew=skew, jumble=jum,
+                                backdrop=bd, backdrop_fill_btn=bd_fill, backdrop_outline_btn=bd_line)
+
             g2, form2 = self._group(lay, "Text Transitions")
             tin = _spin(0, 600, 0.1, 2, " s")
             tin.setToolTip("Type the text in over this long at the start (0 = off)")
@@ -411,6 +503,52 @@ class PropertiesPanel(QWidget):
             form2.addRow(self._lbl(""), cur)
             form2.addRow(self._lbl("Delay in"), din)
             form2.addRow(self._lbl("Delay out"), dout)
+            bin_ = _spin(0, 30, 0.05, 2, " s")
+            bin_.setToolTip("Bounce in: flies in from far off-screen, overshoots its spot and lands (0 = off)")
+            bin_.valueChanged.connect(lambda v: self._edit("Bounce in", lambda p: self._set_text(p, bounce_in=v)))
+            bfrom = self._combo(BOUNCE_SIDES)
+            bfrom.setToolTip("The side it bounces in from")
+            bfrom.currentIndexChanged.connect(lambda *_: self._once(
+                "Bounce from", lambda p: self._set_text(p, bounce_from=bfrom.currentData())))
+            jin = _spin(0, 30, 0.05, 2, " s")
+            jin.setToolTip("Jiggle in: wobbles (rotates back and forth, shifts a little) while settling into place "
+                           "-- after the bounce lands, if there is one (0 = off)")
+            jin.valueChanged.connect(lambda v: self._edit("Jiggle in", lambda p: self._set_text(p, jiggle_in=v)))
+            jout = _spin(0, 30, 0.05, 2, " s")
+            jout.setToolTip("Jiggle out: starts wobbling this long before the end (0 = off)")
+            jout.valueChanged.connect(lambda v: self._edit("Jiggle out", lambda p: self._set_text(p, jiggle_out=v)))
+            form2.addRow(self._lbl("Bounce in"), bin_)
+            form2.addRow(self._lbl("Bounce from"), bfrom)
+            form2.addRow(self._lbl("Jiggle in"), jin)
+            form2.addRow(self._lbl("Jiggle out"), jout)
+            self._fields.update(bounce_in=bin_, bounce_from=bfrom, jiggle_in=jin, jiggle_out=jout)
+            a_in = self._combo(ANIM_IN)
+            a_in.setToolTip("How it arrives (runs with a bounce, if any)")
+            a_in.currentIndexChanged.connect(lambda *_: self._once(
+                "Animate in", lambda p: self._set_text(p, anim_in=a_in.currentData())))
+            a_in_d = _spin(0.05, 30, 0.05, 2, " s")
+            a_in_d.valueChanged.connect(lambda v: self._edit("Animate in", lambda p: self._set_text(p, anim_in_dur=v)))
+            a_out = self._combo(ANIM_OUT)
+            a_out.setToolTip("How it leaves at the end")
+            a_out.currentIndexChanged.connect(lambda *_: self._once(
+                "Animate out", lambda p: self._set_text(p, anim_out=a_out.currentData())))
+            a_out_d = _spin(0.05, 30, 0.05, 2, " s")
+            a_out_d.valueChanged.connect(lambda v: self._edit("Animate out", lambda p: self._set_text(p, anim_out_dur=v)))
+            idle = self._combo(IDLES)
+            idle.setToolTip("A loop while it's on screen")
+            idle.currentIndexChanged.connect(lambda *_: self._once(
+                "Idle", lambda p: self._set_text(p, idle=idle.currentData())))
+            idle_amt = _spin(0, 500, 10, 0, " %")
+            idle_amt.setToolTip("How strong the idle loop is")
+            idle_amt.valueChanged.connect(lambda v: self._edit("Idle", lambda p: self._set_text(p, idle_amount=v / 100)))
+            idle_spd = _spin(0.05, 10, 0.1, 2, "x")
+            idle_spd.valueChanged.connect(lambda v: self._edit("Idle", lambda p: self._set_text(p, idle_speed=v)))
+            for lbl_, w_ in (("Animate in", a_in), ("In length", a_in_d), ("Animate out", a_out),
+                             ("Out length", a_out_d), ("Idle", idle), ("Idle strength", idle_amt),
+                             ("Idle speed", idle_spd)):
+                form2.addRow(self._lbl(lbl_), w_)
+            self._fields.update(anim_in=a_in, anim_in_dur=a_in_d, anim_out=a_out, anim_out_dur=a_out_d, idle=idle,
+                                idle_amount=idle_amt, idle_speed=idle_spd)
             keyed = CustomCheckBox("Per-word timing")
             keyed.setToolTip("Time each word yourself: move the playhead to when a word is said and click it below")
             keyed.clicked.connect(lambda: self._set_word_keyed(keyed.isChecked()))
@@ -528,8 +666,8 @@ class PropertiesPanel(QWidget):
         self._refresh()
 
     def _build_overlay_group(self, lay, segs, single: bool) -> None:
-        from ..overlay_options import PIECE_LABELS
         from ... import overlay_support
+        piece_label = overlay_support.piece_label
         g, form = self._group(lay, "Input Overlay")
         names = ops.segment_overlay_names(segs[0]) if ops.has_overlay(segs[0]) else []
         self._ov_names = names
@@ -540,7 +678,7 @@ class PropertiesPanel(QWidget):
         self._fields["ov_master"] = master
         for name in names:
             head = QHBoxLayout()
-            pick = CustomButton(PIECE_LABELS.get(name, name))
+            pick = CustomButton(piece_label(name))
             pick.setToolTip("Select this piece to move / size / rotate it on the preview")
             pick.clicked.connect(lambda _=False, n=name: self.ctl.pick_overlay(n))
             vis = CustomCheckBox("Shown")
@@ -564,8 +702,8 @@ class PropertiesPanel(QWidget):
         if single:
             row = QHBoxLayout()
             row.setContentsMargins(0, 0, 0, 0)
-            self._ov_render_combo = self._combo([(PIECE_LABELS.get(n, n) + ("" if n in names else "  (new)"), n)
-                                                 for n in overlay_support.PIECES])
+            self._ov_render_combo = self._combo([(piece_label(n) + ("" if n in names else "  (new)"), n)
+                                                 for n in overlay_support.all_pieces(extra=names)])
             btn = CustomButton("Render")
             btn.setToolTip("Re-render this piece from the recorded input (or add one that wasn't captured)")
             btn.clicked.connect(self._render_overlay_piece)
@@ -733,6 +871,46 @@ class PropertiesPanel(QWidget):
             self._set("image_place", st.image_place)
             self._set("image_size", st.image_size * 100)
             self._set("image_speed", st.image_speed)
+            self._set("comic_effect", st.comic_effect)
+            self._set("effect_size", st.effect_size * 100)
+            self._set("effect_speed", st.effect_speed)
+            self._set("effect_place", st.image_place)
+            if "effect_color_btn" in self._fields:
+                from ...nle.comic import effect_color
+                self._fields["effect_color_btn"].set_fill_color(effect_color(st).name())
+            self._set("bounce_in", st.bounce_in)
+            self._set("bounce_from", st.bounce_from)
+            self._set("jiggle_in", st.jiggle_in)
+            self._set("jiggle_out", st.jiggle_out)
+            self._set("effect_in", st.effect_in)
+            self._set("effect_out", st.effect_out)
+            self._set("anim_in", st.anim_in)
+            self._set("anim_in_dur", st.anim_in_dur)
+            self._set("anim_out", st.anim_out)
+            self._set("anim_out_dur", st.anim_out_dur)
+            self._set("idle", st.idle)
+            self._set("idle_amount", st.idle_amount * 100)
+            self._set("idle_speed", st.idle_speed)
+            self._set("extrude", st.extrude)
+            self._set("skew", st.skew)
+            self._set("jumble", st.jumble * 100)
+            self._set("backdrop", st.backdrop)
+            for key_, attr_, dflt in (("fill2_btn", "fill2", st.color), ("extrude_color_btn", "extrude_color", None),
+                                      ("backdrop_fill_btn", "backdrop_fill", None),
+                                      ("backdrop_outline_btn", "backdrop_outline", None)):
+                if key_ in self._fields:
+                    self._fields[key_].set_fill_color(getattr(st, attr_) or dflt)
+            for key_ in ("anim_in_dur",):
+                if key_ in self._fields:
+                    self._fields[key_].setEnabled(bool(st.anim_in))
+            if "anim_out_dur" in self._fields:
+                self._fields["anim_out_dur"].setEnabled(bool(st.anim_out))
+            for key_ in ("idle_amount", "idle_speed"):
+                if key_ in self._fields:
+                    self._fields[key_].setEnabled(bool(st.idle))
+            for key_ in ("backdrop_fill_btn", "backdrop_outline_btn"):
+                if key_ in self._fields:
+                    self._fields[key_].setEnabled(bool(st.backdrop))
             from ...nle.render import valid_variant
             var = valid_variant(st.bubble, st.bubble_variant)
             self._set("bubble_variant", var)
@@ -899,7 +1077,8 @@ class PropertiesPanel(QWidget):
                 for k, v in values.items():
                     setattr(part.text, k, v)
                 if "text" in values:
-                    s.name = values["text"].split("\n")[0][:40] or "Text"
+                    s.name = values["text"].split("\n")[0][:40] or (
+                        effect_label(part.text.comic_effect) or "Text")
 
     def _font_combo(self, current: str) -> QComboBox:
         """A plain dropdown of the bundled fonts (see gui/fonts.py), grouped by
@@ -1099,7 +1278,14 @@ class PropertiesPanel(QWidget):
         tp = next((pt for pt in segs[0].parts if pt.kind == KIND_TEXT and pt.text), None)
         if tp is None:
             return
-        c = QColorDialog.getColor(QColor(getattr(tp.text, attr)), self, "Text color",
+        if attr == "effect_color":
+            from ...nle.comic import effect_color
+            start = effect_color(tp.text)
+        elif attr == "fill2" and not tp.text.fill2:
+            start = QColor(tp.text.color)
+        else:
+            start = QColor(getattr(tp.text, attr))
+        c = QColorDialog.getColor(start, self, "Text color",
                                   QColorDialog.ShowAlphaChannel)
         if c.isValid():
             name = c.name(QColor.HexArgb) if c.alpha() < 255 else c.name()

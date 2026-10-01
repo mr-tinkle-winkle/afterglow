@@ -50,6 +50,80 @@ TEXT_PRESETS = {
 TEXT_PRESET_POS = {"Title": (0.0, 0.0), "Subtitle": (0.0, 0.36), "Caption": (0.0, 0.42),
                    "Plain text": (0.0, 0.0), "Speech bubble": (0.18, -0.2), "Thought bubble": (0.18, -0.2)}
 
+# ---- the Comic tab: expressions (nle/comic.py EFFECTS) and onomatopoeia --------
+# An expression is a text element with no words, just its effect -- put it over
+# someone's head. Each comes with its own entrance/exit animation turned on.
+from ...nle import comic as _comic          # noqa: E402
+
+COMIC_PRESET_GROUPS: "list[tuple[str, list[str]]]" = []
+for _grp in _comic.GROUPS:
+    _names = []
+    for _key, (_label, _g, _fn, _asp, _col, _size) in _comic.EFFECTS.items():
+        if _g != _grp:
+            continue
+        _full = _key in ("focus_lines", "speed_lines")
+        TEXT_PRESETS[_label] = TextStyle(text="", comic_effect=_key, effect_size=_size,
+                                         effect_in=0.3 if _full else 0.4, effect_out=0.3)
+        TEXT_PRESET_POS[_label] = (0.0, 0.0) if _full else (0.2, -0.25)
+        _names.append(_label)
+    COMIC_PRESET_GROUPS.append((_grp, _names))
+
+SFX_FONT = "Bangers"        # bundled comic lettering font
+
+
+def _sfx(text, color, fill2, extrude_color, backdrop="", bfill="#ffd43b", boutline="#000000", size=0.12,
+         skew=-8.0, jumble=0.35, anim_in="pop", anim_in_dur=0.4, anim_out="pop", anim_out_dur=0.3,
+         idle="shake", idle_amount=0.5, extrude=16.0, outline=5.0, pos=(0.0, -0.1), **kw):
+    st = TextStyle(text=text, font_family=SFX_FONT, font_size=size, color=color, fill2=fill2,
+                   outline_color="#000000", outline_width=outline, extrude=extrude, extrude_color=extrude_color,
+                   skew=skew, jumble=jumble, backdrop=backdrop, backdrop_fill=bfill, backdrop_outline=boutline,
+                   anim_in=anim_in, anim_in_dur=anim_in_dur, anim_out=anim_out, anim_out_dur=anim_out_dur,
+                   idle=idle, idle_amount=idle_amount, **kw)
+    return st, pos
+
+
+SFX_PRESETS = {
+    "POW!": _sfx("POW!", "#fff3bf", "#ffd43b", "#c92a2a", "burst", "#e03131", anim_in="slam", anim_in_dur=0.45),
+    "BAM!": _sfx("BAM!", "#ffffff", "#74c0fc", "#1c3d80", "jagged", "#ffd43b", idle="jitter"),
+    "BOOM!": _sfx("BOOM!", "#fff3bf", "#ff922b", "#862e0f", "boom", "#fd7e14", size=0.14, anim_in="slam",
+                  anim_in_dur=0.5, anim_out="explode", anim_out_dur=0.5),
+    "KAPOW!": _sfx("KAPOW!", "#ffe066", "#f76707", "#5c0b0b", "jagged", "#c92a2a", anim_in="slam",
+                   anim_out="explode", anim_out_dur=0.45),
+    "WHAM!": _sfx("WHAM!", "#ffffff", "#ffd43b", "#a61e4d", "burst", "#f06595", anim_in="spin", anim_in_dur=0.5),
+    "CRASH!": _sfx("CRASH!", "#e9ecef", "#868e96", "#212529", "jagged", "#fab005", anim_in="letters_drop",
+                   anim_in_dur=0.6, anim_out="fall", anim_out_dur=0.5),
+    "ZAP!": _sfx("ZAP!", "#fff9db", "#66d9e8", "#0b7285", "flash", "#fcc419", anim_in="letters",
+                 anim_in_dur=0.35, idle="jitter", idle_amount=1.0),
+    "BZZT": _sfx("BZZT", "#e3fafc", "#3bc9db", "#0b7285", "flash", "#99e9f2", skew=6.0, anim_in="letters",
+                 idle="jitter", idle_amount=1.4),
+    "BONK!": _sfx("BONK!", "#fff3bf", "#fab005", "#5f3dc4", "", anim_in="stretch", anim_in_dur=0.6,
+                  idle="wobble", idle_amount=1.0, skew=0.0),
+    "SPLAT!": _sfx("SPLAT!", "#ebfbee", "#8ce99a", "#2b8a3e", "splat", "#40c057", anim_in="drop",
+                   anim_in_dur=0.5, idle="", jumble=0.5),
+    "THUD": _sfx("THUD", "#e9d8c4", "#a5714b", "#3d2614", "", anim_in="slam", anim_in_dur=0.4, skew=0.0,
+                 jumble=0.15, idle="shake", idle_amount=0.3),
+    "WHOOSH": _sfx("WHOOSH", "#ffffff", "#a5d8ff", "#1864ab", "", skew=-22.0, jumble=0.0, anim_in="",
+                   anim_out="fly", anim_out_dur=0.45, idle="float", bounce_in=0.45, bounce_from="left"),
+    "SNAP!": _sfx("SNAP!", "#ffffff", "#ffc9c9", "#c92a2a", "burst", "#ffffff", size=0.1, idle="jitter"),
+    "DING!": _sfx("DING!", "#fff9db", "#ffd43b", "#e67700", "flash", "#fff3bf", anim_in="pop", idle="pulse",
+                  idle_amount=1.0, skew=0.0, jumble=0.1),
+    "GULP": _sfx("GULP", "#d0bfff", "#9775fa", "#3b2a74", "", size=0.09, skew=0.0, anim_in="letters",
+                 idle="wave", idle_amount=0.8),
+    "OOF": _sfx("OOF", "#ffd8a8", "#ff922b", "#5c1f0a", "cloud", "#ffffff", skew=0.0, anim_in="pop",
+                idle="wobble", idle_amount=0.8, anim_out="shrink"),
+    "BRUH": _sfx("BRUH", "#dee2e6", "#adb5bd", "#343a40", "", skew=0.0, jumble=0.0, anim_in="drop",
+                 anim_in_dur=0.6, idle="float", idle_amount=0.6, anim_out="fall"),
+    "YEET!": _sfx("YEET!", "#ffffff", "#ffd43b", "#e8590c", "", skew=-18.0, anim_in="spin", anim_out="fly",
+                  idle="swing", idle_amount=0.6),
+}
+_sfx_names = []
+for _name, (_st, _pos) in SFX_PRESETS.items():
+    TEXT_PRESETS[_name] = _st
+    TEXT_PRESET_POS[_name] = _pos
+    _sfx_names.append(_name)
+COMIC_PRESET_GROUPS.append(("Onomatopoeia", _sfx_names))
+COMIC_PRESET_NAMES = {n for _g, names in COMIC_PRESET_GROUPS for n in names}
+
 _probe_cache: dict = {}
 
 
@@ -577,7 +651,8 @@ class EditorController(QObject):
             return str(e)
         if not made:
             return "Nothing to render."
-        defaults = overlay_support.resolve_placements(config_module.load_readonly().overlay_placements)[name]
+        defaults = overlay_support.resolve_placements(config_module.load_readonly().overlay_placements).get(name) \
+            or dict(overlay_support.aio.default_placement(name, overlay_support.element_type(name)), rotation=0.0)
 
         def fn(p):
             _t, sg = p.find_segment(seg.id)
@@ -622,9 +697,11 @@ class EditorController(QObject):
         style = copy.deepcopy(TEXT_PRESETS.get(preset, TEXT_PRESETS["Plain text"]))
         if style.font_family == COMIC_FONT:
             style.font_family = comic_font()
+        elif style.font_family == SFX_FONT:
+            comic_font()                       # loads the bundled fonts (Bangers among them)
         part = Part(kind=KIND_TEXT, source="", src_in=0.0, src_out=5.0, has_video=True, has_audio=False,
                     text=style)
-        seg = Segment(parts=[part], name=style.text)
+        seg = Segment(parts=[part], name=style.text or preset)
         seg.transform.x, seg.transform.y = TEXT_PRESET_POS.get(preset, (0.0, 0.0))
         at = self.playhead if t is None else t
         ti = 1 if track_index is None else track_index

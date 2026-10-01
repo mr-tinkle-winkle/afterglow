@@ -876,7 +876,7 @@ def clean_up(project: Project) -> None:
 # copy / paste colors and properties
 # =========================================================================
 
-TEXT_COLOR_FIELDS = ("color", "outline_color", "bubble_fill", "bubble_outline",
+TEXT_COLOR_FIELDS = ("color", "outline_color", "bubble_fill", "bubble_outline", "effect_color",
                      "bubble_fill_transparency", "bubble_outline_transparency")
 SEG_COLOR_FIELDS = ("shadow_color",)
 # Properties = everything about how an element looks and behaves, except

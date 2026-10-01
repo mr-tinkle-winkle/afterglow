@@ -66,7 +66,7 @@ def attach_overlay(project: Project, seg, clip_path: str) -> bool:
     if part is None:
         return False
     d = Path(sidecar["dir"])
-    for name in overlay_support.PIECES:
+    for name in overlay_support.aio._order(sidecar["pieces"]):
         info = sidecar["pieces"].get(name)
         if info is None:
             continue

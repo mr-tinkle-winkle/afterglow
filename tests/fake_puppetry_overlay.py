@@ -19,7 +19,11 @@ import sys
 import time
 
 SIZES = {"full": (640, 200), "keyboard": (540, 160), "mouse": (96, 160), "controller": (248, 160),
+         "comet": (128, 128), "mousepad": (128, 128), "joystick": (128, 128),
          "simple": (400, 40), "movement": (96, 96)}
+# the user's layout (FAKE_PUPPETRY_ELEMENTS="id:type,id:type" overrides)
+ELEMENTS = [{"id": i, "type": t} for i, t in (x.split(":") for x in
+            os.environ.get("FAKE_PUPPETRY_ELEMENTS", "keyboard:keyboard,mouse:mouse,comet:comet").split(",") if x)]
 
 
 def out(obj, code=0):
@@ -39,6 +43,7 @@ def main():
             f.write(json.dumps(a) + "\n")
     if cmd == "status":
         out({"pid": 1, "updated": time.time(), "daemon_connected": True,
+             "elements": ELEMENTS, "element_urls": {},
              "replay": {"enabled": not os.environ.get("FAKE_PUPPETRY_OFF"), "length_s": 60.0,
                         "length_source": "obs", "extra_s": 5.0}})
     if cmd == "snapshot":
@@ -51,7 +56,13 @@ def main():
         time.sleep(float(os.environ.get("FAKE_PUPPETRY_DELAY", 0)))
         start, end = float(opt(a, "--start")), float(opt(a, "--end"))
         fps = float(opt(a, "--fps", 60))
-        w, h = SIZES[mode]
+        if mode.startswith("el:"):
+            el = next((e for e in ELEMENTS if e["id"] == mode[3:]), None)
+            if el is None:
+                out({"error": f"no element {mode[3:]!r} in the layout"}, 1)
+            w, h = SIZES.get(el["type"], (200, 120))
+        else:
+            w, h = SIZES[mode]
         length = max(0.1, end - start)
         dest = a[-1]
         # red = 255 * (t mod 16 s) / 16 (wraps; compare DIFFERENCES mod 256), alpha 128

@@ -142,6 +142,53 @@ class TextStyle:
     # nearest keyed ones (or the start/end of the text's time).
     delay_keyed: bool = False
     delay_word_times: list = field(default_factory=list)
+    # "Bounce" in (seconds, 0 = off): flies in from far off-screen on the
+    # bounce_from side ("down" / "up" / "left" / "right" = comes from below /
+    # above / the left / the right), overshoots its spot and settles back.
+    bounce_in: float = 0.0
+    bounce_from: str = "down"
+    # "Jiggle" in/out (seconds, 0 = off): wobbles (rotates back and forth and
+    # shifts a little) as it settles into place -- after a bounce / Animate
+    # in, if there is one -- and, at the end, starts wobbling before it goes.
+    jiggle_in: float = 0.0
+    jiggle_out: float = 0.0
+    # "Animate in" / "Animate out" styles (nle/comic.py ANIM_IN / ANIM_OUT;
+    # "" = none) and their lengths in seconds; "Idle" = a loop while it's on
+    # screen (comic.IDLES), with a strength and speed multiplier.
+    anim_in: str = ""
+    anim_in_dur: float = 0.5
+    anim_out: str = ""
+    anim_out_dur: float = 0.4
+    idle: str = ""
+    idle_amount: float = 1.0
+    idle_speed: float = 1.0
+    # Comic effect / expression drawn with the text (nle/comic.py EFFECTS):
+    # "" = none. It takes the picture's place (image_place) -- an element can
+    # be just the effect, with no words. effect_color "" = the effect's own
+    # color; effect_size = its height as a fraction of the canvas height;
+    # effect_speed = how fast its idle loop runs (0 = still); effect_in /
+    # effect_out = seconds of the effect's OWN entrance / exit animation.
+    comic_effect: str = ""
+    effect_color: str = ""
+    effect_size: float = 0.22
+    effect_speed: float = 1.0
+    effect_in: float = 0.0
+    effect_out: float = 0.0
+    # Comic lettering (onomatopoeia -- POW!, BAM!...): fill2 = a second fill
+    # color for a top-to-bottom gradient ("" = flat); extrude = depth of a
+    # 3D block shadow (px at 1080p, 0 = off) in extrude_color; skew = slant
+    # in degrees; jumble = 0..1 how scrambled the letters sit (tilted,
+    # bumped, sized); backdrop = a shape behind the words ("" | "burst" |
+    # "boom" | "cloud" | "splat" | "jagged" | "flash") in backdrop_fill /
+    # backdrop_outline.
+    fill2: str = ""
+    extrude: float = 0.0
+    extrude_color: str = "#000000"
+    skew: float = 0.0
+    jumble: float = 0.0
+    backdrop: str = ""
+    backdrop_fill: str = "#ffd43b"
+    backdrop_outline: str = "#000000"
 
 
 @dataclass

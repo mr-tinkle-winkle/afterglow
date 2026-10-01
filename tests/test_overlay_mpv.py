@@ -128,6 +128,49 @@ fw, fh = extent(flat)
 rw, rh = extent(rot)
 check(fw > fh * 2 and rh > rw * 2, f"rotation=90 turns the wide piece tall in mpv ({fw}x{fh} -> {rw}x{rh})")
 
+# toggling the overlay must not change how the VIDEO looks (it used to: format=auto blended in RGB,
+# a slight brightness/saturation shift). Colorful source, the overlay's corner pieces only; compare
+# the video area away from them against no graph at all -- 8-bit BT.709 limited, 10-bit, full range.
+def frame_with(clip_path, graph, files):
+    out = tempfile.mkdtemp(dir=work)
+    m = mpv.MPV(vo="image", vo_image_format="png", vo_image_outdir=out, ao="null", pause=True)
+    if graph:
+        m["external-files"] = files
+        m["lavfi-complex"] = graph
+    m.play(str(clip_path))
+    time.sleep(1.0)
+    im = show_frame(m, out, 1.0)
+    m.terminate()
+    return im
+
+
+for label, args in (("8-bit BT.709 limited", ["-pix_fmt", "yuv420p", "-colorspace", "bt709", "-color_range", "tv"]),
+                    ("10-bit", ["-pix_fmt", "yuv420p10le", "-colorspace", "bt709", "-color_range", "tv"]),
+                    ("full range", ["-pix_fmt", "yuvj420p", "-colorspace", "bt709", "-color_range", "pc"])):
+    src = work / f"color_{label.split()[0]}.mp4"
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=s=640x360:r=30:d=4",
+                    "-c:v", "libx264", *args, str(src)], check=True)
+    ts = time.time()
+    pl = osup.resolve_placements({"keyboard": {"x": 0.0, "y": 0.0, "w": 0.2}, "mouse": {"x": 0.9, "y": 0.0, "w": 0.05}})
+    j = aio.start_clip(ts, aio.OverlaySettings(pieces=["keyboard", "mouse"], fps=30, placements=pl))
+    aio.finish_clip(j, src, clip_end=ts)
+    j.cleanup()
+    sc = osup.load_sidecar(src)
+    osup.save_placements(sc, pl)
+    sc = osup.load_sidecar(src)
+    color = osup.video_color(src)
+    files, g_on = osup.preview_graph(sc, 640, 360, True, color)
+    g_off = osup.preview_graph(sc, 640, 360, False, color)[1]
+    base, f_on, f_off = frame_with(src, None, []), frame_with(src, g_on, files), frame_with(src, g_off, files)
+    pts = [(x, y) for x in range(20, 620, 23) for y in range(120, 350, 19)]       # below the corner pieces
+
+    def diff(a, b):
+        return sum(sum(abs(p - q) for p, q in zip(a.getpixel(pt), b.getpixel(pt))) for pt in pts) / len(pts)
+    d_on, d_off = diff(base, f_on), diff(base, f_off)
+    check(d_on < 0.5 and d_off < 0.5, f"{label}: the video looks identical with the overlay on, off, or no graph "
+                                      f"(mean |diff| on {d_on:.2f}, off {d_off:.2f})")
+    check(is_overlay_pixel(f_on.getpixel((40, 15))), f"{label}: the keyboard piece still draws ({f_on.getpixel((40, 15))})")
+
 print()
 print("ALL PASS" if not FAILS else f"{len(FAILS)} FAILED")
 sys.exit(1 if FAILS else 0)

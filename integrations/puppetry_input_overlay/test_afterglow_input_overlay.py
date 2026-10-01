@@ -82,12 +82,16 @@ def main() -> int:
 
     t0 = time.time()
     glob = {"mouse": {"x": 0.9, "y": 0.1, "w": 0.08}, "keyboard": {"x": 0.3, "y": 0.3, "w": 0.3}}
-    ctype = {"keyboard": {"x": 0.01, "y": 0.8, "w": 0.3}}      # this clip type moves only the keyboard
-    starting = aio.resolve_placements(glob, ctype)
+    ctype = {"keyboard": {"x": 0.01, "y": 0.8, "w": 0.3},      # this clip type moves only the keyboard
+             "el:comet": {"x": 0.7, "y": 0.1, "w": 0.1}}       # ... and places one layout element
+    starting = aio.resolve_placements(glob, ctype, element_types={"comet": "comet"})
     check("placement defaults: clip type > global > built-in, per piece",
           starting["keyboard"]["x"] == 0.01 and starting["mouse"]["x"] == 0.9
-          and starting["controller"] == dict(aio.DEFAULT_PLACEMENT["controller"], visible=True))
-    job = aio.start_clip(t_save, aio.OverlaySettings(pieces=["keyboard", "mouse", "controller"], fps=30,
+          and starting["controller"] == dict(aio.DEFAULT_PLACEMENT["controller"], visible=True)
+          and starting["el:comet"]["x"] == 0.7 and starting["mousepad"]["visible"] is True)
+    check("el:<id> pieces default by element type", aio.resolve_placements(
+        {"el:pad2": {}}, None, {"pad2": "controller"})["el:pad2"]["w"] == aio.DEFAULT_PLACEMENT["controller"]["w"])
+    job = aio.start_clip(t_save, aio.OverlaySettings(pieces=["keyboard", "mouse", "controller", "el:comet"], fps=30,
                                                      placements=starting))
     buf.write_text("")                     # the live buffer moves on; the job froze its own copy
     manifest = aio.finish_clip(job, clip)
@@ -95,7 +99,8 @@ def main() -> int:
     job.cleanup()
     side = aio.sidecar_dir(clip)
     check("finish_clip writes a sidecar with every piece + the inputs + a manifest",
-          set(manifest["pieces"]) == {"keyboard", "mouse", "controller"} and (side / "inputs.jsonl").exists()
+          set(manifest["pieces"]) == {"keyboard", "mouse", "controller", "el:comet"} and (side / "inputs.jsonl").exists()
+          and (side / "el-comet.mov").exists()
           and (side / "manifest.json").exists() and not manifest["errors"])
     check("the clip itself is untouched", clip.read_bytes() == clip_bytes)
     kb = side / "keyboard.mov"
@@ -119,7 +124,7 @@ def main() -> int:
 
     files, graph = aio.mpv_overlay_args(sc, pl, 1280, 720)
     check("mpv args: every piece is an external file, hidden ones are left out of the graph",
-          len(files) == 3 and "vid4" not in graph and graph.endswith("[vo]"))
+          len(files) == 4 and "vid4" not in graph and "vid5" in graph and graph.endswith("[vo]"))
     _f, off = aio.preview_overlay_args(aio.load_sidecar(clip), 1280, 720, enabled=False)
     check("previewer: toggled off -> pass-through graph", off == "[vid1] null [vo]")
     _f, on = aio.preview_overlay_args(aio.load_sidecar(clip), 1280, 720, enabled=True)
@@ -135,7 +140,7 @@ def main() -> int:
 
     out = d / "export.mp4"
     res = aio.export(clip, sc, pl, out)
-    check("export burns in the visible pieces (2 of 3)", res.get("pieces") == 2 and out.exists())
+    check("export burns in the visible pieces (3 of 4)", res.get("pieces") == 3 and out.exists())
     # KEY_W sits in the keyboard piece at (0.05, 0.05) width 0.5 -> somewhere in the top-left half; held at t=2
     x0, y0, w, h = aio.piece_rect(sc, "keyboard", pl["keyboard"], 1280, 720)
     region_lit = False
@@ -146,6 +151,8 @@ def main() -> int:
             break
     check("export: the held key shows where the keyboard was placed", region_lit)
 
+    jo = aio.rerender(clip, sc, "joystick", fps=30)
+    check("rerender: a movement view piece", (side / "joystick.mov").exists() and jo["width"] == jo["height"])
     re_ = aio.rerender(clip, sc, "simple", fps=30)
     check("rerender adds / refreshes a piece from the stored inputs", (side / "simple.mov").exists()
           and "simple" in aio.load_sidecar(clip)["pieces"] and re_["width"] > 0)
