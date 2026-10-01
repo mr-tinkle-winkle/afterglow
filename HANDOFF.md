@@ -732,7 +732,70 @@ plain QSS rule is unavoidable.
 Seven consecutive batches of Library/Settings/appearance
 features/bug fixes, given together each time. Newest first.
 
-### This session (newest -- feedback round 16: comic polish)
+### This session (newest -- performance: clip capture + Editor saves)
+Measured on a 1080p60 x264 source (2 s keyframes) in a 2-core sandbox;
+on a real desktop everything scales down further.
+**Clip capture (OBS save -> trimmed clip in the library): ~42 s -> ~1 s.**
+- The trim was a full re-encode of the whole clip (frame-exact). It is now a
+  SMART CUT (`afterglow/smartcut.py`): only the frames before the first
+  keyframe inside the clip (and, for a mid-file trim, after the last one)
+  are re-encoded with x264; every whole GOP in between is copied bit for bit.
+  The two encoders' streams coexist via distinct SPS/PPS ids (x264
+  `sps-id`, picked not to clash with the source's): the avcC holds both
+  sets and each piece also carries its sets in-band on its first frame.
+  DTS are restamped (decode index - max reorder delay). Requirements:
+  H.264 8-bit 4:2:0 with avcC, CFR, IDR keyframes without leading pictures
+  at the cut points (`eligible`, `cut_points`); anything else (HEVC/AV1,
+  10-bit, open GOP, VFR...) falls back to the old full re-encode.
+  Keyframes are found from the container index around the two ends only
+  (`scan_gops` / `cut_points`), never by scanning the whole 20-minute buffer.
+- Audio is COPIED (`AudioCut`), not re-encoded: two warm-up packets before
+  the cut are kept with negative timestamps (MP4 edit list / MKV
+  timestamps), and the audio is aligned to the first VIDEO frame of the
+  cut, so A/V sync is sample-exact. Falls back to an AAC re-encode if the
+  copy fails. All audio tracks are kept (the old trim kept only one).
+- `editor.commit_trim(..., output_path=)`: the capture trims straight into
+  the clips folder, then deletes the raw file (no move/copy between disks).
+- The flat 2 s "post-save settle" sleep is now a size/mtime stability check
+  (0.15 s of no change, max 2 s; OBS's event already means "closed").
+- `_find_keyframe_at_or_before` uses the index (seek + 1 packet) instead of
+  ffprobe decoding every keyframe of the file. add_video takes the known
+  duration (one ffprobe fewer).
+- The Library's Save Trim (frame-perfect) gets the same smart cut.
+**Editor saves (`render.export` -> `nle/smart_export.py`):**
+- COPY: runs of the timeline that are one untouched source clip (canvas
+  size, normal speed, same fps/colour; `Renderer.passthrough_part`) are
+  copied from the source GOP by GOP. Saving a plain trim of a 30 s clip:
+  ~38 s -> ~1 s.
+- REUSE ("reuse unchanged pieces of the previous video"): rendered parts
+  are encoded as independent ~2 s chunks on a fixed grid; each chunk gets a
+  fingerprint (every element overlapping it, relative to the chunk start,
+  incl. transitions' outgoing clip, source files' size+mtime, project
+  settings, export settings, and a hash of the drawing code). The
+  fingerprints of the last export of a path are kept in
+  CONFIG_DIR/render_cache/<sha1(path)>.json together with the output's
+  size+mtime; on the next save any chunk with the same fingerprint is
+  copied out of the previous output file instead of rendered. Editing one
+  caption re-renders ~2 s; saving again unchanged ~0.5 s. The audio has its
+  own fingerprint (volume/mute changes re-render only the audio) and is
+  copied from the source when the sound is one untouched clip.
+- Rendered chunks run in parallel (one Renderer per worker).
+- Colour fix (was a real bug): rendered frames were converted RGB->YUV with
+  swscale's BT.601 default while HD sources are BT.709, so every frame with
+  text/effects shifted colour vs the plain frames around it. Rendering now
+  uses the source's own matrix/range (`smartcut.to_output_yuv`) and the
+  stream is tagged like the source -- in the smart path AND the full one.
+- `export(..., smart=False)` forces the old full render; any failure in
+  the smart path (logged "smart export not used ...") falls back to it.
+  `render.LAST_EXPORT_STATS` reports copied / reused / rendered frames.
+- Edit backups / stable source snapshots are reflinks on copy-on-write
+  filesystems (`fileutil.clone_or_copy`), plain copies elsewhere.
+Tests: tests/test_smartcut.py (bit-exactness of copied frames, PSNR of
+re-encoded ones, sample-exact audio sync, MKV/full range, open-GOP and VP9
+fallbacks, capture end to end, export copy/reuse/audio/colour/cache
+invalidation, speed vs full render).
+
+### Previous session (feedback round 16: comic polish)
 - Scribblenado grows from its BOTTOM tip (path revealed bottom-up, scaled
   about the bottom) and unwinds back into it.
 - Anger vein: pops + pulses only (no rotation).

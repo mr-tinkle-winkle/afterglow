@@ -42,13 +42,33 @@ from .editor import TrimRequest, commit_trim, probe_duration, EditorError
 from .obs_client import OBSClient, OBSError
 from .library import add_video, add_tag_to_video, get_video, Video
 
-# How long to wait after the raw replay file's size has stabilized before
-# starting the trim. This is a defensive buffer for OBS's own internal
-# post-save work (e.g. "Automatically Remux to mp4" in Advanced output
-# settings runs as a separate step after the replay buffer file itself is
-# written) that can still be in flight even once the file we're watching
-# looks done.
+# Settling the raw replay file before trimming it: OBS reports the save
+# (ReplayBufferSaved) once the file is closed, so this is only a safety net
+# -- wait until the file's size has stopped changing for SETTLE_STABLE_FOR
+# seconds, polling every SETTLE_POLL, for at most POST_SAVE_SETTLE_SECONDS.
+# (This used to be a flat 2 s sleep on every capture.)
 POST_SAVE_SETTLE_SECONDS = 2.0
+SETTLE_POLL = 0.05
+SETTLE_STABLE_FOR = 0.15
+
+
+def _settle(path: Path, max_wait: float) -> None:
+    deadline = time.monotonic() + max(0.0, max_wait)
+    last, since = None, time.monotonic()
+    while True:
+        try:
+            st = path.stat()
+            cur = (st.st_size, st.st_mtime_ns)
+        except OSError:
+            cur = None
+        now = time.monotonic()
+        if cur != last:
+            last, since = cur, now
+        elif cur is not None and cur[0] > 0 and now - since >= SETTLE_STABLE_FOR:
+            return
+        if now >= deadline:
+            return
+        time.sleep(SETTLE_POLL)
 
 # How far off the actual trimmed duration is allowed to be from the
 # requested length before we treat it as a real failure rather than normal
@@ -432,15 +452,24 @@ def trigger_clip(clip_config_id: int) -> Video:
             raw_path = obs_client.save_replay_buffer(on_sent=overlay.on_sent)  # already waits for exists + size-stable
         _play_keyframe_sound(stage, clip_cfg, settings)
 
-        # Extra settle time in case OBS is still doing internal post-save work
-        # (e.g. auto-remux) even though the raw file itself looks stable.
-        time.sleep(POST_SAVE_SETTLE_SECONDS)
+        # Make sure OBS has really finished writing (normally instant: the
+        # save event comes after the file is closed).
+        _settle(raw_path, POST_SAVE_SETTLE_SECONDS)
 
         raw_duration = probe_duration(raw_path)
         trim_start = max(0.0, raw_duration - clip_cfg.length_seconds)
         requested_duration = raw_duration - trim_start
 
         stage = keyframes.TRIM_FINISHED  # set before attempting it (or the skip-branch below) for the same reason
+        clips_dir = settings.clips_path()
+        clips_dir.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        # Filename is just the timestamp now (not prefixed with the clip
+        # config's name) -- the config's name still shows up in the title
+        # below, this only changes what the file on disk is called.
+        final_name = f"{timestamp}{raw_path.suffix}"
+        final_path = clips_dir / final_name
+        trimmed = False
         if trim_start <= SKIP_TRIM_TOLERANCE_SECONDS:
             # The raw buffer is already at or under the requested clip length
             # -- there's nothing meaningful to cut. Skip the re-encode
@@ -456,8 +485,8 @@ def trigger_clip(clip_config_id: int) -> Video:
         else:
             request = TrimRequest(
                 video_path=raw_path, start_sec=trim_start, end_sec=raw_duration,
-                # Trigger-time trims must always be frame-perfect (full re-encode),
-                # NOT fast/keyframe-seek mode -- confirmed by direct reproduction:
+                # Trigger-time trims must always be frame-perfect, NOT
+                # fast/keyframe-seek mode -- confirmed by direct reproduction:
                 # OBS's replay buffer output can have a keyframe interval larger
                 # than the requested clip length (sometimes only a single keyframe
                 # near the very start of the saved segment, depending on encoder
@@ -465,27 +494,31 @@ def trigger_clip(clip_config_id: int) -> Video:
                 # keyframe at-or-before the request -- if that's the file's only
                 # keyframe, at time 0, you get the ENTIRE raw buffer back with no
                 # trim applied at all, regardless of the requested clip length.
-                # frame_perfect remains an explicit opt-in only in the manual
-                # Editor, where a person is choosing a precise custom range rather
-                # than relying on "give me the last N seconds."
+                # Frame-perfect is a SMART cut (editor.commit_trim / smartcut.py):
+                # only the frames before the first keyframe inside the clip are
+                # re-encoded, the rest is copied untouched -- a couple of seconds
+                # instead of re-encoding the whole clip.
                 frame_perfect=True,
-                # "veryfast" rather than editor.py's "medium" default -- measured
-                # directly: on a realistic 1080p60 test clip, veryfast cut total
-                # trim time roughly in half versus medium, with file size much
-                # closer to medium's efficiency than "ultrafast" (which is faster
-                # still but bloats file size significantly). Speed matters more
-                # here than optimal compression -- this is the automatic "give me
-                # my clip right now" pipeline, not a considered export.
+                # "veryfast" for whatever does get re-encoded: speed matters more
+                # here than optimal compression.
                 preset="veryfast",
             )
-            commit_trim(request, has_prior_edit=False, existing_backup=None, skip_backup=True)
+            # Straight into the clips folder (no extra copy when OBS's folder
+            # is on another disk); the raw file is removed only once it's done.
+            commit_trim(request, has_prior_edit=False, existing_backup=None, skip_backup=True,
+                        output_path=final_path)
+            trimmed = True
 
             # Verify the trim actually produced roughly the requested length,
             # loudly, rather than trusting ffmpeg's exit code alone. This is what
             # would have caught "clipped but didn't trim" as an immediate error
             # instead of a silent wrong-length file reaching the library.
-            actual_duration = probe_duration(raw_path)
+            actual_duration = probe_duration(final_path)
             if abs(actual_duration - requested_duration) > DURATION_TOLERANCE_SECONDS:
+                try:
+                    final_path.unlink()
+                except OSError:
+                    pass
                 raise ClipError(
                     f"Trim produced an unexpected duration: got {actual_duration:.2f}s, "
                     f"expected ~{requested_duration:.2f}s. The raw OBS file has been left "
@@ -494,20 +527,19 @@ def trigger_clip(clip_config_id: int) -> Video:
         _play_keyframe_sound(stage, clip_cfg, settings)
 
         stage = keyframes.CLEANED_UP_MOVED  # set before attempting it, same reason as above
-        clips_dir = settings.clips_path()
-        clips_dir.mkdir(parents=True, exist_ok=True)
-        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        # Filename is just the timestamp now (not prefixed with the clip
-        # config's name) -- the config's name still shows up in the title
-        # below, this only changes what the file on disk is called.
-        final_name = f"{timestamp}{raw_path.suffix}"
-        final_path = clips_dir / final_name
-        shutil.move(str(raw_path), str(final_path))
+        if trimmed:
+            try:
+                raw_path.unlink()
+            except OSError as e:
+                print(f"Could not remove the raw replay file {raw_path}: {e}")
+        else:
+            shutil.move(str(raw_path), str(final_path))
         video = add_video(
             final_path,
             title=f"{clip_cfg.name} - {timestamp}",
             description="",
             clip_config_id=clip_cfg.id,
+            duration=actual_duration,
         )
         if auto_tag_names:
             for tag_name in auto_tag_names:

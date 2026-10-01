@@ -31,6 +31,7 @@ import shutil
 from pathlib import Path
 
 from .. import overlay_support
+from ..fileutil import clone_or_copy
 from ..config import CONFIG_DIR
 from ..editor import EDIT_BACKUPS_DIRNAME, backup_path_for
 from .model import Project
@@ -107,14 +108,14 @@ def stabilize_sources(project: Project, live_path: "str | Path", has_edit: bool,
         stable_for_live = None       # created lazily: only if a part actually needs it
     else:
         backup = backup_path_for(live)
-        shutil.copy2(live, backup)
+        clone_or_copy(live, backup)
         stable_for_live = backup     # unedited clip: the backup IS the current content
     for s in project.all_segments():
         for p in s.parts:
             if p.source and os.path.abspath(p.source) == os.path.abspath(live_str):
                 if stable_for_live is None:
                     stable_for_live = _snapshot_path(live)
-                    shutil.copy2(live, stable_for_live)
+                    clone_or_copy(live, stable_for_live)
                 p.source = str(stable_for_live)
     _stabilize_overlays(project, live, stable_for_live)
     return str(backup)

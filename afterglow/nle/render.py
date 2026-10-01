@@ -230,13 +230,13 @@ class Renderer:
         return out
 
     # ---- export fast path ------------------------------------------------
-    def passthrough_frame(self, t: float, width: int, height: int):
-        """The decoded source frame itself (as yuv420p), when the output at t
-        is exactly ONE untouched full-frame video picture: canvas-sized
-        source, no transform/crop/zoom/keyframes/fade/opacity/transition/
-        shadow/overlays. Plain cuts and trims -- the common edit -- then skip
-        converting to RGB, painting and converting back, which was most of
-        the export time. None when anything is drawn differently."""
+    def passthrough_part(self, t: float, width: int, height: int):
+        """(part, segment-local time) when the output at t is exactly ONE
+        untouched full-frame video picture: canvas-sized source, no
+        transform/crop/zoom/keyframes/fade/opacity/transition/shadow/overlays
+        (see passthrough_frame). None when anything is drawn differently.
+        Doesn't decode anything (the export's smart-render planner calls it
+        for every frame)."""
         p = self.project
         found = None
         for track in p.tracks:
@@ -267,6 +267,20 @@ class Renderer:
         src = self._source(part.source)
         if src is None or src.width != p.width or src.height != p.height or (width, height) != (p.width, p.height):
             return None
+        return part, local
+
+    def passthrough_frame(self, t: float, width: int, height: int):
+        """The decoded source frame itself (as yuv420p), when the output at t
+        is exactly ONE untouched full-frame video picture: canvas-sized
+        source, no transform/crop/zoom/keyframes/fade/opacity/transition/
+        shadow/overlays. Plain cuts and trims -- the common edit -- then skip
+        converting to RGB, painting and converting back, which was most of
+        the export time. None when anything is drawn differently."""
+        found = self.passthrough_part(t, width, height)
+        if found is None:
+            return None
+        part, local = found
+        src = self._source(part.source)
         frame = src.frame_at(part.source_time(local))
         if frame is None:
             return None
@@ -1581,6 +1595,33 @@ def _frame_to_video_frame(renderer: "Renderer", t: float, width: int, height: in
     return av.VideoFrame.from_ndarray(np.ascontiguousarray(arr), format="bgra"), None
 
 
+def _out_color(project) -> dict:
+    from . import smart_export
+    try:
+        return smart_export.output_color(project)
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def _to_yuv(vf, color: dict):
+    """Rendered BGRA -> yuv420p with the source video's own matrix (BT.709 for
+    HD) instead of swscale's BT.601 default, so rendered frames match the
+    passed-through ones in colour."""
+    from ..smartcut import SWS_COLORSPACE
+    cs = SWS_COLORSPACE.get(int((color or {}).get("colorspace", 2) or 2))
+    return vf.reformat(format="yuv420p", dst_colorspace=cs) if cs else vf.reformat(format="yuv420p")
+
+
+def _tag_color(vs, color: dict) -> None:
+    cc = vs.codec_context
+    for k in ("colorspace", "color_primaries", "color_trc"):
+        if k in (color or {}):
+            try:
+                setattr(cc, k, color[k])
+            except (AttributeError, ValueError, TypeError):
+                pass
+
+
 def _new_video_stream(out, rate, width, height, crf, preset, threads=None):
     vs = out.add_stream("libx264", rate=rate)
     vs.width, vs.height = width, height
@@ -1593,18 +1634,41 @@ def _new_video_stream(out, rate, width, height, crf, preset, threads=None):
     return vs
 
 
+def _smart_frame(renderer: "Renderer", i: int, rate, width: int, height: int):
+    """Output frame i for the smart export: the source frame itself when it's
+    a plain passthrough (converted to the output's YUV by the encoder, with
+    the source's own matrix), else the rendered picture (BGRA)."""
+    t = float(i / rate) + 1e-5
+    src = renderer.passthrough_frame(t, width, height)
+    if src is not None:
+        return src
+    img = renderer.frame(t, width, height)
+    ptr = img.constBits()
+    arr = np.frombuffer(ptr, np.uint8, count=img.sizeInBytes()).reshape(height, img.bytesPerLine() // 4, 4)[:, :width]
+    return av.VideoFrame.from_ndarray(np.ascontiguousarray(arr), format="bgra")
+
+
+LAST_EXPORT_STATS: dict = {}
+
+
 def export(project: Project, out_path: str, progress: "Callable[[float], None] | None" = None,
            cancel: "threading.Event | None" = None, crf: int = 18, preset: str = "veryfast",
-           width: "int | None" = None, height: "int | None" = None, jobs: "int | None" = None) -> None:
+           width: "int | None" = None, height: "int | None" = None, jobs: "int | None" = None,
+           smart: bool = True) -> None:
     """Render the whole project to an H.264/AAC MP4 at the canvas size and
     fps. Writes <out_path>.render_tmp.mp4 first and moves it into place only
     when complete. progress(fraction 0..1) is called as frames are encoded.
 
-    Speed: frames that are just one untouched full-frame clip skip the
-    RGB round trip (Renderer.passthrough_frame); pictures are rendered on
-    worker threads while encoding runs; and on many-core machines the
-    timeline is split into `jobs` pieces rendered + encoded in parallel,
-    then joined without re-encoding."""
+    Speed (smart=True, the default -- nle/smart_export.py): whole GOPs of
+    untouched source clips are COPIED, not re-encoded; chunks that look
+    exactly like they did in the previous export of the same file are
+    REUSED from it; only the rest is rendered, in ~2 s chunks encoded in
+    parallel. Anything the smart path can't handle falls back to the plain
+    full render below, where frames that are just one untouched full-frame
+    clip skip the RGB round trip (Renderer.passthrough_frame); pictures are
+    rendered on worker threads while encoding runs; and on many-core
+    machines the timeline is split into `jobs` pieces rendered + encoded in
+    parallel, then joined without re-encoding."""
     duration = project.video_duration
     if duration <= EPS:
         raise ValueError("Nothing to export: the timeline is empty.")
@@ -1613,6 +1677,7 @@ def export(project: Project, out_path: str, progress: "Callable[[float], None] |
     width, height = width - width % 2, height - height % 2
     rate = media.fps_fraction(project.fps)
     n_frames = max(1, int(math.ceil(duration * rate - 1e-6)))
+    jobs_given = jobs
     jobs = _auto_jobs(n_frames) if jobs is None else max(1, min(jobs, n_frames))
     tmp = out_path + ".render_tmp.mp4"
     has_audio = any(s.has_audio and not s.muted for s in project.all_segments())
@@ -1684,6 +1749,8 @@ def export(project: Project, out_path: str, progress: "Callable[[float], None] |
                         raise vf
                 else:
                     vf, last = _frame_to_video_frame(renderer, float(i / rate) + 1e-5, width, height, last)
+                if vf.format.name == "bgra":
+                    vf = _to_yuv(vf, color)
                 vf.pts = k
                 vf.time_base = frame_tb
                 for pkt in vs.encode(vf):
@@ -1701,6 +1768,41 @@ def export(project: Project, out_path: str, progress: "Callable[[float], None] |
                         pass
                     worker.join(timeout=0.05)
             renderer.close()
+
+    LAST_EXPORT_STATS.clear()
+    if smart:
+        from . import smart_export
+        from .. import smartcut
+
+        def audio_to(path):
+            with av.open(path, "w", format="mp4") as aout:
+                aus = aout.add_stream("aac", rate=RATE)
+                aus.layout = "stereo"
+                aus.bit_rate = 192000
+                encode_audio(aout, aus)
+        try:
+            cpus = os.cpu_count() or 2
+            workers = jobs_given or max(1, min(4, cpus // 2))
+            stats = smart_export.smart_export(
+                project, out_path, rate, width, height, n_frames, crf, preset, workers, progress, cancel,
+                audio_to if has_audio else None, lambda: Renderer(project, overlays=False),
+                lambda r, i, _last: (_smart_frame(r, i, rate, width, height), None))
+            LAST_EXPORT_STATS.update(stats, mode="smart")
+            if progress is not None:
+                progress(1.0)
+            return
+        except ExportCancelled:
+            raise
+        except Exception as e:  # noqa: BLE001 -- smartcut.Unsupported or anything unexpected
+            import logging
+            logging.getLogger("afterglow.render").warning(f"smart export not used ({e!r}); full render")
+            smart_export.forget_cache(out_path)
+            if cancel is not None and cancel.is_set():
+                raise ExportCancelled()
+            done_frames[0] = 0
+            audio_done[0] = 0.0
+    LAST_EXPORT_STATS.update(mode="full", rendered=n_frames)
+    color = _out_color(project)
 
     parts_files: list = []
     try:
@@ -1722,6 +1824,7 @@ def export(project: Project, out_path: str, progress: "Callable[[float], None] |
                     with av.open(path, "w", format="mp4") as out:
                         vs = _new_video_stream(out, rate, width, height, crf, preset,
                                                threads=None if jobs == 1 else max(1, cpus // jobs))
+                        _tag_color(vs, color)
                         render_range(out, vs, f0, f1, threaded=jobs == 1)
                 except BaseException as e:
                     errors.append(e)

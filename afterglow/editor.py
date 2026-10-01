@@ -28,6 +28,8 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
+from .fileutil import clone_or_copy
+
 
 class EditorError(RuntimeError):
     pass
@@ -72,33 +74,26 @@ class TrimRequest:
 
 
 def _find_keyframe_at_or_before(video_path: Path, target_sec: float) -> float:
-    """
-    Fast keyframe lookup via -skip_frame nokey, which reads packet headers
-    without decoding non-keyframe packets -- quick even on long files.
-    Returns 0.0 (start of file) if probing fails or no keyframe is found
-    at or before target_sec, which just means the dual-seek trick below
-    degrades to decoding from the start -- correct, just not faster.
-    """
-    result = subprocess.run(
-        [
-            "ffprobe", "-v", "error", "-select_streams", "v:0",
-            "-skip_frame", "nokey", "-show_entries", "frame=pts_time",
-            "-of", "csv=p=0", str(video_path),
-        ],
-        capture_output=True, text=True,
-    )
-    if result.returncode != 0:
-        return 0.0
-
-    keyframe_times = []
-    for line in result.stdout.strip().splitlines():
-        try:
-            keyframe_times.append(float(line))
-        except ValueError:
-            continue
-
-    candidates = [t for t in keyframe_times if t <= target_sec]
-    return max(candidates) if candidates else 0.0
+    """Time of the video keyframe at or before target_sec, from the
+    container's index (a seek + one packet -- instant even on a 20-minute
+    replay buffer; the old ffprobe -skip_frame nokey pass decoded every
+    keyframe of the whole file). 0.0 when it can't be determined, which
+    just means callers decode from the start -- correct, just not faster."""
+    try:
+        import av
+        with av.open(str(video_path)) as c:
+            vs = c.streams.video[0]
+            tb = vs.time_base
+            start = float(vs.start_time * tb) if vs.start_time is not None else 0.0
+            c.seek(max(0, int((start + target_sec + 1e-4) / tb)), stream=vs, backward=True, any_frame=False)
+            for pkt in c.demux(vs):
+                if pkt.pts is None:
+                    continue
+                t = float(pkt.pts * tb) - start
+                return t if (pkt.is_keyframe and t <= target_sec + 1e-4) else 0.0
+    except Exception:  # noqa: BLE001
+        pass
+    return 0.0
 
 
 # Backups live in a sibling "Edit Backups" folder next to the clip itself,
@@ -125,7 +120,7 @@ def clear_backup(backup_path: Path) -> None:
 
 def commit_trim(
     request: TrimRequest, has_prior_edit: bool, existing_backup: Path | None,
-    skip_backup: bool = False,
+    skip_backup: bool = False, output_path: Path | None = None,
 ) -> Path | None:
     """
     Perform the trim in place (working file at request.video_path is
@@ -145,6 +140,16 @@ def commit_trim(
     the actual cause of Edit Backups folders and .orig copies appearing
     in OBS's raw output directory on every single capture.
 
+    output_path: write the result there instead of replacing the input
+    (the capture pipeline trims straight into the clips folder, saving a
+    copy when OBS's folder is on another disk).
+
+    Frame-perfect trims are SMART cuts when the video allows it
+    (smartcut.py): only the partial GOPs at the two ends are re-encoded and
+    everything between is copied bit for bit -- seconds instead of a full
+    re-encode, and no generational quality loss. Anything it can't handle
+    (non-H.264, open GOPs...) falls back to the full re-encode below.
+
     Caller (library.py) is responsible for updating the DB row.
     """
     video_path = request.video_path
@@ -159,10 +164,24 @@ def commit_trim(
         backup_path = existing_backup
     else:
         backup_path = backup_path_for(video_path)
-        shutil.copy2(video_path, backup_path)
+        clone_or_copy(video_path, backup_path)
 
-    tmp_output = video_path.with_name(video_path.stem + ".trim_tmp" + video_path.suffix)
+    dest = Path(output_path) if output_path is not None else video_path
+    tmp_output = dest.with_name(dest.stem + ".trim_tmp" + video_path.suffix)
     duration_arg = request.end_sec - request.start_sec
+
+    if request.frame_perfect:
+        try:
+            from . import smartcut
+            smartcut.smart_trim(video_path, tmp_output, request.start_sec, request.end_sec,
+                                crf=18, preset=request.preset)
+            tmp_output.replace(dest)
+            return backup_path
+        except Exception as e:  # noqa: BLE001 -- Unsupported or anything odd: full re-encode
+            if tmp_output.exists():
+                tmp_output.unlink()
+            import logging
+            logging.getLogger("afterglow.editor").info(f"smart cut not used ({e}); re-encoding the whole range")
 
     if request.frame_perfect:
         # Fast-seek + residual-correction: input-side -ss jumps quickly to
@@ -206,7 +225,7 @@ def commit_trim(
             tmp_output.unlink()
         raise EditorError(f"ffmpeg trim failed:\n{result.stderr[-2000:]}")
 
-    tmp_output.replace(video_path)
+    tmp_output.replace(dest)
     return backup_path
 
 

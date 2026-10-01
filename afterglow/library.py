@@ -99,13 +99,15 @@ def _tags_for_video(conn: sqlite3.Connection, video_id: int) -> list[str]:
 # ---------------------------------------------------------------- add/import
 
 def add_video(path: Path, title: str, description: str = "",
-              clip_config_id: int | None = None, created_at: str | None = None) -> Video:
+              clip_config_id: int | None = None, created_at: str | None = None,
+              duration: float | None = None) -> Video:
     if not path.exists():
         raise LibraryError(f"File does not exist: {path}")
-    try:
-        duration = probe_duration(path)
-    except EditorError:
-        duration = None
+    if duration is None:                      # (the capture pipeline already knows it)
+        try:
+            duration = probe_duration(path)
+        except EditorError:
+            duration = None
 
     # created_at defaults to "now" -- correct for the capture pipeline's
     # own call (a video that was JUST finished by OBS), but WRONG for
@@ -644,6 +646,13 @@ def repair_incorrect_creation_dates() -> list[int]:
     return repaired
 
 
+def _is_work_file(entry: Path) -> bool:
+    import re
+    name = entry.name
+    return (".render_tmp" in name or re.search(r"\.part\d+\.[^.]+$", name) is not None
+            or name.endswith(".audio.m4a") or re.search(r"\.chunk\d+\.[^.]+$", name) is not None)
+
+
 def scan_and_ingest_new_videos() -> list[Video]:
     """
     Pick up video files that exist in the clips folder but aren't tracked
@@ -682,6 +691,8 @@ def scan_and_ingest_new_videos() -> list[Video]:
             continue  # a backup file (<name>.orig.<ext>), not a real clip
         if entry.name.endswith(".trim_tmp" + entry.suffix):
             continue  # ffmpeg's in-progress trim output, not a real clip
+        if _is_work_file(entry):
+            continue  # an Editor export still being written (render_tmp / part / audio pieces)
         if str(entry) in known_paths:
             continue
         # mtime, not "now" -- see add_video()'s own comment on why: this
