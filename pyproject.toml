@@ -18,6 +18,7 @@ dependencies = [
 afterglow = "afterglow.gui.main:main"
 afterglow-daemon = "afterglow.daemon:main"
 afterglow-cli = "afterglow.cli:main"
+afterglow-indicator = "afterglow.indicator.__main__:main"
 
 [build-system]
 requires = ["setuptools>=61"]

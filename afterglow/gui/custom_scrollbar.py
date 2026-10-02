@@ -23,16 +23,20 @@ from .theme import Theme
 
 
 class CustomScrollBar(QScrollBar):
-    def __init__(self, orientation=Qt.Vertical, parent=None):
+    def __init__(self, orientation=Qt.Vertical, parent=None, extent: "int | None" = None):
         super().__init__(orientation, parent)
         appearance = config_module.load_readonly().appearance
         self._appearance = appearance
         self._theme = Theme(appearance)
-        default_extent = QApplication.style().pixelMetric(QStyle.PM_ScrollBarExtent)
+        # `extent` gives a narrower bar for popups and small lists (the
+        # combo dropdown, the file picker); the default stays twice the
+        # native width, as asked for the Library grid.
+        if extent is None:
+            extent = QApplication.style().pixelMetric(QStyle.PM_ScrollBarExtent) * 2
         if orientation == Qt.Vertical:
-            self.setFixedWidth(default_extent * 2)
+            self.setFixedWidth(extent)
         else:
-            self.setFixedHeight(default_extent * 2)
+            self.setFixedHeight(extent)
 
     def paintEvent(self, event) -> None:
         painter = QPainter(self)

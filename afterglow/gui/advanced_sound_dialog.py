@@ -12,7 +12,7 @@ from PySide6.QtCore import Qt, QRectF
 from PySide6.QtGui import QPainter
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QFormLayout, QHBoxLayout, QLineEdit,
-    QFileDialog, QLabel, QDialogButtonBox, QWidget,
+    QLabel, QWidget,
 )
 
 from .. import keyframes
@@ -21,6 +21,7 @@ from .theme import Theme
 from .rounded_rect import rounded_rect_path
 from .custom_line_edit import CustomLineEdit
 from .custom_button import CustomButton
+from .themed_dialogs import get_open_file_name
 
 _SOUND_FILE_FILTER = "Audio Files (*.wav *.mp3 *.ogg *.flac);;All Files (*)"
 
@@ -95,7 +96,7 @@ class AdvancedSoundDialog(QDialog):
         return row_widget, edit
 
     def _browse(self, edit: QLineEdit) -> None:
-        path, _ = QFileDialog.getOpenFileName(self, "Choose Sound File", edit.text(), _SOUND_FILE_FILTER)
+        path, _ = get_open_file_name(self, "Choose Sound File", edit.text(), _SOUND_FILE_FILTER)
         if path:
             edit.setText(path)
 

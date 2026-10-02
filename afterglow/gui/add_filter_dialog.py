@@ -16,6 +16,7 @@ from .. import config as config_module
 from .theme import Theme
 from .rounded_rect import rounded_rect_path
 from .custom_button import CustomButton
+from .custom_combo_box import CustomComboBox
 from .custom_line_edit import CustomLineEdit
 from .custom_combo_style import combo_box_stylesheet
 
@@ -48,7 +49,7 @@ class AddFilterDialog(QDialog):
         category_label = QLabel("Category (optional):")
         category_label.setStyleSheet(f"color: {appearance.card_text_color};")
         layout.addWidget(category_label)
-        self.category_combo = QComboBox()
+        self.category_combo = CustomComboBox()
         self.category_combo.setStyleSheet(combo_box_stylesheet(appearance))
         self.category_combo.addItem("(none)", None)
         for cat_id, cat_name in categories:

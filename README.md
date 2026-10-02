@@ -19,6 +19,26 @@ Build order, in progress:
 3. YouTube OAuth/upload — after that (Save & Upload currently shows a
    "not implemented yet" message, same as the Library's Upload action).
 
+## Clip indicator ("the clapper")
+
+A small on-screen indicator for clip captures, enabled by default and configured under
+Settings > Clipping > Clip Indicator:
+
+- A movie clapper (or a pair of clapping gloves, as the alternative style) slides onto the screen when a
+  clip hotkey fires, claps when OBS has saved the clip, then gives way to a gray loading circle until the
+  clip is in the library. When the clip type captures an input overlay, the circle turns purple until the
+  overlay has rendered. A failed capture launches the clapper into the air.
+- Position (any corner or edge middle, with padding), size, separate enter and exit animations, the
+  processing mode (loading circle, or the clapper stays), the circle colours and the screen (the one holding
+  the focused window, or the primary one) are all settings, with a live preview and a Test button.
+- Per clip type (the "Indicator" row of a clip option): colours for each part, a custom icon (on the board,
+  or on the back of the glove) and a clap sound.
+- Rapid repeats stack, up to five visible, with a "+N" badge beyond that.
+
+The indicator runs as its own small process (`afterglow-indicator`), started on demand by the daemon, the CLI
+or the GUI. On Wayland it is a layer-shell overlay (the flake builds the small shim this needs); on X11 it is
+an always-on-top, click-through window. Design and status: `HANDOFF.md`.
+
 ## Planned: YouTube unlisted library behavior
 
 The Uploaded tab's local cache and playback behave as follows once
@@ -828,6 +848,8 @@ Plasma version) manually.
 afterglow/            the installable Python package
   config.py, db.py, editor.py, library.py, clips.py, obs_client.py,
   hotkeys.py, daemon.py, cli.py, thumbnails.py
+  indicator/                           the clip indicator helper process (see "Clip indicator")
+  indicator_client.py                  how the daemon / CLI / GUI talk to it
   gui/
     main.py, main_window.py, settings_page.py, clip_config_row.py,
     hotkey_record_dialog.py, library_page.py, video_card.py, editor_page.py
@@ -844,6 +866,7 @@ Entry points (from `pyproject.toml`):
 - `afterglow` — GUI
 - `afterglow-daemon` — background hotkey/capture daemon
 - `afterglow-cli` — CLI (see `afterglow/cli.py`'s docstring for commands)
+- `afterglow-indicator` — the clip indicator's helper process
 
 ## Using this as a flake input
 

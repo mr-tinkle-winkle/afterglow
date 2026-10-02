@@ -27,7 +27,10 @@ CREATE TABLE IF NOT EXISTS clip_configs (
     overlay_pieces          TEXT NOT NULL DEFAULT '["keyboard","mouse"]',   -- JSON list of pieces to render
     overlay_visible_default INTEGER NOT NULL DEFAULT 1,      -- overlay starts shown in previewer/editor
     overlay_offset_ms       REAL NOT NULL DEFAULT 0,         -- timing calibration (+ later, - earlier)
-    overlay_placements      TEXT NOT NULL DEFAULT '{}'       -- JSON {piece: {x,y,w,rotation,visible}} per-piece overrides
+    overlay_placements      TEXT NOT NULL DEFAULT '{}',      -- JSON {piece: {x,y,w,rotation,visible}} per-piece overrides
+    indicator_colors        TEXT NOT NULL DEFAULT '{}',      -- clip indicator: JSON {part: "#rrggbb"} ({} = defaults)
+    indicator_icon_path     TEXT NOT NULL DEFAULT '',        -- clip indicator: custom icon image ('' = none)
+    indicator_clap_sound    TEXT NOT NULL DEFAULT ''         -- clip indicator: clap sound ('' = the clip type's / global clip sound)
 );
 
 CREATE TABLE IF NOT EXISTS videos (
@@ -108,6 +111,9 @@ def _migrate_columns(conn: sqlite3.Connection) -> None:
         ("overlay_visible_default", "INTEGER NOT NULL DEFAULT 1"),
         ("overlay_offset_ms", "REAL NOT NULL DEFAULT 0"),
         ("overlay_placements", "TEXT NOT NULL DEFAULT '{}'"),
+        ("indicator_colors", "TEXT NOT NULL DEFAULT '{}'"),
+        ("indicator_icon_path", "TEXT NOT NULL DEFAULT ''"),
+        ("indicator_clap_sound", "TEXT NOT NULL DEFAULT ''"),
     ):
         if not _has_column(conn, "clip_configs", col):
             conn.execute(f"ALTER TABLE clip_configs ADD COLUMN {col} {ddl}")

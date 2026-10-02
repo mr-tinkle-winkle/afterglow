@@ -91,9 +91,26 @@
         packageOverrides = pythonOverlay pkgs;
       };
 
+      # The clip indicator's layer-shell shim (native/): LayerShellQt (KDE's wlr-layer-shell
+      # implementation) has a C++ API only -- no Python bindings exist -- so a ~40-line C shim
+      # exposes the one call the indicator helper needs and Python loads it with ctypes
+      # (afterglow/indicator/layershell.py). It MUST be built against the same Qt as PySide6
+      # (the layer-shell plugin only loads into the Qt it was built against); both come from the
+      # one nixpkgs here. If a Qt version mismatch ever shows up, build the shim against whatever
+      # `python.pkgs.pyside6` was built with.
+      mkLayerShell = pkgs: pkgs.stdenv.mkDerivation {
+        pname = "afterglow-layershell";
+        version = "0.1.0";
+        src = ./native;
+        nativeBuildInputs = [ pkgs.cmake ];
+        buildInputs = [ pkgs.qt6.qtbase pkgs.kdePackages.layer-shell-qt ];
+        dontWrapQtApps = true;
+      };
+
       mkAfterglowPackage = pkgs:
         let
           python = mkPython pkgs;
+          layerShell = mkLayerShell pkgs;
         in
         python.pkgs.buildPythonApplication {
           pname = "afterglow";
@@ -122,6 +139,9 @@
             pkgs.qt6.qtwayland
             pkgs.xcb-util-cursor
             pkgs.mpv-unwrapped
+            # Clip indicator: its Qt wayland-shell-integration plugin ("layer-shell") has to be
+            # in the closure so wrapQtApp puts it on QT_PLUGIN_PATH for the helper process.
+            pkgs.kdePackages.layer-shell-qt
             # Advanced Editor preview audio (QAudioSink). Without it the
             # preview still plays, just silently.
             pkgs.qt6.qtmultimedia
@@ -187,11 +207,12 @@
           # gracefully (those rules just never match, logged once) rather
           # than crashing, but needed for that feature to actually work.
           postFixup = ''
-            for prog in afterglow afterglow-daemon afterglow-cli; do
+            for prog in afterglow afterglow-daemon afterglow-cli afterglow-indicator; do
               wrapQtApp "$out/bin/$prog"
               wrapProgram "$out/bin/$prog" \
                 --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.ffmpeg pkgs.pipewire pkgs.pulseaudio pkgs.kdotool ]} \
-                --prefix LD_LIBRARY_PATH : ${pkgs.lib.makeLibraryPath [ pkgs.mpv-unwrapped ]}
+                --prefix LD_LIBRARY_PATH : ${pkgs.lib.makeLibraryPath [ pkgs.mpv-unwrapped ]} \
+                --set-default AFTERGLOW_LAYERSHELL_LIB ${layerShell}/lib/libafterglow_layershell.so
             done
           '';
 
@@ -214,6 +235,7 @@
         in
         {
           default = mkAfterglowPackage pkgs;
+          layershell = mkLayerShell pkgs;
         });
 
       devShells = forAllSystems (system:

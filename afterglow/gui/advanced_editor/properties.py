@@ -15,7 +15,7 @@ from __future__ import annotations
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont
 from PySide6.QtWidgets import (
-    QColorDialog, QComboBox, QFormLayout, QGridLayout, QHBoxLayout, QLabel, QPlainTextEdit,
+    QComboBox, QFormLayout, QGridLayout, QHBoxLayout, QLabel, QPlainTextEdit,
     QScrollArea, QVBoxLayout, QWidget,
 )
 
@@ -26,6 +26,7 @@ from ...nle import comic as _comic
 from ...nle.comic import ANIM_IN, ANIM_OUT, BACKDROPS, BOUNCE_SIDES, COMIC_EFFECTS, IDLES, effect_label
 from ...nle.render import eval_keyframes, zoom_factor
 from ..custom_button import CustomButton
+from ..custom_combo_box import CustomComboBox
 from ..custom_checkbox import CustomCheckBox
 from ..custom_combo_style import combo_box_stylesheet
 from ..custom_group_box import CustomGroupBox
@@ -35,6 +36,7 @@ from ..smooth_scroll_area import SmoothScrollArea
 from ..theme import Theme
 from .controller import EditorController
 from .timeline import format_time
+from ..themed_dialogs import get_color, get_open_file_name
 
 # "position" and "tail" are two-value keyframes: each key sets both X and Y.
 COMPOSITE = {"position": ("x", "y"), "tail": ("tail_x", "tail_y")}
@@ -796,7 +798,7 @@ class PropertiesPanel(QWidget):
         return label
 
     def _combo(self, items):
-        c = QComboBox()
+        c = CustomComboBox()
         c.setStyleSheet(self._combo_qss)
         # don't let the longest item widen the whole panel past its edge
         c.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
@@ -1122,7 +1124,7 @@ class PropertiesPanel(QWidget):
         is kept at the top so it isn't silently replaced."""
         from ..fonts import DISPLAY_NAMES, FONT_CHOICES, installed_back_issues, load_bundled_fonts
         load_bundled_fonts()
-        c = QComboBox()
+        c = CustomComboBox()
         c.setStyleSheet(self._combo_qss)
         c.setEditable(False)
         c.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
@@ -1176,7 +1178,7 @@ class PropertiesPanel(QWidget):
         segs = self._segments()
         if not segs:
             return
-        c = QColorDialog.getColor(QColor(segs[0].shadow_color), self, "Shadow color")
+        c = get_color(QColor(segs[0].shadow_color), self, "Shadow color")
         if c.isValid():
             self._once("Shadow color", lambda p: self._set_seg(p, shadow_color=c.name()))
 
@@ -1251,14 +1253,13 @@ class PropertiesPanel(QWidget):
         self._once("Clear word key" if clear else "Key word", fn)
 
     def _pick_image(self) -> None:
-        from PySide6.QtWidgets import QFileDialog
         from pathlib import Path
         segs = self._segments()
         tp = next((pt for pt in segs[0].parts if pt.kind == KIND_TEXT and pt.text), None) if segs else None
         if tp is None:
             return
         start = str(Path(tp.text.image_path).parent) if tp.text.image_path else str(Path.home())
-        path, _ = QFileDialog.getOpenFileName(self, "Picture for the text", start,
+        path, _ = get_open_file_name(self, "Picture for the text", start,
                                               "Pictures (*.png *.jpg *.jpeg *.webp *.bmp *.gif);;All files (*)")
         if path:
             self._once("Add picture", lambda p: self._set_text(p, image_path=path))
@@ -1322,8 +1323,7 @@ class PropertiesPanel(QWidget):
             start = QColor(_comic.EFFECT_COLOR2.get(tp.text.comic_effect, ("", "#ffffff"))[1])
         else:
             start = QColor(getattr(tp.text, attr))
-        c = QColorDialog.getColor(start, self, "Text color",
-                                  QColorDialog.ShowAlphaChannel)
+        c = get_color(start, self, "Text color", alpha=True)
         if c.isValid():
             name = c.name(QColor.HexArgb) if c.alpha() < 255 else c.name()
             self._once("Text color", lambda p: self._set_text(p, **{attr: name}))

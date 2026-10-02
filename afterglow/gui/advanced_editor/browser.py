@@ -12,7 +12,7 @@ from pathlib import Path
 from PySide6.QtCore import QMimeData, QSize, Qt, QTimer
 from PySide6.QtGui import QColor, QDrag, QIcon, QPixmap
 from PySide6.QtWidgets import (
-    QButtonGroup, QComboBox, QFileDialog, QFormLayout, QHBoxLayout, QLabel, QListWidget,
+    QButtonGroup, QComboBox, QFormLayout, QHBoxLayout, QLabel, QListWidget,
     QListWidgetItem, QStackedWidget, QVBoxLayout, QWidget, QAbstractItemView,
 )
 
@@ -21,6 +21,7 @@ from ... import library, thumbnails
 from ...nle import ops
 from ...nle.media import GIF_EXTS, IMAGE_EXTS
 from ..custom_button import CustomButton
+from ..custom_combo_box import CustomComboBox
 from ..custom_combo_style import combo_box_stylesheet
 from ..custom_scrollbar import CustomScrollBar
 from ..custom_spinbox import CustomDoubleSpinBox
@@ -28,6 +29,7 @@ from ..segment_button import SegmentButton
 from ..theme import Theme
 from .controller import COMIC_PRESET_GROUPS, COMIC_PRESET_NAMES, TEXT_PRESETS, EditorController
 from .timeline import MIME_ITEM
+from ..themed_dialogs import get_open_file_names
 
 MEDIA_FILTER = ("Media (*.mp4 *.mkv *.mov *.webm *.avi *.flv *.m4v *.ts *.mp3 *.wav *.flac *.ogg *.opus *.m4a *.aac "
                 "*.png *.jpg *.jpeg *.webp *.bmp *.gif);;All files (*)")
@@ -219,7 +221,7 @@ class BrowserPanel(QWidget):
     def _add_files(self, file_filter: str = MEDIA_FILTER) -> None:
         if not self.ctl.has_project:
             return
-        paths, _ = QFileDialog.getOpenFileNames(self, "Add to timeline", str(Path.home()), file_filter)
+        paths, _ = get_open_file_names(self, "Add to timeline", str(Path.home()), file_filter)
         t = self.ctl.playhead
         for path in paths:
             seg = self.ctl.add_file(path, t=t, track_index=self._default_track(path))
@@ -460,7 +462,7 @@ class BrowserPanel(QWidget):
             lst.addItem(it)
 
     def add_global_audio(self) -> None:
-        paths, _ = QFileDialog.getOpenFileNames(self, "Add global audio", str(Path.home()), AUDIO_FILTER)
+        paths, _ = get_open_file_names(self, "Add global audio", str(Path.home()), AUDIO_FILTER)
         for path in paths:
             self.ctl.make_audio_global(path)
 
@@ -512,11 +514,11 @@ class BrowserPanel(QWidget):
         self.t_dur.setSingleStep(0.1)
         self.t_dur.setValue(0.5)
         self.t_dur.setSuffix(" s")
-        self.t_target = QComboBox()
+        self.t_target = CustomComboBox()
         self.t_target.setStyleSheet(combo_qss)
         for label, data in (("Both", "both"), ("Destination", "destination"), ("Original", "original")):
             self.t_target.addItem(label, data)
-        self.t_dir = QComboBox()
+        self.t_dir = CustomComboBox()
         self.t_dir.setStyleSheet(combo_qss)
         for label, data in (("Left", "left"), ("Right", "right"), ("Top", "top"), ("Bottom", "bottom")):
             self.t_dir.addItem(label, data)

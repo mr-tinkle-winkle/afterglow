@@ -17,8 +17,8 @@ import shutil
 from PySide6.QtCore import Qt, Signal, QSize, QRectF, QTimer, QVariantAnimation, QEvent
 from PySide6.QtGui import QPixmap, QPainter, QColor, QIcon, QFontMetrics, QPen
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QLabel, QMenu, QMessageBox, QLineEdit,
-    QHBoxLayout, QInputDialog, QWidgetAction, QDialog, QApplication,
+    QWidget, QVBoxLayout, QLabel, QMenu, QLineEdit,
+    QHBoxLayout, QWidgetAction, QDialog, QApplication,
 )
 
 from .. import library, thumbnails, config as config_module
@@ -30,6 +30,7 @@ from .outlined_label import OutlinedLabel
 from .custom_button import CustomButton
 from .custom_checkbox import CustomCheckBox
 from .custom_line_edit import CustomLineEdit
+from .custom_message_dialog import show_message, ask_confirm
 
 THUMB_SIZE = QSize(400, 224)  # 16:9, doubled from the original 200x112
 
@@ -1274,10 +1275,7 @@ class VideoCard(QWidget):
                 continue
             urls.append(QUrl.fromLocalFile(str(self._resolve_copy_path(path, auto_mp4))))
         if missing:
-            QMessageBox.warning(
-                self, "Copy Failed",
-                "File(s) not found:\n" + "\n".join(missing),
-            )
+            show_message(self, "Copy Failed", "File(s) not found:\n" + "\n".join(missing))
         if urls:
             mime = QMimeData()
             mime.setUrls(urls)
@@ -1316,11 +1314,8 @@ class VideoCard(QWidget):
                 f"Delete {len(target_ids)} videos? This removes the files from disk "
                 "and can't be undone."
             )
-        reply = QMessageBox.question(
-            self, "Delete Video" if len(target_ids) == 1 else "Delete Videos",
-            message, QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
-        )
-        if reply != QMessageBox.Yes:
+        if not ask_confirm(self, "Delete Video" if len(target_ids) == 1 else "Delete Videos",
+                           message, "Delete", danger=True):
             return
         for vid in target_ids:
             library.delete_video(vid)
@@ -1341,7 +1336,7 @@ class VideoCard(QWidget):
 
         path = Path(self._video.path)
         if not path.exists():
-            QMessageBox.warning(self, "Copy Failed", f"File not found: {path}")
+            show_message(self, "Copy Failed", f"File not found: {path}")
             return
         mime = QMimeData()
         mime.setUrls([QUrl.fromLocalFile(str(path))])

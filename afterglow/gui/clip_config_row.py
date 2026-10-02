@@ -12,7 +12,7 @@ from __future__ import annotations
 from PySide6.QtCore import Qt, Signal, QPropertyAnimation, QEasingCurve
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QLabel, QLineEdit,
-    QToolButton, QFileDialog, QFrame,
+    QToolButton, QFrame,
 )
 
 from ..hotkeys import ComboError, parse_combo
@@ -24,16 +24,28 @@ from .custom_button import CustomButton
 from .custom_checkbox import CustomCheckBox
 from .overlay_options import OverlayOptionsDialog
 from .. import overlay_support
+from .themed_dialogs import get_open_file_name
+from .themed_frame import ThemedFrame
 
 
-class ClipConfigRow(QFrame):
+class ClipConfigRow(ThemedFrame):
     changed = Signal()          # any field edited (name/length/sound/hotkey)
     delete_requested = Signal()
 
     def __init__(self, clip_config_id: int | None, name: str, length_seconds: int,
-                 sound_path: str | None, hotkey: str | None, parent=None, overlay: dict | None = None):
+                 sound_path: str | None, hotkey: str | None, parent=None, overlay: dict | None = None,
+                 indicator: dict | None = None, indicator_style_provider=None):
         super().__init__(parent)
         ov = overlay or {}
+        ind = indicator or {}
+        # clip indicator ("the clapper"): colours per part, a custom icon, a clap sound
+        self._indicator = {
+            "indicator_colors": dict(ind.get("indicator_colors") or {}),
+            "indicator_icon_path": ind.get("indicator_icon_path") or "",
+            "indicator_clap_sound": ind.get("indicator_clap_sound") or "",
+        }
+        # a callable returning the global indicator style as it is in Settings right now (for the preview)
+        self.indicator_style_provider = indicator_style_provider
         self._overlay = {
             "overlay_pieces": list(ov.get("overlay_pieces", ["keyboard", "mouse"])),
             "overlay_visible_default": bool(ov.get("overlay_visible_default", True)),
@@ -41,7 +53,6 @@ class ClipConfigRow(QFrame):
             "overlay_placements": dict(ov.get("overlay_placements", {})),
         }
         self.clip_config_id = clip_config_id  # None for a not-yet-saved new row
-        self.setFrameShape(QFrame.StyledPanel)
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(6, 6, 6, 6)
@@ -120,6 +131,17 @@ class ClipConfigRow(QFrame):
         form.addRow("Input overlay:", overlay_row)
         self._refresh_overlay_reason()
 
+        # Clip indicator: this clip type's colours / icon / clap sound ("..." opens the dialog).
+        indicator_row = QHBoxLayout()
+        self.indicator_btn = CustomButton("\u2026")
+        self.indicator_btn.setToolTip("Clip indicator options: colours, icon and clap sound for this clip option")
+        self.indicator_btn.clicked.connect(self._edit_indicator)
+        self.indicator_label = QLabel()
+        indicator_row.addWidget(self.indicator_btn)
+        indicator_row.addWidget(self.indicator_label, stretch=1)
+        form.addRow("Indicator:", indicator_row)
+        self._refresh_indicator_label()
+
         outer.addWidget(self.body)
         self._update_summary()
 
@@ -174,7 +196,7 @@ class ClipConfigRow(QFrame):
         )
 
     def _browse_sound(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(
+        path, _ = get_open_file_name(
             self, "Choose Sound File", "", "Audio Files (*.wav *.mp3 *.ogg *.flac);;All Files (*)"
         )
         if path:
@@ -213,6 +235,27 @@ class ClipConfigRow(QFrame):
             self._overlay.update(dialog.result_values())
             self._on_any_change()
 
+    def _refresh_indicator_label(self) -> None:
+        i = self._indicator
+        parts = []
+        if i["indicator_colors"]:
+            parts.append("custom colours")
+        if i["indicator_icon_path"]:
+            parts.append("icon")
+        if i["indicator_clap_sound"]:
+            parts.append("clap sound")
+        self.indicator_label.setText(", ".join(parts) if parts else "default look")
+
+    def _edit_indicator(self) -> None:
+        from .clip_indicator_settings import ClipIndicatorDialog
+        i = self._indicator
+        dialog = ClipIndicatorDialog(i["indicator_colors"], i["indicator_icon_path"], i["indicator_clap_sound"],
+                                     style_provider=self.indicator_style_provider, parent=self)
+        if dialog.exec():
+            self._indicator.update(dialog.result_values())
+            self._refresh_indicator_label()
+            self._on_any_change()
+
     def _clear_hotkey(self) -> None:
         if self.hotkey_edit.text():
             self.hotkey_edit.setText("")
@@ -228,4 +271,5 @@ class ClipConfigRow(QFrame):
             "hotkey": self.hotkey_edit.text().strip() or None,
             "overlay_enabled": self.overlay_check.isChecked(),
             **self._overlay,
+            **self._indicator,
         }

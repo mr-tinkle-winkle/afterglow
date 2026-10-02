@@ -19,8 +19,8 @@ import tomllib
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QLineEdit,
-    QFileDialog, QLabel, QScrollArea,
-    QComboBox, QColorDialog, QStackedWidget, QButtonGroup, QFrame,
+    QLabel, QScrollArea,
+    QComboBox, QStackedWidget, QButtonGroup, QFrame,
 )
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
@@ -29,10 +29,12 @@ from .. import config as config_module
 from .. import clips
 from ..clips import ClipError
 from .clip_config_row import ClipConfigRow
+from .clip_indicator_settings import ClipIndicatorGroup
 from .filters_settings_page import FiltersSettingsPage
 from .stats_settings_page import StatsPage
 from .overlay_options import InputOverlaySettingsPage
 from .custom_button import CustomButton
+from .custom_combo_box import CustomComboBox
 from .custom_checkbox import CustomCheckBox
 from .custom_line_edit import CustomLineEdit
 from .custom_spinbox import CustomSpinBox, CustomDoubleSpinBox
@@ -42,6 +44,7 @@ from .custom_message_dialog import show_message
 from .theme import Theme
 from .page_outline import paint_page_outline, BORDER_WIDTH
 from .smooth_scroll_area import SmoothScrollArea
+from .themed_dialogs import get_color, get_existing_directory, get_open_file_name, get_save_file_name
 
 
 class SettingsPage(QWidget):
@@ -116,6 +119,8 @@ class SettingsPage(QWidget):
         clipping_layout = QVBoxLayout(clipping_page)
         clipping_layout.addWidget(self._build_obs_group())
         clipping_layout.addWidget(self._build_clipping_group())
+        self.indicator_group = ClipIndicatorGroup(self._settings)
+        clipping_layout.addWidget(self.indicator_group)
         clipping_layout.addWidget(self._build_clip_options_group(), stretch=1)
         _add_settings_tab("Clipping", clipping_page)
 
@@ -448,7 +453,7 @@ class SettingsPage(QWidget):
         self.sidebar_border_hue_shift_spin.setValue(a.sidebar_border_hue_shift)
         form.addRow("Sidebar Border Hue Shift:", self.sidebar_border_hue_shift_spin)
 
-        self.settings_border_combo = QComboBox()
+        self.settings_border_combo = CustomComboBox()
         self.settings_border_combo.setStyleSheet(combo_box_stylesheet(a))
         self.settings_border_combo.addItem("Disabled", "disabled")
         self.settings_border_combo.addItem("Only when on the settings page", "only_settings")
@@ -556,7 +561,7 @@ class SettingsPage(QWidget):
         # deliberately -- two independent checkboxes could both end up
         # checked at once, which has no sensible meaning. Moved here from
         # Clipping since it's a startup-appearance choice.
-        self.startup_window_mode_combo = QComboBox()
+        self.startup_window_mode_combo = CustomComboBox()
         self.startup_window_mode_combo.setStyleSheet(combo_box_stylesheet(a))
         self.startup_window_mode_combo.addItem("Normal", "normal")
         self.startup_window_mode_combo.addItem("Maximized", "maximized")
@@ -580,7 +585,7 @@ class SettingsPage(QWidget):
         a = self._settings.appearance
         group = CustomGroupBox("Editor")
         form = group.make_layout(QFormLayout)
-        self.editor_handle_side_combo = QComboBox()
+        self.editor_handle_side_combo = CustomComboBox()
         self.editor_handle_side_combo.setStyleSheet(combo_box_stylesheet(a))
         self.editor_handle_side_combo.addItem("Left", "left")
         self.editor_handle_side_combo.addItem("Right", "right")
@@ -595,19 +600,19 @@ class SettingsPage(QWidget):
         return group
 
     def _browse_clips_dir(self) -> None:
-        path = QFileDialog.getExistingDirectory(self, "Choose Clips Folder", self.clips_dir_edit.text())
+        path = get_existing_directory(self, "Choose Clips Folder", self.clips_dir_edit.text())
         if path:
             self.clips_dir_edit.setText(path)
 
     def _browse_default_sound(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(
+        path, _ = get_open_file_name(
             self, "Choose Default Sound", "", "Audio Files (*.wav *.mp3 *.ogg *.flac);;All Files (*)"
         )
         if path:
             self.default_sound_edit.setText(path)
 
     def _browse_border_image(self, edit: QLineEdit) -> None:
-        path, _ = QFileDialog.getOpenFileName(
+        path, _ = get_open_file_name(
             self, "Choose Border Image", "", "Image Files (*.png *.jpg *.jpeg *.bmp *.webp);;All Files (*)"
         )
         if path:
@@ -738,7 +743,7 @@ class SettingsPage(QWidget):
         return group
 
     def _export_settings(self) -> None:
-        path, _ = QFileDialog.getSaveFileName(
+        path, _ = get_save_file_name(
             self, "Export Settings", "afterglow-settings.toml", "TOML Files (*.toml)"
         )
         if not path:
@@ -749,7 +754,7 @@ class SettingsPage(QWidget):
             show_message(self, "Export Failed", f"Could not write settings to {path}:\n{exc}")
 
     def _import_settings(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(self, "Import Settings", "", "TOML Files (*.toml)")
+        path, _ = get_open_file_name(self, "Import Settings", "", "TOML Files (*.toml)")
         if not path:
             return
         try:
@@ -798,7 +803,7 @@ class SettingsPage(QWidget):
         current = QColor(edit.text().strip())
         if not current.isValid():
             current = QColor("#ffffff")
-        color = QColorDialog.getColor(current, self, "Choose Color")
+        color = get_color(current, self, "Choose Color")
         if color.isValid():
             edit.setText(color.name())
 
@@ -838,12 +843,15 @@ class SettingsPage(QWidget):
             self._add_row(cfg.id, cfg.name, cfg.length_seconds, cfg.sound_path, cfg.hotkey, overlay={
                 "overlay_enabled": cfg.overlay_enabled, "overlay_pieces": cfg.overlay_pieces,
                 "overlay_visible_default": cfg.overlay_visible_default, "overlay_offset_ms": cfg.overlay_offset_ms,
-                "overlay_placements": cfg.overlay_placements})
+                "overlay_placements": cfg.overlay_placements},
+                indicator={"indicator_colors": cfg.indicator_colors, "indicator_icon_path": cfg.indicator_icon_path,
+                           "indicator_clap_sound": cfg.indicator_clap_sound})
 
     def _add_row(self, clip_config_id: int | None = None, name: str = "New Clip",
                  length_seconds: int = 30, sound_path: str | None = None,
-                 hotkey: str | None = None, overlay: dict | None = None) -> None:
-        row = ClipConfigRow(clip_config_id, name, length_seconds, sound_path, hotkey, overlay=overlay)
+                 hotkey: str | None = None, overlay: dict | None = None, indicator: dict | None = None) -> None:
+        row = ClipConfigRow(clip_config_id, name, length_seconds, sound_path, hotkey, overlay=overlay,
+                            indicator=indicator, indicator_style_provider=self.indicator_group.style_dict)
         row.delete_requested.connect(lambda: self._remove_row(row))
         # insert before the trailing stretch
         self.rows_layout.insertWidget(self.rows_layout.count() - 1, row)
@@ -949,6 +957,7 @@ class SettingsPage(QWidget):
         a.card_text_outline_width = self.card_text_outline_width_spin.value()
 
         self.input_overlay_page.save_into(self._settings)
+        self.indicator_group.save_into(self._settings)
         # flipped from the previewer since this page loaded its copy: keep the latest
         self._settings.preview_input_overlay = config_module.load().preview_input_overlay
         config_module.save(self._settings)

@@ -58,6 +58,30 @@ class FilterDisplaySettings:
 
 
 @dataclass
+class ClipIndicatorSettings:
+    """The clip indicator ("the clapper"): a movie clapper that slides onto the screen when a clip
+    hotkey fires, claps when OBS confirms the save, then shows processing until the clip is in the
+    library (and its input overlay is rendered).  Edited under Settings > Clip Capture > Clip
+    Indicator; per-clip-type colours / icon / clap sound live on the clip type (clip_configs).
+    Values are validated by the helper (indicator/model.py Style.from_dict) -- an unknown anchor or
+    animation name falls back to the default rather than breaking the indicator."""
+    enabled: bool = True
+    style: str = "clapper"                    # "clapper" | "hands"
+    # one of top_left top top_right left right bottom_left bottom bottom_right
+    anchor: str = "bottom_right"
+    padding_x: int = 32                       # px from the screen edge (unused for top / bottom: centred)
+    padding_y: int = 32                       # px from the screen edge (unused for left / right: centred)
+    size: int = 96                            # px, the clapper's width
+    enter_animation: str = "slide"            # slide drop pop swing spin toss flip peek fade
+    exit_animation: str = "slide"             # slide zip fall shrink spin toss flip fade bow
+    processing: str = "circle"                # "circle": exit then a loading circle; "stay": clapper stays
+    circle_color: str = "#9a9a9a"             # while the clip is processed
+    overlay_circle_color: str = "#9b5cff"     # while the input overlay is rendered
+    circle_opacity: float = 0.55
+    screen: str = "focused"                   # "focused": the screen holding the focused window | "primary"
+
+
+@dataclass
 class AutoFilterRule:
     # Multiple filters can be set as "the filter(s) of choice" for one
     # rule -- all of them get applied together whenever this rule
@@ -315,6 +339,7 @@ class AppSettings:
     # clips and restarts).
     preview_input_overlay: bool = True
     obs: OBSSettings = field(default_factory=OBSSettings)
+    clip_indicator: ClipIndicatorSettings = field(default_factory=ClipIndicatorSettings)
     youtube: YouTubeSettings = field(default_factory=YouTubeSettings)
     filter_display: FilterDisplaySettings = field(default_factory=FilterDisplaySettings)
     auto_filters: list[AutoFilterRule] = field(default_factory=list)
@@ -344,6 +369,10 @@ def _load_uncached() -> AppSettings:
     obs = OBSSettings(**raw.get("obs", {}))
     youtube = YouTubeSettings(**raw.get("youtube", {}))
     filter_display = FilterDisplaySettings(**raw.get("filter_display", {}))
+    # Only known keys: an older / newer build's config.toml must never stop the app (or the
+    # daemon) from starting because of a field this build doesn't have.
+    _ci_known = set(ClipIndicatorSettings.__dataclass_fields__)
+    clip_indicator = ClipIndicatorSettings(**{k: v for k, v in raw.get("clip_indicator", {}).items() if k in _ci_known})
 
     auto_filters = []
     for rule in raw.get("auto_filters", []):
@@ -485,12 +514,12 @@ def _load_uncached() -> AppSettings:
     top_level = {
         k: v for k, v in raw.items()
         if k not in (
-            "obs", "youtube", "filter_display", "auto_filters", "card_info", "appearance",
+            "obs", "youtube", "filter_display", "auto_filters", "card_info", "appearance", "clip_indicator",
             "default_to_fullscreen",  # old field, folded into appearance.startup_window_mode above
         )
     }
     settings = AppSettings(
-        obs=obs, youtube=youtube, filter_display=filter_display,
+        obs=obs, clip_indicator=clip_indicator, youtube=youtube, filter_display=filter_display,
         auto_filters=auto_filters, card_info=card_info, appearance=appearance, **top_level,
     )
     _ensure_dirs(settings)

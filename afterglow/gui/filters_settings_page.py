@@ -18,8 +18,8 @@ from __future__ import annotations
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel,
-    QFileDialog, QComboBox, QScrollArea, QFrame, QLineEdit,
-    QMessageBox, QFormLayout, QInputDialog, QToolButton,
+    QComboBox, QScrollArea, QFrame, QLineEdit,
+    QFormLayout, QToolButton,
     QMenu, QWidgetAction, QDialog, QButtonGroup, QStackedWidget,
 )
 from PySide6.QtCore import Qt
@@ -34,7 +34,11 @@ from .custom_group_box import CustomGroupBox
 from .custom_combo_style import combo_box_stylesheet
 from .smooth_scroll_area import SmoothScrollArea
 from .custom_button import CustomButton
+from .custom_combo_box import CustomComboBox, paint_dropdown_field
 from .custom_checkbox import CustomCheckBox
+from .themed_dialogs import get_color, get_open_file_name, get_text
+from .themed_frame import ThemedFrame
+from .custom_message_dialog import show_message
 
 _ICON_LOCATIONS = [
     ("Above", "above"),
@@ -62,7 +66,7 @@ class _TagIconRow(QFrame):
         self.name_label = QLabel(tag_name)
         row.addWidget(self.name_label, stretch=1)
 
-        self.category_combo = QComboBox()
+        self.category_combo = CustomComboBox()
         self.category_combo.setStyleSheet(combo_box_stylesheet(config_module.load_readonly().appearance))
         self._populate_category_combo(categories, category_id)
         self.category_combo.currentIndexChanged.connect(self._on_category_changed)
@@ -115,7 +119,7 @@ class _TagIconRow(QFrame):
     def _on_category_changed(self, _index: int) -> None:
         data = self.category_combo.currentData()
         if data == _NEW_CATEGORY_DATA:
-            name, ok = QInputDialog.getText(self, "New Category", "Category name:")
+            name, ok = get_text(self, "New Category", "Category name:")
             name = name.strip()
             if not ok or not name:
                 # Revert to "(no category)" rather than leaving the
@@ -145,7 +149,7 @@ class _TagIconRow(QFrame):
         self.icon_thumb.clear()
 
     def _browse_icon(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(
+        path, _ = get_open_file_name(
             self, "Choose Icon", "", "Images (*.png *.jpg *.jpeg *.svg *.ico);;All Files (*)"
         )
         if path:
@@ -159,23 +163,22 @@ class _TagIconRow(QFrame):
         self._update_icon_thumb()
 
     def _pick_outline_color(self) -> None:
-        from PySide6.QtWidgets import QColorDialog
         current = QColor(self.outline_color_edit.text().strip())
         if not current.isValid():
             current = QColor("#3669a0")
-        color = QColorDialog.getColor(current, self, "Choose Outline Color")
+        color = get_color(current, self, "Choose Outline Color")
         if color.isValid():
             self.outline_color_edit.setText(color.name())
 
     def _rename(self) -> None:
-        new_name, ok = QInputDialog.getText(self, "Rename Filter", "Filter name:", text=self.tag_name)
+        new_name, ok = get_text(self, "Rename Filter", "Filter name:", text=self.tag_name)
         new_name = new_name.strip()
         if not ok or not new_name or new_name == self.tag_name:
             return
         try:
             library.rename_tag(self.tag_id, new_name)
         except library.LibraryError as e:
-            QMessageBox.warning(self, "Rename Failed", str(e))
+            show_message(self, "Rename Failed", str(e))
             return
         self.tag_name = new_name
         self.name_label.setText(new_name)
@@ -190,11 +193,15 @@ class _MultiFilterSelectButton(QToolButton):
     def __init__(self, selected: list[str], parent=None):
         super().__init__(parent)
         self.setPopupMode(QToolButton.InstantPopup)
+        self.setCursor(Qt.PointingHandCursor)
+        self._hover = False
         self._selected: list[str] = list(selected)
         self.refresh_options()
 
     def refresh_options(self) -> None:
+        from .video_card import _menu_stylesheet
         menu = QMenu(self)
+        menu.setStyleSheet(_menu_stylesheet(config_module.load_readonly().appearance))
         all_tags = library.all_known_tags()
         if not all_tags:
             action = menu.addAction("(no filters yet)")
@@ -219,16 +226,39 @@ class _MultiFilterSelectButton(QToolButton):
     def _update_text(self) -> None:
         self.setText(", ".join(self._selected) if self._selected else "Choose filter(s)...")
 
+    # Drawn as the same dropdown field as CustomComboBox rather than a
+    # native tool button with a menu arrow.
+    def enterEvent(self, event) -> None:
+        self._hover = True
+        self.update()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event) -> None:
+        self._hover = False
+        self.update()
+        super().leaveEvent(event)
+
+    def paintEvent(self, event) -> None:
+        from PySide6.QtGui import QPainter
+        p = QPainter(self)
+        paint_dropdown_field(p, self, self.text(), open_=self.isDown(),
+                             hover=getattr(self, "_hover", False), focused=self.hasFocus())
+        p.end()
+
+    def sizeHint(self):
+        s = super().sizeHint()
+        s.setHeight(max(s.height(), 30))
+        return s
+
     @property
     def selected_tags(self) -> list[str]:
         return list(self._selected)
 
 
-class _AutoFilterRow(QFrame):
+class _AutoFilterRow(ThemedFrame):
     def __init__(self, tag_names: list[str] | None = None, app_match: str = "",
                  mode: str = "open", parent=None):
         super().__init__(parent)
-        self.setFrameShape(QFrame.StyledPanel)
         row = QHBoxLayout(self)
         row.setContentsMargins(4, 4, 4, 4)
 
@@ -240,7 +270,7 @@ class _AutoFilterRow(QFrame):
         # string can be picked with a click instead of typed blind) and
         # a normal typable box, since the app you want to match might
         # not be running yet when this row is being set up.
-        self.app_combo = QComboBox()
+        self.app_combo = CustomComboBox()
         self.app_combo.setStyleSheet(combo_box_stylesheet(config_module.load_readonly().appearance))
         self.app_combo.setEditable(True)
         self.app_combo.setPlaceholderText("App/process name match")
@@ -253,7 +283,7 @@ class _AutoFilterRow(QFrame):
         refresh_apps_btn.clicked.connect(lambda: self._refresh_running_apps())
         row.addWidget(refresh_apps_btn)
 
-        self.mode_combo = QComboBox()
+        self.mode_combo = CustomComboBox()
         self.mode_combo.setStyleSheet(combo_box_stylesheet(config_module.load_readonly().appearance))
         self.mode_combo.addItem("While app is open", "open")
         self.mode_combo.addItem("Only while app is focused", "focused")
@@ -338,7 +368,7 @@ class FiltersSettingsPage(QWidget):
         self.show_icons_check.setChecked(self._settings.filter_display.show_filter_icons)
         form.addRow("Show Filter Icons:", self.show_icons_check)
 
-        self.icon_location_combo = QComboBox()
+        self.icon_location_combo = CustomComboBox()
         self.icon_location_combo.setStyleSheet(combo_box_stylesheet(config_module.load_readonly().appearance))
         for label, value in _ICON_LOCATIONS:
             self.icon_location_combo.addItem(label, value)
@@ -472,7 +502,7 @@ class FiltersSettingsPage(QWidget):
             library.set_tag_icon(row.tag_id, row.icon_path or None)
             outline_text = row.outline_color_edit.text().strip()
             if outline_text and not QColor(outline_text).isValid():
-                QMessageBox.warning(
+                show_message(
                     self, "Invalid Color",
                     f"'{outline_text}' isn't a valid outline color for '{row.tag_name}' -- "
                     f"use a hex code like #3669a0. Left unchanged.",

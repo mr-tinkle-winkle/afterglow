@@ -30,6 +30,7 @@ from . import db
 from . import clips
 from . import config
 from . import library
+from . import indicator_client
 from .clips import ClipConfig
 from .hotkeys import ComboStateMachine, EvdevHotkeyListener
 
@@ -71,7 +72,9 @@ class ClipDaemon:
     def __init__(self):
         self.state_machine = ComboStateMachine()
         self.listener: EvdevHotkeyListener | None = None
-        self._trigger_queue: "queue.Queue[int]" = queue.Queue()
+        # (clip config id, clip-indicator capture id) -- the capture id is allocated at the key
+        # press, so the clapper slides on immediately even while an earlier capture is busy.
+        self._trigger_queue: "queue.Queue[tuple[int, str | None]]" = queue.Queue()
         self._stop_flag = threading.Event()
         self._last_fingerprint: tuple | None = None
 
@@ -93,7 +96,7 @@ class ClipDaemon:
                 # late-binding closure bug in a loop.
                 self.state_machine.register(
                     cfg.hotkey,
-                    lambda clip_id=cfg.id: self._trigger_queue.put(clip_id),
+                    lambda clip_id=cfg.id: self._on_hotkey(clip_id),
                 )
                 registered += 1
             except Exception as e:
@@ -102,6 +105,12 @@ class ClipDaemon:
         logger.info(f"Reloaded hotkey registrations: {registered} active "
                     f"({len(configs) - registered} clip config(s) have no hotkey set)")
         self._last_fingerprint = fingerprint
+
+    def _on_hotkey(self, clip_config_id: int) -> None:
+        """Runs on the evdev listener thread: must be instant. The indicator's `start` is only queued
+        for its own worker thread (indicator_client never blocks or raises)."""
+        cid = indicator_client.begin(clip_config_id)
+        self._trigger_queue.put((clip_config_id, cid))
 
     def _reload_loop(self) -> None:
         while not self._stop_flag.is_set():
@@ -142,24 +151,28 @@ class ClipDaemon:
     def _trigger_worker_loop(self) -> None:
         while not self._stop_flag.is_set():
             try:
-                clip_config_id = self._trigger_queue.get(timeout=0.5)
+                clip_config_id, indicator_id = self._trigger_queue.get(timeout=0.5)
             except queue.Empty:
                 continue
 
-            def _run_capture(clip_config_id=clip_config_id):
+            def _run_capture(clip_config_id=clip_config_id, indicator_id=indicator_id):
                 try:
                     cfg = clips.get_clip_config(clip_config_id)
                     logger.info(f"Hotkey fired: '{cfg.name}' -- capturing clip...")
-                    video = clips.trigger_clip(clip_config_id)
+                    video = clips.trigger_clip(clip_config_id, indicator_id=indicator_id)
                     logger.info(f"Captured: {video.title} -> {video.path}")
                 except Exception as e:
                     logger.error(f"Failed to capture clip (config id {clip_config_id}): {e}")
+                    # trigger_clip already reports its own failures; this catches the ones before it
+                    # got going (e.g. the clip type was deleted). A repeat is ignored by the helper.
+                    indicator_client.emit(indicator_id, "fail")
 
             capture_thread = threading.Thread(target=_run_capture, daemon=True)
             capture_thread.start()
             capture_thread.join(timeout=CAPTURE_TIMEOUT_SECONDS)
 
             if capture_thread.is_alive():
+                indicator_client.emit(indicator_id, "fail")   # the clapper gives up on it too
                 # It's still running -- let it keep going in the background
                 # (it may yet finish and register its clip normally; killing
                 # it mid-ffmpeg/mid-OBS-call is riskier than just not
@@ -203,6 +216,10 @@ class ClipDaemon:
             raise
 
         logger.info("Hotkey listener started.")
+
+        # The clip indicator's helper (a small Qt process) is started now, not on the first
+        # hotkey, so the first clapper slides on instantly.
+        indicator_client.ensure_started(daemon=True)
 
         threading.Thread(target=self._reload_loop, daemon=True).start()
         threading.Thread(target=self._trigger_worker_loop, daemon=True).start()

@@ -84,9 +84,10 @@ class _Sidebar(QWidget):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        from . import wheel_guard, fonts
-        wheel_guard.install()
-        fonts.load_bundled_fonts()    # the editor's bundled text fonts   # the wheel never changes combo boxes anywhere in the app
+        from . import wheel_guard, fonts, app_chrome
+        wheel_guard.install()         # the wheel never changes combo boxes anywhere in the app
+        app_chrome.install()          # app-styled tooltips, text-field menus, scroll bars
+        fonts.load_bundled_fonts()    # the editor's bundled text fonts
         self.setWindowTitle("afterglow")
         # 16:9-ish and reasonably large by default, matching the
         # 1920x1080 reference-scale baseline in scaling.py -- the

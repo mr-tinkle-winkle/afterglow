@@ -7,10 +7,11 @@ loop / UI never blocks waiting on device reads.
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, QThread, Signal
-from PySide6.QtWidgets import QDialog, QLabel, QVBoxLayout, QMessageBox
 from .custom_button import CustomButton
 
 from ..hotkeys import EvdevHotkeyListener, RecorderAdapter
+from .custom_message_dialog import show_message
+from .themed_dialogs import ThemedDialog
 
 
 class _RecordThread(QThread):
@@ -36,25 +37,24 @@ class _RecordThread(QThread):
         self.requestInterruption()
 
 
-class HotkeyRecordDialog(QDialog):
+class HotkeyRecordDialog(ThemedDialog):
     def __init__(self, parent=None, current_combo: str | None = None):
-        super().__init__(parent)
-        self.setWindowTitle("Record Hotkey")
+        super().__init__("Record Hotkey", parent)
         self.setModal(True)
         self.result_combo: str | None = None
 
-        layout = QVBoxLayout(self)
         subtitle = f"Current: {current_combo}" if current_combo else "No hotkey set yet"
-        self.status_label = QLabel(
+        self.status_label = self.label(
             f"Press the key combo you want to use, then release it.\n{subtitle}"
         )
         self.status_label.setAlignment(Qt.AlignCenter)
-        self.status_label.setWordWrap(True)
-        layout.addWidget(self.status_label)
+        self.lay.addWidget(self.status_label)
 
         cancel_btn = CustomButton("Cancel")
+        cancel_btn.setMinimumHeight(30)
         cancel_btn.clicked.connect(self.reject)
-        layout.addWidget(cancel_btn)
+        self.lay.addWidget(cancel_btn)
+        self.setMinimumWidth(340)
 
         self._thread = _RecordThread()
         self._thread.recorded.connect(self._on_recorded)
@@ -70,7 +70,7 @@ class HotkeyRecordDialog(QDialog):
     def _on_failed(self, error: str) -> None:
         self._thread.stop()
         self._thread.wait(2000)
-        QMessageBox.critical(
+        show_message(
             self, "Hotkey Recording Failed",
             f"{error}\n\nThis usually means the app doesn't have permission "
             f"to read /dev/input devices. On NixOS, the user running this "

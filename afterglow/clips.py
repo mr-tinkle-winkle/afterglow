@@ -38,6 +38,7 @@ from . import config as config_module
 from . import autofilter
 from . import keyframes
 from . import overlay_support
+from . import indicator_client
 from .editor import TrimRequest, commit_trim, probe_duration, EditorError
 from .obs_client import OBSClient, OBSError
 from .library import add_video, add_tag_to_video, get_video, Video
@@ -105,6 +106,11 @@ class ClipConfig:
     overlay_offset_ms: float = 0.0
     # Per-piece placement overrides for this clip type ({} = use global).
     overlay_placements: dict = field(default_factory=dict)
+    # Clip indicator (the clapper) -- colours per part ({} = defaults), an optional custom
+    # icon image ("" = none), and a clap sound ("" = this clip type's / the global clip sound).
+    indicator_colors: dict = field(default_factory=dict)
+    indicator_icon_path: str = ""
+    indicator_clap_sound: str = ""
 
 
 def _json_or(text, default):
@@ -125,6 +131,12 @@ def _row_to_clip_config(row) -> ClipConfig:
             overlay_visible_default=bool(row["overlay_visible_default"]),
             overlay_offset_ms=float(row["overlay_offset_ms"] or 0.0),
             overlay_placements=_json_or(row["overlay_placements"], {}),
+        )
+    if "indicator_colors" in keys:
+        extra.update(
+            indicator_colors=_json_or(row["indicator_colors"], {}),
+            indicator_icon_path=row["indicator_icon_path"] or "",
+            indicator_clap_sound=row["indicator_clap_sound"] or "",
         )
     return ClipConfig(
         id=row["id"], name=row["name"], length_seconds=row["length_seconds"],
@@ -165,12 +177,13 @@ def create_clip_config(name: str, length_seconds: int, sound_path: str | None = 
 def update_clip_config(clip_config_id: int, **fields) -> ClipConfig:
     allowed = {"name", "length_seconds", "sound_path", "hotkey", "sort_order",
                "overlay_enabled", "overlay_pieces", "overlay_visible_default",
-               "overlay_offset_ms", "overlay_placements"}
+               "overlay_offset_ms", "overlay_placements",
+               "indicator_colors", "indicator_icon_path", "indicator_clap_sound"}
     bad = set(fields) - allowed
     if bad:
         raise ClipError(f"Unknown fields: {bad}")
     # JSON-valued / boolean overlay columns are stored as text / ints.
-    for k in ("overlay_pieces", "overlay_placements"):
+    for k in ("overlay_pieces", "overlay_placements", "indicator_colors"):
         if k in fields and not isinstance(fields[k], str):
             fields[k] = json.dumps(fields[k])
     for k in ("overlay_enabled", "overlay_visible_default"):
@@ -272,8 +285,13 @@ def _resolve_keyframe_sound(keyframe: str, clip_cfg: "ClipConfig", settings) -> 
     it too. The other four keyframes are pure additions with nothing to
     stay backward-compatible with."""
     if keyframe == keyframes.REPLAY_BUFFER_COMPLETED:
+        # The clip indicator's clap IS this moment (OBS confirming the save): with the
+        # indicator on, a clap sound set on the clip type wins, else the same chain as always
+        # -- "the global clip sound". Played once, here; the indicator never plays sound itself.
+        clap = clip_cfg.indicator_clap_sound if getattr(getattr(settings, "clip_indicator", None), "enabled", False) else ""
         return (
-            clip_cfg.sound_path
+            clap
+            or clip_cfg.sound_path
             or settings.advanced_sounds.get(keyframe)
             or settings.default_sound_path
             or None
@@ -324,9 +342,12 @@ class _OverlayCapture:
     plays from finish()) -- a missing overlay never costs a clip. Does
     nothing at all when the clip type has the overlay off."""
 
-    def __init__(self, clip_cfg: "ClipConfig", settings):
+    def __init__(self, clip_cfg: "ClipConfig", settings, indicator_id: "str | None" = None):
         self.enabled = bool(clip_cfg.overlay_enabled)
         self._cfg, self._settings = clip_cfg, settings
+        # The clip indicator's capture id: the purple circle stays up through this render and
+        # is told how it ended (overlay_done / overlay_fail). None = no indicator.
+        self.indicator_id = indicator_id
         self.error: str | None = None
         self.fps: float | None = None          # unused now (the clip's own fps is probed); kept for callers
         self.t_save: float | None = None
@@ -374,6 +395,8 @@ class _OverlayCapture:
     def finish(self, clip_path: Path, clip_cfg: "ClipConfig", settings) -> None:
         if not self.enabled:
             return
+        # the render gets its own timeout: past it the purple circle is told it failed
+        cancel_timeout = indicator_client.arm_overlay_timeout(self.indicator_id)
         try:
             if self._buffer is None:
                 raise overlay_support.OverlayError(self.error or "Puppetry's input was never frozen")
@@ -389,21 +412,32 @@ class _OverlayCapture:
             _play_keyframe_sound(keyframes.INPUT_OVERLAY, clip_cfg, settings)
             if manifest.get("errors"):
                 print(f"Input overlay: some pieces failed: {manifest['errors']}")
+            indicator_client.emit(self.indicator_id, "overlay_done")
         except Exception as e:  # noqa: BLE001
             self.error = str(e)
             print(f"Input overlay could not be captured (the clip was kept): {e}")
             _play_error_sound(keyframes.INPUT_OVERLAY, settings)
             overlay_support.delete_sidecar(clip_path)
+            indicator_client.emit(self.indicator_id, "overlay_fail")   # the circle flashes red -- the clip itself is safe
         finally:
+            cancel_timeout()
             if self._workdir is not None:
                 shutil.rmtree(self._workdir, ignore_errors=True)
 
 
 # ---------------------------------------------------------------- trigger pipeline
 
-def trigger_clip(clip_config_id: int) -> Video:
+_AUTO = object()
+
+
+def trigger_clip(clip_config_id: int, indicator_id: "str | None | object" = _AUTO) -> Video:
     """
     The full hotkey-press pipeline. Returns the newly-created library Video.
+
+    `indicator_id` is the clip indicator's capture id. The daemon allocates it the moment the
+    hotkey is pressed (so the clapper slides on even while an earlier capture is still being
+    processed) and passes it in; left at the default, this function starts the indicator itself
+    (CLI / GUI triggers). None = no indicator for this capture.
 
     Wrapped end-to-end in a single try/except that tracks which named
     keyframe (see keyframes.py) is currently in flight and plays that
@@ -414,6 +448,8 @@ def trigger_clip(clip_config_id: int) -> Video:
     clip_cfg = get_clip_config(clip_config_id)
     settings = config_module.load()
     stage = keyframes.HOTKEY_RECEIVED
+    cid = indicator_client.begin(clip_config_id, settings) if indicator_id is _AUTO else indicator_id
+    indicator_closed = False       # `done` / `overlay` sent: the capture is over as far as the indicator goes
     try:
         # First thing in the pipeline, before anything else has even
         # been attempted -- the practical stand-in for "the hotkey was
@@ -446,11 +482,12 @@ def trigger_clip(clip_config_id: int) -> Video:
         # SaveReplayBuffer is SENT -- that freezes the input and starts
         # rendering while OBS writes the file. Any failure here is
         # remembered, never raised: a missing overlay must never cost a clip.
-        overlay = _OverlayCapture(clip_cfg, settings)
+        overlay = _OverlayCapture(clip_cfg, settings, indicator_id=cid)
         with OBSClient(settings.obs) as obs_client:
             overlay.fps = obs_client.get_fps() if clip_cfg.overlay_enabled else None
             raw_path = obs_client.save_replay_buffer(on_sent=overlay.on_sent)  # already waits for exists + size-stable
         _play_keyframe_sound(stage, clip_cfg, settings)
+        indicator_client.emit(cid, "clap")      # OBS confirmed the save: the clapper claps (with the sound above)
 
         # Make sure OBS has really finished writing (normally instant: the
         # save event comes after the file is closed).
@@ -546,6 +583,11 @@ def trigger_clip(clip_config_id: int) -> Video:
                 add_tag_to_video(video.id, tag_name)
             video = get_video(video.id)
         _play_keyframe_sound(stage, clip_cfg, settings)
+        # The clip is in the library. With an input overlay still to render the circle turns
+        # purple and keeps spinning (overlay_done / overlay_fail come from the render's thread);
+        # without one the circle is done.
+        indicator_client.emit(cid, "overlay" if overlay.enabled else "done")
+        indicator_closed = True
 
         # Input overlay last, in the background: the clip is already safe in
         # the library, and rendering the pieces takes a while (about as long
@@ -556,6 +598,8 @@ def trigger_clip(clip_config_id: int) -> Video:
         return video
     except Exception:
         _play_error_sound(stage, settings)
+        if not indicator_closed:
+            indicator_client.emit(cid, "fail")  # the clapper is launched into the air and falls offscreen
         raise
 
 

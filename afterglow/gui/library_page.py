@@ -21,8 +21,8 @@ from PySide6.QtCore import Qt, Signal, QSize, QFileSystemWatcher, QTimer, QRectF
 from PySide6.QtGui import QPainter, QPixmap, QColor
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLineEdit,
-    QScrollArea, QLabel, QStackedWidget, QMessageBox,
-    QStyle, QInputDialog, QDialog,
+    QScrollArea, QLabel, QStackedWidget,
+    QStyle, QDialog,
     QButtonGroup, QAbstractButton, QApplication,
 )
 
@@ -35,6 +35,7 @@ from .resources import resource_qpixmap
 from .theme import Theme
 from .rounded_rect import rounded_rect_path
 from .custom_button import CustomButton
+from .custom_message_dialog import show_message
 from .smooth_scroll_area import SmoothScrollArea
 from .sort_popover import SortPopover
 from .search_bubble import SearchBubble
@@ -981,7 +982,7 @@ class _VideoGridTab(QWidget):
             self._relayout(columns)
 
     def _handle_upload_request(self, video_id: int) -> None:
-        QMessageBox.information(
+        show_message(
             self, "Not Implemented Yet",
             "YouTube upload is coming in the next build phase (OAuth setup "
             "isn't wired up yet).",

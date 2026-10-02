@@ -9,15 +9,20 @@ cached locally, upload flow itself not yet implemented). Settings and
 Library pages are solid and confirmed working across multiple machines.
 The keyboard/mouse/controller **input overlay** (captured from Puppetry
 with each clip) is BUILT -- see "Input overlay (Puppetry integration) --
-BUILT" directly below.
+BUILT" directly below, and the **clip indicator ("the clapper")** is BUILT too (code + tests; still
+unverified on real hardware) -- see "Clip indicator ("the clapper") -- BUILT".
 
 **Tests:** `tests/` (Qt widget tests with real events). Headless:
 `Xvfb :99 -screen 0 1920x1080x24 +extension GLX & DISPLAY=:99 openbox &`
 then `DISPLAY=:99 QT_QPA_PLATFORM=xcb python3 tests/<suite>.py` (the
 previewer suites need GL for mpv); the `tests/test_nle_*.py` engine
 suites run with `QT_QPA_PLATFORM=offscreen`. Every suite prints PASS/FAIL
-lines and exits non-zero on failure. All suites pass at handoff (16 older ones plus the overlay suites listed
-under the Input overlay status; `test_overlay_mpv` needs libmpv + Xvfb).
+lines and exits non-zero on failure. All 34 suites pass at handoff (incl. the overlay suites listed
+under the Input overlay status, the five clip-indicator suites (`test_indicator_*`, `test_clip_indicator_ui`)
+and `test_themed_dialogs`; `test_overlay_mpv`
+and the previewer / advanced-editor suites need libmpv + Xvfb (with `libxcb-cursor0` for the xcb platform;
+they hang or fail under offscreen); `test_nle_render`'s preview-
+speed check is timing-based, run it on its own, not alongside other suites).
 
 ## Input overlay (Puppetry integration) -- BUILT (this is the design + status)
 
@@ -316,6 +321,350 @@ is the Puppetry side's prep package (v3), copied in unchanged:
 mpv itself (graphs were validated through ffmpeg only), real OBS and real
 input devices (controller stick/trigger ranges vary), and the real
 alignment offset (a few frames at most; `offset_ms` corrects it).
+
+## Clip indicator ("the clapper") -- BUILT (status first, then the original spec)
+
+### Status (newest session)
+Build steps 1-5 of the plan below are implemented and tested. Step 6 (verification on a
+real KDE Plasma Wayland desktop) has not happened: everything was exercised under the offscreen Qt
+platform, which is not the same as verification (see "Unverified on real hardware" below).
+
+Where the code lives:
+- `afterglow/indicator/` -- `draw.py` (clapper + hands + circle + every enter/exit/fail animation as
+  pure `animate(phase, kind, t, anchor, Space) -> Xform`), `layout.py` (surface size, stack slots,
+  badge, X11 placement), `model.py` (pure state machine per capture + stacking, driven by an explicit
+  `now`), `paint.py` (paints a stack of frames; shared by the overlay and the Settings preview),
+  `focus.py` (focused window -> screen: kdotool / hyprctl / swaymsg), `layershell.py` (ctypes binding
+  of the shim), `surface.py` (the Qt overlay window), `helper.py` (socket server + event dispatch +
+  surface lifecycle), `__main__.py` (the process: `python -m afterglow.indicator` /
+  `afterglow-indicator`).
+- `native/afterglow_layershell.cpp` + `native/CMakeLists.txt` -- the C shim (see below).
+- `afterglow/indicator_client.py` -- the fire-and-forget client used by `clips.py`, `daemon.py`, the
+  CLI and the Settings Test button.
+- Hooks: `clips.trigger_clip` (`clap` right after `save_replay_buffer` returns; `done` / `overlay` when
+  the clip is in the library; `fail` in the `except`), `clips._OverlayCapture` (`overlay_done` /
+  `overlay_fail`, plus a 10 minute render timeout), `daemon.ClipDaemon` (`_on_hotkey` starts the
+  indicator; the 120 s capture timeout and a failure before `trigger_clip` got going send `fail`),
+  `clips._resolve_keyframe_sound` (clap sound).
+- Config / DB: `config.ClipIndicatorSettings` (`AppSettings.clip_indicator`), `clip_configs`
+  columns `indicator_colors` / `indicator_icon_path` / `indicator_clap_sound` (migrated like the
+  overlay columns).
+- Settings UI: `gui/clip_indicator_settings.py` (the "Clip Indicator" group under Settings >
+  Clipping, the per-clip-type dialog, `ColorSwatch`), `gui/indicator_preview.py` (`IndicatorPreview`
+  live loop + `AnchorPicker`), the "Indicator" row in `gui/clip_config_row.py`.
+  `CustomComboBox` gained `itemHovered(int)` / `popupHidden()` signals (hover preview).
+- Packaging: `flake.nix` builds the shim (`mkLayerShell`: cmake, `qt6.qtbase`,
+  `kdePackages.layer-shell-qt`) and the wrapper sets `AFTERGLOW_LAYERSHELL_LIB`;
+  `pyproject.toml` has the `afterglow-indicator` script.
+- Tests: `tests/test_indicator_model.py`, `test_indicator_draw.py`, `test_indicator_helper.py` (incl.
+  the real helper process over its real socket), `test_indicator_pipeline.py` (hooks, fake OBS),
+  `test_clip_indicator_ui.py`. All run with `QT_QPA_PLATFORM=offscreen`.
+
+Deviations from the plan and judgment calls (change freely):
+- **Socket, not stdin.** The helper listens on a Unix socket (`$XDG_RUNTIME_DIR/afterglow-indicator.sock`,
+  override `AFTERGLOW_INDICATOR_SOCKET`), JSON lines, same messages as planned. Reason: the daemon,
+  the CLI and the GUI's Test button all have to reach one helper, and the helper has to outlive any of
+  them. A second helper finds the socket owned and exits; a stale socket file is replaced. The client
+  spawns the helper on demand (display variables are taken from `systemctl --user show-environment`
+  when missing) and the daemon starts it at startup.
+- **The capture id is allocated at the key press**, on the evdev thread (`indicator_client.begin()` only
+  queues), so the clapper appears even while an earlier capture is still being processed.
+  `trigger_clip(clip_config_id, indicator_id=_AUTO)`: the daemon passes its id in; CLI / GUI triggers
+  start the indicator themselves; `None` = none.
+- **Surface:** fixed size (3 item widths x stack + 2 item heights; 4 widths for top / bottom), created
+  when a stack's first capture appears and destroyed when the last is gone, so nothing sits above a
+  fullscreen game between clips. Left / right anchors with five stacked slots can overflow a screen
+  shorter than ~800 px. `drop` / `fall` fade out where the surface edge is not a screen edge.
+- **Helper watchdog** is 12 minutes (overlay timeout 10 min + 2), so a lost event cannot leave
+  anything on screen.
+- **No layer-shell on Wayland** -> the visual is skipped (logged once); sounds are unaffected (the
+  indicator never plays sound itself).
+- **Clap sound:** `indicator_clap_sound` is used only while the indicator is enabled; otherwise the old
+  chain (clip sound -> advanced sound -> default sound) applies unchanged. Played once, by `clips.py`.
+- Hover-previewing an animation in the Settings dropdowns restarts the preview with that animation;
+  closing the dropdown restores the chosen one. The preview is a 1280x720 stand-in screen drawn to
+  scale. `circle_opacity` has a spin box in Settings although the plan did not list one.
+- Test button: sends start -> clap -> processing -> overlay -> overlay_done with the current (unsaved)
+  widget values through the real helper.
+- Environment flags: `AFTERGLOW_INDICATOR_SOCKET`, `AFTERGLOW_LAYERSHELL_LIB`,
+  `AFTERGLOW_INDICATOR_ALLOW_OFFSCREEN` (`spawn_helper` refuses to start a helper under the offscreen /
+  minimal Qt platform otherwise, so existing tests never spawn one).
+- Debugging: `python -m afterglow.indicator --socket /tmp/x.sock --log-events /tmp/x.jsonl -v` logs every
+  event with the resulting stack state; any JSON line sent to the socket is accepted
+  (`echo '{"id":"a","event":"start","style":{}}' | socat - UNIX-CONNECT:/tmp/x.sock`).
+
+Unverified on real hardware (plan step 6, all still open):
+- The C shim (`native/afterglow_layershell.cpp`) was only syntax-checked against stub headers; it has
+  never been linked against a real LayerShellQt, nor built in the flake. Same-Qt requirement applies.
+- Layer-shell surface behaviour: above a fullscreen game (and no stutter while shown), correct monitor,
+  click-through, no focus steal, HiDPI, two monitors with different scales, all eight anchors with padding.
+- `kdotool` / `hyprctl` / `swaymsg` output parsing for the focused screen (unit-tested on sample output).
+- The X11 fallback window flags.
+- Real timing of every animation and the clap; a burst of 3+ hotkeys; an overlay clip (gray -> purple);
+  a forced failure (launch).
+
+### Original spec and plan (kept as the design reference)
+
+Asked for verbatim (abridged): a movie clapper slides onto the screen when a
+clip hotkey fires, claps (with a sound) when afterglow receives the clip,
+then shows processing until the clip is done; colours / icon / sound per
+clip type; selectable animations; optional "hands" style (Mickey-glove line
+art clapping) instead of the clapper. Every question has been answered --
+every item below was built as written unless the deviations above say otherwise.
+
+### Decisions (all from the user)
+- **Which screen:** the one in use -- the screen holding the focused window.
+- **When it claps:** when OBS confirms the save (`REPLAY_BUFFER_COMPLETED`).
+  Processing runs from the clap until the clip is in the library
+  (`CLEANED_UP_MOVED`).
+- **On failure:** "clapper gets launched into the air and falls offscreen".
+- **Icon below the lines:** custom images only; none by default. In hands
+  mode the icon goes **on the back of the glove**.
+- **Position:** any of 8 anchors -- every corner and the middle of every
+  edge (`top_left`, `top`, `top_right`, `left`, `right`, `bottom_left`,
+  `bottom`, `bottom_right`); default `bottom_right`. User-set X and Y
+  padding from the screen edges (X is unused for `top`/`bottom`, which are
+  centred horizontally; Y is unused for `left`/`right`, centred vertically).
+- **Animations:** the way it comes in and the way it goes away are chosen
+  **separately** (two settings); the set of animations was left to us --
+  see "Animations" below.
+- **Processing, two modes:** (default) the clapper leaves and a small
+  semi-transparent loading circle fades in where it was; OR the clapper
+  stays on screen until processing is done.
+- **Loading circle colour:** **gray** by default while the clip is being
+  processed, then **purple** while the input overlay is being rendered
+  (the circle stays up through the overlay render). Both colours are
+  settings with those defaults.
+- **Rapid repeats:** a second hotkey while the first is still going shows
+  a **second clapper above the first** (stacked).
+- **Clap sound:** the user's choice; defaults to the user's global clip sound.
+
+### Event timeline (hooks into `clips.trigger_clip`, keyed by keyframes.py)
+| pipeline moment | indicator event |
+|---|---|
+| `HOTKEY_RECEIVED` | `start`: pick the screen, play the chosen **enter** animation (~250-550 ms) |
+| `REPLAY_BUFFER_COMPLETED` (after `save_replay_buffer` returns) | `clap`: clap animation + clap sound. If the enter animation hasn't landed yet, the clap waits for it (OBS can confirm in <300 ms) |
+| (~400 ms after the clap) | `processing`: default mode = the **exit** animation, then the gray circle fades in at the clapper's spot; "stay" mode = clapper stays (subtle idle bob) |
+| `CLEANED_UP_MOVED` (clip is in the library) | clip type WITHOUT input overlay: `done` -> circle fades out (stay mode: exit animation). WITH input overlay: `overlay` -> circle cross-fades gray -> purple (300 ms) and keeps spinning (stay mode: the clapper exits now and the purple circle fades in) |
+| overlay finished (`_OverlayCapture`'s background thread, where it plays the `INPUT_OVERLAY` keyframe sound) | `overlay_done`: purple circle fades out |
+| overlay failed (same thread, where it plays the `INPUT_OVERLAY` Error Noise) | `overlay_fail`: circle flashes red, small shake, fades out -- NOT the launch: the clip itself is safe |
+| any exception in `trigger_clip` (the `except` that plays the Error Noise) | `fail`: launched into the air with a spin, falls off the bottom of the screen. If the circle was showing, the clapper pops back in at the circle's spot first, then gets launched |
+
+Timeouts: the daemon's 120 s capture timeout sends `fail`; the overlay
+render gets its own (e.g. 10 min -> `overlay_fail`); the helper also drops
+any indicator with no event for that long, so nothing hangs on screen.
+
+### Stacking (rapid repeats)
+- Each capture id gets its own indicator in a stack at the anchor. Slot 0
+  is at the anchor; each later slot sits one clapper height + 12 px further
+  from the anchored edge: **upward** for bottom anchors and `left`/`right`,
+  **downward** for top anchors ("above the first" from the user's bottom-
+  right default).
+- A new clapper enters straight into the next free slot. When an indicator
+  finishes (its circle fades out / it exits / it's launched), the ones
+  above it slide down to close the gap (200 ms ease).
+- A slot is held for the whole life of its capture: clapper, then circle
+  (gray, then purple), so the circles stack the same way.
+- Cap of 5 visible; a 6th+ collapses into a "+N" badge on the top slot.
+
+### Process model
+- The GUI may not be running, so the indicator belongs to the **daemon**.
+  The daemon is headless (evdev + worker threads, no Qt), so it runs a
+  small Qt helper, `python -m afterglow.indicator`, started at daemon start
+  when the indicator is enabled (so the first clap is instant) and
+  respawned on demand if it died. Talk over the helper's stdin as JSON
+  lines: `{"id": <capture id>, "event": "start"|"clap"|"processing"|"done"|
+  "overlay"|"overlay_done"|"overlay_fail"|"fail", "style": {...}}` (`style`
+  only on `start`: resolved colours, icon path, anchor, padding, size,
+  enter/exit animations, mode, circle colours, screen hint). Fire-and-
+  forget from `trigger_clip` / `_OverlayCapture` through a tiny
+  `indicator_client.py` (never raises, never blocks the capture -- same
+  rule as `play_sound`). Capture ids: a counter in the daemon.
+- The daemon's worker runs captures one at a time, but a capture's overlay
+  render continues in the background and the next hotkey's `start` can
+  arrive while the previous one is still processing -- so stacks do happen
+  in practice.
+- Environment: the helper needs `WAYLAND_DISPLAY`/`XDG_RUNTIME_DIR` (or
+  `DISPLAY`). Plasma 6 imports them into the systemd user manager, but a
+  daemon started before the session won't have them -- read them from
+  `systemctl --user show-environment` when spawning if they're missing.
+
+### Wayland overlay window (the main technical risk)
+- A normal Qt window can't place itself on Wayland and won't sit above a
+  fullscreen game. It has to be a **layer-shell surface** on the `overlay`
+  layer: keyboard interactivity none, exclusive zone 0 (doesn't push other
+  windows), input region empty (clicks pass through:
+  `Qt.WindowTransparentForInput` + `WA_TransparentForMouseEvents`), shown on
+  the chosen output.
+- **Surface geometry:** the surface is anchored to the anchor's edge(s) with
+  margin 0 (NOT the padding) and the padding is applied in the drawing, so
+  enter/exit animations can start/finish truly off-screen at the edge
+  instead of popping out of thin air at the padding line. It is sized to
+  hold the stack plus travel room (corner anchors: ~3 clapper widths x the
+  stack height + 2 clapper heights; edge anchors: the same along that
+  edge). Toss/launch arcs are designed to stay inside it; the fall is
+  clipped at the bottom of the screen, which is where it should vanish
+  anyway. The surface is hidden whenever no indicator is alive, so it
+  can't interfere with a fullscreen game's direct scanout between clips
+  (verify on hardware that it doesn't stutter the game while shown).
+  Layer-shell anchors: corners = two edges; `top`/`bottom`/`left`/`right`
+  = that one edge (the compositor centres it along the edge).
+- KDE's implementation is **LayerShellQt** (nixpkgs `kdePackages.layer-shell-qt`).
+  It has a C++ API only -- no Python bindings exist (KDE Discuss "Python
+  bindings for layer-shell-qt?": "not possible right now"). Plan: a ~40-line
+  C++ shim built in the flake (pybind11 or a plain C ABI loaded with
+  ctypes) exposing `configure(qwindow_ptr, layer, anchors, margins,
+  keyboard, screen_name)` that calls `LayerShellQt::Window::get(window)`;
+  Python passes `shiboken6.getCppPointer(widget.windowHandle())[0]`. Must be
+  called after `winId()`/`create()` but before the first `show()`. The shim
+  and the helper must use the SAME Qt as PySide6 (the plugin only loads into
+  the Qt it was built against -- build both from the same nixpkgs).
+  `QT_WAYLAND_SHELL_INTEGRATION` must NOT be set globally (it would turn
+  every window of the process into a layer surface).
+  Alternative if the shim is a problem: GTK4 + `gtk4-layer-shell` through
+  PyGObject (pure Python, but a second toolkit and the drawing code would be
+  Cairo, not the shared QPainter code). Recommended: the shim.
+- **Fallbacks:** X11 session -> frameless, always-on-top, tool, transparent-
+  for-input window positioned by geometry. Non-KDE wlroots compositors work
+  with the same layer-shell path. No layer-shell available -> log once and
+  skip the visual (sounds still play).
+- **Focused screen:** Wayland clients can't read the cursor position. Reuse
+  the `kdotool` path from `autofilter.py`: `kdotool getactivewindow
+  getwindowgeometry` -> the screen containing the window's centre ->
+  match by geometry to a `QScreen`; Hyprland/Sway equivalents as autofilter
+  does; fallback primary screen. Resolved at `start`; a stack lives on one
+  screen, so a capture that starts on another screen gets its own surface
+  and stack there.
+- HiDPI: size and padding are logical px (scaled per screen by Qt).
+
+### Drawing (shared QPainter code, so Settings can preview it)
+- New `afterglow/indicator/draw.py`: pure functions `draw_clapper(p, rect,
+  state, style)`, `draw_hands(...)`, `draw_circle(...)`, and
+  `animate(kind, t, anchor, rect) -> (offset, rotation, scale, opacity,
+  clip)` for every enter/exit/fail animation -- no window code, testable
+  offscreen, reused by the Settings preview widget.
+- Clapper parts, each a style colour: top stick (two-tone diagonal stripes:
+  `stripe_a`/`stripe_b`), hinge, board (`board`), the chalk lines on the
+  board (`lines`), outline (`outline`). Defaults: classic black/white with
+  a dark-grey outline. The **icon** (custom image, optional) is drawn
+  centred in the board area below the lines, fit inside ~45% of the board
+  height, keeping aspect; missing/unreadable file = no icon.
+- **Clap**: the top stick rotates open ~28 deg about the hinge (ease-out,
+  ~120 ms), snaps shut (~60 ms) with a 2-3 px squash on the board and a few
+  short impact lines at the tip, then settles.
+- **Hands mode**: two white Mickey-style gloves (line art: black outline,
+  three stitch lines on the back, puffy cuff), clapping together at the
+  clap with the same impact lines. The front glove shows its BACK to the
+  viewer; the **custom icon sits on the back of that glove**, centred just
+  below the three stitch lines, fit inside ~40% of the glove width, clipped
+  to the glove shape. Reuse the glove construction from `nle/comic.py`
+  (`_glove` -- the thumbs-up redo) so both read as the same character.
+  Per-clip colours map to glove fill / outline / cuff / stitches.
+- **Loading circle**: ~28 px ring arc at ~55% opacity, centred where the
+  clapper's centre was, fades in over 200 ms after the clapper is fully
+  gone, rotates ~1 turn/s. Colour: `circle_color` (default gray `#9a9a9a`)
+  while processing the clip, `overlay_circle_color` (default purple
+  `#9b5cff`) while the input overlay renders, 300 ms cross-fade between.
+- 60 fps QTimer while anything moves; idle when nothing does.
+
+### Animations (enter and exit chosen separately; fail is fixed)
+"The edge" below = the anchor's own edge: right for `right`/`top_right`/
+`bottom_right`, left for the left-side anchors, top for `top`, bottom for
+`bottom`. All are drawing-only inside the fixed surface. Each is a function
+of t in [0, 1] plus a duration, in `draw.animate`.
+
+**Enter** (default `slide`):
+- `slide` -- slides in from the edge, slight overshoot, settles (300 ms).
+- `drop` -- falls from above the screen into place, squash on landing, two
+  small bounces (450 ms).
+- `pop` -- scales 0 -> 1.15 -> 0.95 -> 1 at its spot (300 ms).
+- `swing` -- hangs from a pivot off-screen at the edge and swings in like a
+  pendulum, damped, rights itself (500 ms).
+- `spin` -- slides in from the edge while spinning one full turn (400 ms).
+- `toss` -- thrown in from off-screen along an arc with a tumble, lands
+  with a little hop (450 ms).
+- `flip` -- flips in like a card turning over (horizontal scale 0 -> 1 with
+  a slight skew), at its spot (300 ms).
+- `peek` -- creeps half in from the edge, pauses a beat, then hops fully
+  into place (550 ms).
+- `fade` -- fades in while rising 12 px (250 ms).
+
+**Exit** (default `slide`):
+- `slide` -- slides back out through the edge, small wind-up first (300 ms).
+- `zip` -- pulls back a little (anticipation), then zips out through the
+  edge fast (250 ms).
+- `fall` -- the floor gives way: drops straight down off the screen with a
+  slight tilt (400 ms).
+- `shrink` -- scales down to nothing with a twist and fades (250 ms).
+- `spin` -- spins out through the edge (400 ms).
+- `toss` -- hops up and is tossed off-screen along an arc away from the
+  centre of the screen, tumbling (500 ms).
+- `flip` -- flips away like a card (horizontal scale 1 -> 0) (250 ms).
+- `fade` -- fades out while sinking 12 px (250 ms).
+- `bow` -- dips forward in a little bow, then slides out through the edge
+  (550 ms).
+
+**Fail** (not selectable): launched up and away from the edge with a fast
+spin, gravity takes over, falls off the bottom of the screen (~900 ms).
+
+### Settings + data
+- Global, `AppSettings.clip_indicator` (dataclass, config.toml):
+  `enabled` (default True), `style` "clapper"|"hands", `anchor` (default
+  "bottom_right"), `padding_x`, `padding_y` (default 32, 32), `size`
+  (default 96 px), `enter_animation` (default "slide"), `exit_animation`
+  (default "slide"), `processing` "circle"|"stay" (default "circle"),
+  `circle_color` (default "#9a9a9a"), `overlay_circle_color` (default
+  "#9b5cff"), `circle_opacity` (0.55), `screen` "focused"|"primary"
+  (default "focused").
+- Per clip type, new `clip_configs` columns (same migration pattern as the
+  overlay columns): `indicator_colors` (JSON dict, {} = defaults),
+  `indicator_icon_path` ("" = no icon), `indicator_clap_sound` ("" =
+  inherit).
+- **Sound**: the clap IS the `REPLAY_BUFFER_COMPLETED` moment, which already
+  plays `clip_cfg.sound_path -> advanced_sounds[...] -> default_sound_path`
+  ("the global clip sound"). So with the indicator on, `clips.py` plays
+  `indicator_clap_sound` if set, else that same chain -- once, not twice
+  (the indicator does NOT play sound itself; the daemon already does it at
+  the right moment). Error Noise / other keyframe sounds are unchanged.
+- UI: Settings > Clip Capture gets a "Clip Indicator" group: enable, style,
+  position (a 3x3 grid picker with the centre disabled), padding X/Y, size,
+  enter animation, exit animation, processing mode, the two circle colours,
+  a live preview that loops enter -> clap -> exit -> circle, and a "Test"
+  button that sends start -> clap -> processing -> overlay -> overlay_done
+  through the real helper on the real screen. Hovering a row in an
+  animation dropdown plays it in the preview. The per-clip-type row's "..."
+  dialog gets an "Indicator" section: colour swatches (the themed colour
+  picker), icon picker (themed file picker, images), clap sound picker,
+  preview.
+
+### Build steps
+1. `indicator/draw.py` + tests (every style, every enter/exit/fail
+   animation at several t for every anchor, icon fit on the board and on
+   the glove, colours applied, circle colours) -- offscreen.
+2. `indicator/__main__.py` helper: JSON-lines reader on a thread -> Qt
+   signals; one surface per (screen, anchor), holding the stack; a state
+   machine per capture id (entering -> waiting_clap -> clapping ->
+   processing(gray) -> overlay(purple) -> leaving | failing) driven by a
+   clock that tests can fake; stack slots + gap closing + "+N" cap.
+3. Layer-shell shim (C++, in the flake) + X11 fallback.
+4. `indicator_client.py` (spawn/keepalive/env, never raises) + calls in
+   `trigger_clip` at the keyframes above and in its `except`, in
+   `_OverlayCapture`'s background finish (overlay / overlay_done /
+   overlay_fail), and in the daemon's capture timeout (`fail`).
+5. Config + DB columns + Settings UI + preview + Test button.
+6. Verify on the real KDE Plasma Wayland desktop: above a fullscreen game
+   (and no stutter while shown), correct monitor, click-through, no focus
+   steal, HiDPI, two monitors with different scales, all 8 anchors with
+   padding, every animation, a burst of 3+ hotkeys (stacking), an overlay
+   clip (gray -> purple), and a forced failure (launch).
+
+### Small calls made without asking (change freely)
+- "Stay" mode + input overlay: the clapper stays until the clip is in the
+  library, then exits and the purple circle takes over for the overlay.
+- An overlay failure gets the red flash + shake on the circle, not the
+  launch (the clip itself is fine).
+- Circle colours are global settings, not per clip type.
+- The indicator also runs when the afterglow window itself is focused.
 
 ## MAJOR EPIC: UI Update + Editor Update (multi-session, in progress)
 A huge combined spec arrived for a UI overhaul AND a full
@@ -731,6 +1080,60 @@ plain QSS rule is unavoidable.
 ## Currently being worked on
 Seven consecutive batches of Library/Settings/appearance
 features/bug fixes, given together each time. Newest first.
+
+### This session (newest -- no native/KDE dialogs or widgets left)
+Asked: "the delete prompt on videos is still in the old kde style --
+generally just go through and try to find ANY vanilla kde things and
+replace them". Then the clapper spec (section above the MAJOR EPIC).
+- **Delete prompt** (video card / multi-select): `ask_confirm(..., "Delete",
+  danger=True)` -- red Delete button, Cancel focused so a stray Enter
+  doesn't delete.
+- **`gui/themed_dialogs.py`** (new): `ThemedDialog` base (frameless,
+  rounded, library background, accent outline, drag anywhere via
+  `startSystemMove`, works on Wayland) and drop-in replacements with the
+  same return shapes as the Qt statics:
+  - `ask_text` / `get_text` (QInputDialog.getText);
+  - `get_color` (QColorDialog.getColor; invalid QColor on cancel): SV
+    square, hue strip, optional alpha strip (`alpha=True`, #rrggbbaa),
+    old/new preview, hex field (3/6/8 digits), 14 swatches + "Recent"
+    (CONFIG_DIR/recent_colors.json);
+  - `get_open_file_name(s)` / `get_save_file_name` / `get_existing_directory`
+    (QFileDialog): places (Home, Desktop..., Clips, Computer), back/up,
+    editable path bar, folders-first list with drawn glyphs (folder/video/
+    audio/image/text) + size/date, filter dropdown, Show hidden (Ctrl+H),
+    multi-select (quoted names), save adds the filter's extension and asks
+    before replacing, folder mode lists folders only, remembers the last
+    folder for the session. A bare suggested name ("afterglow-settings.toml")
+    starts in the last/home folder.
+- `CustomMessageDialog` now IS a ThemedDialog (accent outline + drag);
+  `ask_confirm(danger=)`. advanced_editor `_Dialog` = ThemedDialog;
+  `NameDialog`/`ask_name` are aliases of `TextInputDialog`/`ask_text`.
+  HotkeyRecordDialog is themed (it had a native title bar).
+- **`gui/custom_combo_box.py`** (new): `CustomComboBox(QComboBox)` paints
+  itself (`paint_dropdown_field`, shared with Settings > Filters'
+  multi-filter picker) and opens its own rounded popup
+  (`_ComboPopup` + `ThemedListWidget`): hover/selected highlight, per-row
+  fonts (font picker), separators, icons, above/below placement, Escape,
+  `activated`/`textActivated` emitted on a pick, editable mode keeps a
+  transparent line edit. Every `QComboBox()` in the app is now one.
+- **`gui/themed_list.py`** (new): `ThemedListWidget` + delegate + `draw_glyph`.
+- **`gui/app_chrome.py`** (new, installed in MainWindow next to wheel_guard):
+  app-styled tooltip bubble for every tooltip (widget or list-item
+  ToolTipRole); any QMenu with no stylesheet (the Cut/Copy/Paste menu of
+  every text field and spin box, stray submenus) gets `_menu_stylesheet`;
+  any scroll area still on native bars gets slim `CustomScrollBar`s
+  (`extent=` param added). The filter removes itself on aboutToQuit/atexit
+  (a Python event filter still installed while QApplication is destroyed
+  segfaulted at exit).
+- `gui/themed_frame.py` (new): `ThemedFrame` replaces `QFrame.StyledPanel`
+  (clip-type rows, Auto Add Filter rows).
+- Not replaced, on purpose: the MAIN WINDOW's title bar (KWin's server-side
+  decoration). Replacing it means client-side decorations (own title bar,
+  `startSystemMove/Resize`, snapping/maximize behaviour) -- a separate
+  decision, not done unasked. Tooltip/menus of mpv's own OSD aren't Qt.
+Tests: tests/test_themed_dialogs.py (new; also a static scan that fails on
+any QMessageBox / QInputDialog / QColorDialog / QFileDialog /
+QDialogButtonBox / raw `QComboBox()` / StyledPanel in afterglow/).
 
 ### Puppetry prep v6 (latest drop)
 The vendored module and its test are unchanged from v5 (still byte-identical).
@@ -5288,20 +5691,16 @@ widget-level testing note above):
   toggles tag-on-video, the other toggles include/exclude-from-search).
 
 ## Next up
-The input overlay epic is built (see the top of this file). **Next:
-custom `QComboBox` styling** -- confirmed wanted (the item flagged below),
-to be done now that the overlay is finished. Editor feedback rounds
-continue alongside. Still untested on real hardware: real Puppetry/OBS
-timing (`offset_ms`) and controller ranges.
-
-**One item flagged this session, not attempted:**
-- **Custom `QComboBox` styling.** Every native button/checkbox/text
-  field is now a custom widget (see "This session" above), but
-  `QComboBox` (category picker, filter-display mode, startup window
-  mode, etc.) is still native/KDE-styled -- a real custom dropdown
-  needs its own popup list, not just recoloring the closed box, which
-  is a meaningfully bigger build than anything else in this sweep.
-  CONFIRMED WANTED (queued as the next item).
+**Verify the clip indicator (the clapper) on a real KDE Plasma Wayland desktop** -- it is built and
+tested offscreen (see "Clip indicator -- BUILT" near the top, including its "Unverified on real
+hardware" list). First build the flake (the layer-shell shim has never been compiled against a real
+LayerShellQt), then walk through plan step 6. Expect fixes to the shim and to anything that only
+shows on a real compositor.
+Custom QComboBox styling (queued last time) is DONE (this session, along
+with every other native/KDE dialog). Editor feedback rounds continue
+alongside. Still untested on real hardware: real Puppetry/OBS timing
+(`offset_ms`) and controller ranges; the new themed dialogs/popups on a
+real Wayland session (popup placement, startSystemMove dragging).
 
 **Nothing else explicitly re-requested is still outstanding** -- the
 previous round's two open items (custom text fields app-wide, and the
@@ -5372,6 +5771,15 @@ reordering as each phase actually lands -- treat it as "what's next,"
 not a fixed roadmap.
 
 ## Architecture pointers
+- **Themed replacements for native Qt/KDE UI** (newest): every dialog goes
+  through `gui/themed_dialogs.py` (ThemedDialog, ask_text/get_text,
+  get_color, get_open_file_name(s)/get_save_file_name/get_existing_directory)
+  or `gui/custom_message_dialog.py` (show_message, ask_confirm); combo boxes
+  are `gui/custom_combo_box.CustomComboBox`; lists in popups/pickers are
+  `gui/themed_list.ThemedListWidget`; panels are `gui/themed_frame.ThemedFrame`;
+  tooltips / unstyled menus / native scroll bars are caught app-wide by
+  `gui/app_chrome.py`. Don't add a QMessageBox/QFileDialog/QColorDialog/
+  QInputDialog/raw QComboBox -- tests/test_themed_dialogs.py fails on them.
 - **New this most recent session** (sidebar rewrite, search bubble
   taper fix, custom text fields, custom scroll bar, action button
   styling):

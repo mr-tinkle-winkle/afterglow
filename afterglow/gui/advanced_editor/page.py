@@ -30,7 +30,7 @@ from pathlib import Path
 from PySide6.QtCore import QObject, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QKeySequence, QPainter, QShortcut
 from PySide6.QtWidgets import (
-    QComboBox, QDialog, QFileDialog, QFormLayout, QHBoxLayout, QLabel, QProgressBar, QSplitter,
+    QComboBox, QDialog, QFormLayout, QHBoxLayout, QLabel, QProgressBar, QSplitter,
     QVBoxLayout, QWidget,
 )
 
@@ -39,6 +39,7 @@ from ... import library
 from ...nle import save as nle_save
 from ...nle.model import Project
 from ..custom_button import CustomButton
+from ..custom_combo_box import CustomComboBox
 from ..custom_combo_style import combo_box_stylesheet
 from ..custom_line_edit import CustomLineEdit
 from ..custom_message_dialog import ask_confirm, show_message
@@ -52,6 +53,7 @@ from .preview import PreviewPanel
 from .properties import PropertiesPanel
 from .timeline import TimelinePanel
 from .visuals import TimelineVisuals
+from ..themed_dialogs import ThemedDialog, TextInputDialog, ask_text, get_open_file_name
 
 
 class _Panel(QWidget):
@@ -75,80 +77,18 @@ class _Panel(QWidget):
         p.end()
 
 
-class _Dialog(QDialog):
-    """Frameless rounded dialog, same look as AddFilterDialog."""
-
-    def __init__(self, title: str, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle(title)
-        a = config_module.load_readonly().appearance
-        self._appearance = a
-        self._theme = Theme(a)
-        self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
-        self.setAttribute(Qt.WA_TranslucentBackground, True)
-        self.lay = QVBoxLayout(self)
-        self.lay.setContentsMargins(22, 20, 22, 20)
-        self.lay.setSpacing(10)
-        head = QLabel(title)
-        head.setStyleSheet(f"QLabel {{ color: {a.card_text_color}; font-size: 16px; font-weight: bold; }}")
-        self.lay.addWidget(head)
-
-    def label(self, text: str) -> QLabel:
-        lab = QLabel(text)
-        lab.setTextFormat(Qt.PlainText)
-        lab.setWordWrap(True)
-        lab.setStyleSheet(f"QLabel {{ color: {self._appearance.card_text_color}; }}")
-        return lab
-
-    def paintEvent(self, event) -> None:
-        p = QPainter(self)
-        p.setRenderHint(QPainter.Antialiasing)
-        r = QRectF(self.rect()).adjusted(1, 1, -1, -1)
-        radius = self._appearance.rounded_corner_radius if self._appearance.rounded_corners_enabled else 12
-        path = rounded_rect_path(r, radius)
-        p.fillPath(path, self._theme.library_background())
-        pen = p.pen()
-        pen.setColor(self._theme.accent())
-        pen.setWidthF(2)
-        p.setPen(pen)
-        p.drawPath(path)
-        p.end()
+class _Dialog(ThemedDialog):
+    """Frameless rounded dialog, same look as every other app dialog
+    (see themed_dialogs.ThemedDialog)."""
 
 
-class NameDialog(_Dialog):
-    """Ask for a short name (global presets / audio)."""
-
-    def __init__(self, title: str, text: str, default: str = "", parent=None, ok_label: str = "Save"):
-        super().__init__(title, parent)
-        if text:
-            self.lay.addWidget(self.label(text))
-        self.edit = CustomLineEdit(default)
-        self.edit.selectAll()
-        self.edit.returnPressed.connect(self.accept)
-        self.lay.addWidget(self.edit)
-        row = QHBoxLayout()
-        row.addStretch(1)
-        cancel = CustomButton("Cancel")
-        cancel.clicked.connect(self.reject)
-        ok = CustomButton(ok_label)
-        ok.clicked.connect(self.accept)
-        for b_ in (cancel, ok):
-            b_.setMinimumWidth(90)
-            b_.setMinimumHeight(30)
-            row.addWidget(b_)
-        self.lay.addLayout(row)
-        self.setMinimumWidth(380)
-        self.edit.setFocus()
-
-    def value(self) -> str:
-        return self.edit.text().strip()
+# The name prompt lives in themed_dialogs now (shared with Settings'
+# New Category / Rename Filter prompts); kept under the old names here.
+NameDialog = TextInputDialog
 
 
 def ask_name(parent, title: str, text: str, default: str = "", ok_label: str = "Save") -> "str | None":
-    dlg = NameDialog(title, text, default, parent, ok_label)
-    if dlg.exec() == QDialog.Accepted and dlg.value():
-        return dlg.value()
-    return None
+    return ask_text(parent, title, text, default, ok_label)
 
 
 class SaveDialog(_Dialog):
@@ -178,14 +118,14 @@ class SaveDialog(_Dialog):
         form.setHorizontalSpacing(12)
         form.setVerticalSpacing(8)
         qss = combo_box_stylesheet(self._appearance)
-        self.res = QComboBox()
+        self.res = CustomComboBox()
         w, h = project.width, project.height
         self.res.addItem(f"Original ({w}×{h})", (w, h))
         for ph in (2160, 1440, 1080, 720, 480):
             if ph < h:
                 pw = int(round(ph * w / h / 2) * 2)
                 self.res.addItem(f"{ph}p ({pw}×{ph})", (pw, ph))
-        self.quality = QComboBox()
+        self.quality = CustomComboBox()
         for label, crf in self.QUALITIES:
             self.quality.addItem(label, crf)
         for c in (self.res, self.quality):
@@ -456,7 +396,7 @@ class AdvancedEditorPage(QWidget):
 
     # ================================================================ header actions
     def import_file(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(
+        path, _ = get_open_file_name(
             self, "Import a file to edit", str(Path.home()),
             "Media (*.mp4 *.mkv *.mov *.webm *.avi *.flv *.m4v *.ts *.mp3 *.wav *.flac *.ogg *.m4a);;All files (*)")
         if path:
