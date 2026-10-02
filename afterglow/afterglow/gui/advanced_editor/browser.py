@@ -1,0 +1,601 @@
+"""
+The Advanced Editor's browser panel (top left): Media / Text / Audio /
+Transitions / Effects. Items can be double-clicked (added at the
+playhead / applied to the selection) or dragged onto the timeline.
+"""
+from __future__ import annotations
+
+import json
+import os
+from pathlib import Path
+
+from PySide6.QtCore import QMimeData, QSize, Qt, QTimer
+from PySide6.QtGui import QColor, QDrag, QIcon, QPixmap
+from PySide6.QtWidgets import (
+    QButtonGroup, QComboBox, QFormLayout, QHBoxLayout, QLabel, QListWidget,
+    QListWidgetItem, QStackedWidget, QVBoxLayout, QWidget, QAbstractItemView,
+)
+
+from ... import config as config_module
+from ... import library, thumbnails
+from ...nle import ops
+from ...nle.media import GIF_EXTS, IMAGE_EXTS
+from ..custom_button import CustomButton
+from ..custom_combo_box import CustomComboBox
+from ..custom_combo_style import combo_box_stylesheet
+from ..custom_scrollbar import CustomScrollBar
+from ..custom_spinbox import CustomDoubleSpinBox
+from ..segment_button import SegmentButton
+from ..theme import Theme
+from .controller import COMIC_PRESET_GROUPS, COMIC_PRESET_NAMES, TEXT_PRESETS, EditorController
+from .timeline import MIME_ITEM
+from ..themed_dialogs import get_open_file_names
+
+MEDIA_FILTER = ("Media (*.mp4 *.mkv *.mov *.webm *.avi *.flv *.m4v *.ts *.mp3 *.wav *.flac *.ogg *.opus *.m4a *.aac "
+                "*.png *.jpg *.jpeg *.webp *.bmp *.gif);;All files (*)")
+AUDIO_FILTER = "Audio (*.mp3 *.wav *.flac *.ogg *.opus *.m4a *.aac);;All files (*)"
+PICTURE_FILTER = "Pictures and GIFs (*.png *.jpg *.jpeg *.webp *.bmp *.gif)"
+
+
+class _DragList(QListWidget):
+    """A list whose items carry a JSON payload (Qt.UserRole) that becomes
+    the drag data for the timeline.
+
+    Starts the drag itself (press on an item, move a few px) instead of
+    relying on QListView's built-in drag: in icon mode the built-in one
+    turned a press-and-drag into rubber-band selection with auto-scroll,
+    so dragging a library clip scrolled the list instead of dragging."""
+
+    def __init__(self, icon_mode: bool = False, parent=None):
+        super().__init__(parent)
+        self.setDragEnabled(False)
+        self.setDragDropMode(QAbstractItemView.NoDragDrop)
+        self.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.setVerticalScrollBar(CustomScrollBar(Qt.Vertical))
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
+        self.setAutoScroll(False)
+        self._press_item = None
+        self._press_pos = None
+        self.drags_enabled = True
+        if icon_mode:
+            self.setViewMode(QListWidget.IconMode)
+            self.setResizeMode(QListWidget.Adjust)
+            self.setIconSize(QSize(128, 72))
+            self.setGridSize(QSize(140, 104))
+            self.setWordWrap(True)
+            self.setMovement(QListWidget.Static)
+        appearance = config_module.load_readonly().appearance
+        self.setStyleSheet(
+            f"QListWidget {{ background-color: {appearance.afterglow_color_card_background};"
+            f" color: {appearance.card_text_color}; border: none; border-radius: 8px; padding: 4px; }}"
+            f"QListWidget::item {{ border-radius: 6px; padding: 4px; }}"
+            f"QListWidget::item:selected {{ background-color: {appearance.afterglow_color_accent}; }}")
+
+    def mousePressEvent(self, event) -> None:
+        super().mousePressEvent(event)
+        if event.button() == Qt.LeftButton:
+            self._press_item = self.itemAt(event.position().toPoint())
+            self._press_pos = event.position().toPoint()
+
+    def mouseMoveEvent(self, event) -> None:
+        if (self.drags_enabled and self._press_item is not None and event.buttons() & Qt.LeftButton
+                and (event.position().toPoint() - self._press_pos).manhattanLength() >= 6):
+            item, self._press_item = self._press_item, None
+            payload = item.data(Qt.UserRole)
+            if callable(payload):
+                payload = payload()
+            if payload:
+                md = QMimeData()
+                md.setData(MIME_ITEM, json.dumps(payload).encode())
+                drag = QDrag(self)
+                drag.setMimeData(md)
+                icon = item.icon()
+                if not icon.isNull():
+                    drag.setPixmap(icon.pixmap(96, 54))
+                drag.exec(Qt.CopyAction)
+            return
+        if self._press_item is None:
+            super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:
+        self._press_item = None
+        super().mouseReleaseEvent(event)
+
+
+class BrowserPanel(QWidget):
+    def __init__(self, controller: EditorController, parent=None):
+        super().__init__(parent)
+        self.ctl = controller
+        appearance = config_module.load_readonly().appearance
+        self._appearance = appearance
+        self._theme = Theme(appearance)
+        self._label_qss = f"QLabel {{ color: {appearance.card_text_color}; }}"
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(6, 6, 6, 6)
+        outer.setSpacing(6)
+
+        tabs = QHBoxLayout()
+        tabs.setSpacing(0)
+        self._group = QButtonGroup(self)
+        self._group.setExclusive(True)
+        self.stack = QStackedWidget()
+        names = ["Media", "Text", "Comic", "Audio", "Transitions", "Effects"]
+        for i, name in enumerate(names):
+            pos = "left" if i == 0 else "right" if i == len(names) - 1 else "middle"
+            b = SegmentButton(None, pos, text=name)
+            b.setMinimumHeight(30)
+            tabs.addWidget(b, stretch=1)
+            self._group.addButton(b, i)
+        self._group.idClicked.connect(self._on_tab)
+        outer.addLayout(tabs)
+        outer.addWidget(self.stack, stretch=1)
+
+        self.stack.addWidget(self._media_page())
+        self.stack.addWidget(self._text_page())
+        self.stack.addWidget(self._comic_page())
+        self.stack.addWidget(self._audio_page())
+        self.stack.addWidget(self._transitions_page())
+        self.stack.addWidget(self._effects_page())
+        self._group.button(0).setChecked(True)
+        self._library_loaded = False
+        controller.changed.connect(self._refresh_audio_list)
+        controller.globals_changed.connect(self._refresh_audio_list)
+        controller.globals_changed.connect(self._refresh_text_list)
+
+    def _on_tab(self, i: int) -> None:
+        self.stack.setCurrentIndex(i)
+        if i == 0:
+            self.load_library()
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        QTimer.singleShot(0, self.load_library)
+
+    def _note(self, text: str) -> QLabel:
+        lab = QLabel(text)
+        lab.setWordWrap(True)
+        lab.setStyleSheet(self._label_qss + "QLabel { font-size: 11px; }")
+        return lab
+
+    # ---- Media -------------------------------------------------------------
+    def _media_page(self) -> QWidget:
+        w = QWidget()
+        lay = QVBoxLayout(w)
+        lay.setContentsMargins(0, 0, 0, 0)
+        row = QHBoxLayout()
+        add = CustomButton("Add File…")
+        add.setToolTip("Add a video, audio file, picture or GIF at the playhead")
+        add.clicked.connect(self._add_files)
+        pic = CustomButton("Picture / GIF…")
+        pic.clicked.connect(lambda: self._add_files(PICTURE_FILTER))
+        refresh = CustomButton("Refresh")
+        refresh.clicked.connect(lambda: self.load_library(force=True))
+        row.addWidget(add)
+        row.addWidget(pic)
+        row.addWidget(refresh)
+        lay.addLayout(row)
+        lay.addWidget(self._note("Library clips -- double-click to add at the playhead, or drag onto the timeline."))
+        self.media_list = _DragList(icon_mode=True)
+        self.media_list.itemDoubleClicked.connect(self._activate_item)
+        lay.addWidget(self.media_list, stretch=1)
+        return w
+
+    def load_library(self, force: bool = False) -> None:
+        if self._library_loaded and not force:
+            return
+        self._library_loaded = True
+        self.media_list.clear()
+        try:
+            videos = library.list_videos()
+        except Exception:
+            videos = []
+        placeholder = QPixmap(128, 72)
+        placeholder.fill(QColor(self._appearance.afterglow_color_library))
+        pending = []
+        for v in videos:
+            it = QListWidgetItem(QIcon(placeholder), v.title or Path(v.path).stem)
+            it.setToolTip(str(v.path))
+            it.setData(Qt.UserRole, {"type": "file", "path": str(v.path)})
+            self.media_list.addItem(it)
+            pending.append((it, v))
+
+        # Thumbnails come from the Library's own disk cache; load a few per
+        # event-loop pass so a big library never stalls the UI.
+        def step():
+            for _ in range(6):
+                if not pending:
+                    return
+                it, v = pending.pop(0)
+                try:
+                    path = thumbnails.get_thumbnail(v.id, Path(v.path))
+                except Exception:
+                    path = None
+                if path is not None:
+                    pm = QPixmap(str(path))
+                    if not pm.isNull():
+                        it.setIcon(QIcon(pm.scaled(128, 72, Qt.KeepAspectRatio, Qt.SmoothTransformation)))
+            QTimer.singleShot(0, step)
+        QTimer.singleShot(0, step)
+
+    def _add_files(self, file_filter: str = MEDIA_FILTER) -> None:
+        if not self.ctl.has_project:
+            return
+        paths, _ = get_open_file_names(self, "Add to timeline", str(Path.home()), file_filter)
+        t = self.ctl.playhead
+        for path in paths:
+            seg = self.ctl.add_file(path, t=t, track_index=self._default_track(path))
+            if seg is not None:
+                t = seg.end
+
+    def _default_track(self, path: str):
+        ext = os.path.splitext(path)[1].lower()
+        if ext in IMAGE_EXTS or ext in GIF_EXTS:
+            return 1          # pictures go on the top lane (over the video), kicked up if busy
+        return None
+
+    def _activate_item(self, item: QListWidgetItem) -> None:
+        payload = item.data(Qt.UserRole)
+        if callable(payload):
+            payload = payload()
+        if not payload or not self.ctl.has_project:
+            return
+        typ = payload.get("type")
+        if typ == "file":
+            self.ctl.add_file(payload["path"])
+        elif typ == "text":
+            self.ctl.add_text(payload["preset"])
+        elif typ == "global_text":
+            self.ctl.add_text_from_global(payload["name"])
+        elif typ == "transition":
+            if not self.ctl.selection:
+                self.ctl.error.emit("Select the segment the transition should lead into.")
+                return
+            self.ctl.apply_transition(list(self.ctl.selection), payload["kind"], payload["duration"],
+                                      payload["target"], payload["direction"])
+        elif typ == "effect":
+            self._apply_effect(payload["name"])
+
+    # ---- Text --------------------------------------------------------------
+    def _header_item(self, lst, text: str) -> None:
+        it = QListWidgetItem(text)
+        it.setFlags(Qt.NoItemFlags)
+        f = it.font()
+        f.setBold(True)
+        it.setFont(f)
+        lst.addItem(it)
+
+    def _text_page(self) -> QWidget:
+        w = QWidget()
+        lay = QVBoxLayout(w)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.addWidget(self._note("Double-click or drag a style onto the timeline. Global presets are your own "
+                                 "saved looks, in every project -- right-click one for more."))
+        row = QHBoxLayout()
+        save = CustomButton("Save as Global Preset…")
+        save.setToolTip("Name the selected text's look (font, colors, bubble, effects...) so you can reuse it "
+                        "in any project -- e.g. one friend always in one color")
+        save.clicked.connect(self.save_global_preset)
+        row.addWidget(save)
+        lay.addLayout(row)
+        self.text_list = _DragList()
+        self.text_list.itemDoubleClicked.connect(self._activate_item)
+        self.text_list.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.text_list.customContextMenuRequested.connect(self._text_menu)
+        lay.addWidget(self.text_list, stretch=1)
+        self._refresh_text_list()
+        return w
+
+    # ---- Comic ---------------------------------------------------------------
+    def _comic_page(self) -> QWidget:
+        w = QWidget()
+        lay = QVBoxLayout(w)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.addWidget(self._note("Expressions and sound effects -- double-click or drag one onto the timeline, put it "
+                                 "over someone's head. Each has its own in/out animation and idle loop; change "
+                                 "anything in Properties (Comic Effect, Lettering, Text Transitions)."))
+        self.comic_list = _DragList()
+        self.comic_list.itemDoubleClicked.connect(self._activate_item)
+        from ...nle import comic
+        for group, names in COMIC_PRESET_GROUPS:
+            self._header_item(self.comic_list, group)
+            for name in names:
+                it = QListWidgetItem(name)
+                st = TEXT_PRESETS[name]
+                if st.comic_effect:
+                    it.setToolTip((comic.EFFECTS[st.comic_effect][2].__doc__ or "").strip().replace("\n    ", " "))
+                else:
+                    it.setToolTip("Onomatopoeia -- edit the word, colors, 3D, backdrop and animations in Properties")
+                it.setData(Qt.UserRole, {"type": "text", "preset": name})
+                self.comic_list.addItem(it)
+        lay.addWidget(self.comic_list, stretch=1)
+        return w
+
+    def _refresh_text_list(self) -> None:
+        from ...nle import globals as gl
+        lst = self.text_list
+        lst.clear()
+        for name in TEXT_PRESETS:
+            if name in COMIC_PRESET_NAMES:          # those live on the Comic tab
+                continue
+            it = QListWidgetItem(name)
+            it.setData(Qt.UserRole, {"type": "text", "preset": name})
+            lst.addItem(it)
+        presets = gl.list_presets()
+        self._header_item(lst, "Global presets")
+        if not presets:
+            it = QListWidgetItem("(none yet -- select a text and Save as Global Preset)")
+            it.setFlags(Qt.NoItemFlags)
+            lst.addItem(it)
+        for pr in presets:
+            it = QListWidgetItem("★ " + pr["name"])
+            it.setToolTip(f"Global preset “{pr['name']}”")
+            it.setData(Qt.UserRole, {"type": "global_text", "name": pr["name"]})
+            lst.addItem(it)
+
+    def save_global_preset(self) -> None:
+        seg = self.ctl.selected_text_segment()
+        if seg is None:
+            self.ctl.error.emit("Select one text element to save its look as a global preset.")
+            return
+        from .page import ask_name
+        st = next(pt.text for pt in seg.parts if pt.text is not None)
+        name = ask_name(self, "Save as Global Preset",
+                        "Name this look (a friend's name, “Subtitles”...). It's saved for every "
+                        "project; using an existing name updates that preset.",
+                        st.global_preset or "")
+        if name:
+            self.ctl.save_global_preset(name)
+
+    def _text_menu(self, pos) -> None:
+        it = self.text_list.itemAt(pos)
+        payload = it.data(Qt.UserRole) if it is not None else None
+        if not payload or payload.get("type") != "global_text":
+            return
+        name = payload["name"]
+        from PySide6.QtWidgets import QMenu
+        from ..video_card import _menu_stylesheet
+        from ...nle import globals as gl
+        menu = QMenu(self)
+        menu.setStyleSheet(_menu_stylesheet(self._appearance))
+        menu.addAction("Add at Playhead", lambda: self.ctl.add_text_from_global(name))
+        a = menu.addAction("Apply to Selected", lambda: self.ctl.apply_global_preset(name))
+        a.setEnabled(any(pt.text is not None for s in self.ctl.selected_segments() for pt in s.parts))
+        a = menu.addAction("Update from Selected Text", lambda: self.ctl.save_global_preset(name))
+        a.setEnabled(self.ctl.selected_text_segment() is not None)
+        menu.addSeparator()
+        menu.addAction("Rename…", lambda: self._rename_preset(name))
+        menu.addAction("Delete Preset", lambda: (gl.delete_preset(name), self.ctl.globals_changed.emit()))
+        menu.exec(self.text_list.mapToGlobal(pos))
+
+    def _rename_preset(self, name: str) -> None:
+        from .page import ask_name
+        from ..custom_message_dialog import show_message
+        from ...nle import globals as gl
+        new = ask_name(self, "Rename Preset", "", name, "Rename")
+        if not new or new == name:
+            return
+        try:
+            gl.rename_preset(name, new)
+        except ValueError as e:
+            show_message(self, "Can't Rename", str(e))
+            return
+        if self.ctl.has_project:
+            def fn(p):
+                for sid in ops.segments_with_preset(p, name):
+                    _, sg = p.find_segment(sid)
+                    for pt in sg.parts:
+                        if pt.text is not None:
+                            pt.text.global_preset = new
+            self.ctl.perform("Rename preset", fn)
+        self.ctl.globals_changed.emit()
+
+    # ---- Audio -------------------------------------------------------------
+    def _audio_page(self) -> QWidget:
+        w = QWidget()
+        lay = QVBoxLayout(w)
+        lay.setContentsMargins(0, 0, 0, 0)
+        row = QHBoxLayout()
+        add = CustomButton("Add Audio File…")
+        add.clicked.connect(lambda: self._add_files(AUDIO_FILTER))
+        det = CustomButton("Detach Audio")
+        det.setToolTip("Split the selected video's audio onto its own segment")
+        det.clicked.connect(self.ctl.detach_audio)
+        row.addWidget(add)
+        row.addWidget(det)
+        lay.addLayout(row)
+        row2 = QHBoxLayout()
+        addg = CustomButton("Add Global Audio…")
+        addg.setToolTip("Keep an audio file for every project (a copy is stored with afterglow)")
+        addg.clicked.connect(self.add_global_audio)
+        row2.addWidget(addg)
+        lay.addLayout(row2)
+        lay.addWidget(self._note("Double-click or drag to add at the playhead. Global audio is there in every "
+                                 "project; right-click audio for more."))
+        self.audio_list = _DragList()
+        self.audio_list.itemDoubleClicked.connect(self._activate_item)
+        self.audio_list.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.audio_list.customContextMenuRequested.connect(self._audio_menu)
+        lay.addWidget(self.audio_list, stretch=1)
+        self._audio_sig = None
+        return w
+
+    def _refresh_audio_list(self) -> None:
+        from ...nle import globals as gl
+        p = self.ctl.project
+        paths = []
+        if p is not None:
+            for s in p.all_segments():
+                for part in s.parts:
+                    if part.has_audio and not part.has_video and part.source and part.source not in paths:
+                        paths.append(part.source)
+        glob = gl.list_audio()
+        sig = (tuple(paths), tuple((g["name"], g["file"]) for g in glob))
+        if sig == self._audio_sig:
+            return
+        self._audio_sig = sig
+        lst = self.audio_list
+        lst.clear()
+        self._header_item(lst, "In this project")
+        if not paths:
+            it = QListWidgetItem("(no audio files yet)")
+            it.setFlags(Qt.NoItemFlags)
+            lst.addItem(it)
+        global_files = {g["file"] for g in glob}
+        for path in paths:
+            label = os.path.basename(path)
+            if path in global_files:
+                label = "\u2605 " + next(g["name"] for g in glob if g["file"] == path)
+            it = QListWidgetItem(label)
+            it.setToolTip(path)
+            it.setData(Qt.UserRole, {"type": "file", "path": path, "audio": "project"})
+            lst.addItem(it)
+        self._header_item(lst, "Global audio")
+        if not glob:
+            it = QListWidgetItem("(none yet -- Add Global Audio, or right-click project audio)")
+            it.setFlags(Qt.NoItemFlags)
+            lst.addItem(it)
+        for g in glob:
+            it = QListWidgetItem("\u2605 " + g["name"])
+            it.setToolTip(g["file"])
+            it.setData(Qt.UserRole, {"type": "file", "path": g["file"], "audio": "global", "name": g["name"]})
+            lst.addItem(it)
+
+    def add_global_audio(self) -> None:
+        paths, _ = get_open_file_names(self, "Add global audio", str(Path.home()), AUDIO_FILTER)
+        for path in paths:
+            self.ctl.make_audio_global(path)
+
+    def _audio_menu(self, pos) -> None:
+        it = self.audio_list.itemAt(pos)
+        payload = it.data(Qt.UserRole) if it is not None else None
+        if not payload:
+            return
+        from PySide6.QtWidgets import QMenu
+        from ..video_card import _menu_stylesheet
+        from ...nle import globals as gl
+        path = payload["path"]
+        menu = QMenu(self)
+        menu.setStyleSheet(_menu_stylesheet(self._appearance))
+        a = menu.addAction("Add at Playhead", lambda: self.ctl.add_file(path))
+        a.setEnabled(self.ctl.has_project)
+        if payload.get("audio") == "global":
+            menu.addAction("Rename…", lambda: self._rename_audio(path, payload.get("name", "")))
+            menu.addAction("Remove from Global Audio",
+                           lambda: (gl.remove_audio(path), self.ctl.globals_changed.emit()))
+        elif not gl.is_global_audio(path):
+            menu.addAction("Make Global (every project)", lambda: self._make_global(path))
+        menu.exec(self.audio_list.mapToGlobal(pos))
+
+    def _make_global(self, path: str) -> None:
+        from .page import ask_name
+        name = ask_name(self, "Make Global Audio", "Name it (it's kept for every project).",
+                        Path(path).stem, "Make Global")
+        if name:
+            self.ctl.make_audio_global(path, name)
+
+    def _rename_audio(self, path: str, name: str) -> None:
+        from .page import ask_name
+        from ...nle import globals as gl
+        new = ask_name(self, "Rename Audio", "", name, "Rename")
+        if new and new != name:
+            gl.rename_audio(path, new)
+            self.ctl.globals_changed.emit()
+
+    # ---- Transitions -------------------------------------------------------
+    def _transitions_page(self) -> QWidget:
+        w = QWidget()
+        lay = QVBoxLayout(w)
+        lay.setContentsMargins(0, 0, 0, 0)
+        combo_qss = combo_box_stylesheet(self._appearance)
+        form = QFormLayout()
+        self.t_dur = CustomDoubleSpinBox()
+        self.t_dur.setRange(0.05, 30)
+        self.t_dur.setSingleStep(0.1)
+        self.t_dur.setValue(0.5)
+        self.t_dur.setSuffix(" s")
+        self.t_target = CustomComboBox()
+        self.t_target.setStyleSheet(combo_qss)
+        for label, data in (("Both", "both"), ("Destination", "destination"), ("Original", "original")):
+            self.t_target.addItem(label, data)
+        self.t_dir = CustomComboBox()
+        self.t_dir.setStyleSheet(combo_qss)
+        for label, data in (("Left", "left"), ("Right", "right"), ("Top", "top"), ("Bottom", "bottom")):
+            self.t_dir.addItem(label, data)
+        for label, widget in (("Duration", self.t_dur), ("Moves", self.t_target), ("From", self.t_dir)):
+            lab = QLabel(label)
+            lab.setStyleSheet(self._label_qss)
+            form.addRow(lab, widget)
+        lay.addLayout(form)
+        lay.addWidget(self._note("Drop a transition onto the segment it leads INTO (it blends from the segment ending "
+                                 "right where that one starts), or select that segment and double-click. "
+                                 "Moves/From apply to Slide and Fade."))
+        lst = _DragList()
+        for label, kind in (("Crossfade", "crossfade"), ("Blur / Focus", "blur"), ("Slide", "slide"),
+                            ("Fade (wipe)", "fade")):
+            it = QListWidgetItem(label)
+            it.setData(Qt.UserRole, (lambda k=kind: {"type": "transition", "kind": k,
+                                                     "duration": self.t_dur.value(),
+                                                     "target": self.t_target.currentData(),
+                                                     "direction": self.t_dir.currentData()}))
+            lst.addItem(it)
+        lst.itemDoubleClicked.connect(self._activate_item)
+        lay.addWidget(lst, stretch=1)
+        rm = CustomButton("Remove Transition from Selected")
+        rm.clicked.connect(lambda: self.ctl.apply_transition(list(self.ctl.selection), None))
+        lay.addWidget(rm)
+        return w
+
+    # ---- Effects -----------------------------------------------------------
+    EFFECTS = [
+        ("Punch-in zoom (130%)", "zoom_punch"),
+        ("Slow zoom (115%)", "zoom_slow"),
+        ("Fade in + out (0.5 s)", "fades"),
+        ("Half speed", "speed_half"),
+        ("Double speed", "speed_double"),
+        ("Normal speed", "speed_normal"),
+        ("Remove zoom + fades", "clear"),
+    ]
+
+    def _effects_page(self) -> QWidget:
+        w = QWidget()
+        lay = QVBoxLayout(w)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.addWidget(self._note("Double-click to apply to the selected segments. Fine-tune in Properties."))
+        lst = _DragList()
+        lst.drags_enabled = False
+        for label, name in self.EFFECTS:
+            it = QListWidgetItem(label)
+            it.setData(Qt.UserRole, {"type": "effect", "name": name})
+            lst.addItem(it)
+        lst.itemDoubleClicked.connect(self._activate_item)
+        lay.addWidget(lst, stretch=1)
+        return w
+
+    def _apply_effect(self, name: str) -> None:
+        ids = list(self.ctl.selection)
+        if not ids:
+            self.ctl.error.emit("Select one or more segments first.")
+            return
+
+        def fn(p):
+            for sid in ids:
+                _, s = p.find_segment(sid)
+                if s is None or s.locked:
+                    continue
+                if name == "zoom_punch":
+                    ops.set_zoom(p, [sid], 1.3, min(0.4, s.duration / 3), min(0.4, s.duration / 3))
+                elif name == "zoom_slow":
+                    ops.set_zoom(p, [sid], 1.15, s.duration * 0.999, 0.0)
+                elif name == "fades":
+                    ops.set_fades(p, [sid], fade_in=0.5, fade_out=0.5)
+                elif name == "speed_half":
+                    ops.set_speed(p, sid, 0.5)
+                elif name == "speed_double":
+                    ops.set_speed(p, sid, 2.0)
+                elif name == "speed_normal":
+                    ops.set_speed(p, sid, 1.0)
+                elif name == "clear":
+                    ops.set_zoom(p, [sid], 1.0, 0.0, 0.0)
+                    ops.set_fades(p, [sid], fade_in=0.0, fade_out=0.0)
+        self.ctl.perform("Effect", fn)

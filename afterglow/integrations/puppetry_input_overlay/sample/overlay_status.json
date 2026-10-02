@@ -1,0 +1,31 @@
+{
+  "pid": 1014,
+  "updated": 1790748500.0,
+  "daemon_connected": true,
+  "pages": {
+    "full": "http://127.0.0.1:17380/"
+  },
+  "elements": [
+    {
+      "id": "keyboard",
+      "type": "keyboard"
+    },
+    {
+      "id": "mouse",
+      "type": "mouse"
+    },
+    {
+      "id": "movement",
+      "type": "mousepad"
+    }
+  ],
+  "element_urls": {},
+  "replay": {
+    "enabled": true,
+    "file": "/run/user/1000/puppetry/input_buffer.jsonl",
+    "length_s": 60.0,
+    "length_source": "obs",
+    "extra_s": 5.0
+  },
+  "obs": "connected; replay buffer 60 s"
+}
