@@ -324,7 +324,46 @@ alignment offset (a few frames at most; `offset_ms` corrects it).
 
 ## Clip indicator ("the clapper") -- BUILT (status first, then the original spec)
 
-### Revision round (newest): what changed after the first build
+### Hands redrawn from traced 3D frames (newest)
+- **What changed.** The Hands style is no longer the articulated vector gloves: it is drawn from 2D vector
+  frames traced from a 3D model of the clap (`afterglow/indicator/hands2d.py`, data in
+  `afterglow/indicator/resources/hands_frames.json.gz`, ~0.9 MB, made by `tools/hands_bake/` -- see its
+  README). The 3D model was posed and animated so the hands interlock without clipping; each frame was
+  rendered into a z-buffer and traced (silhouette, part fills, shadow shapes, stitching, ink lines with
+  weights from the depth jumps). `draw.draw_hands` dispatches to it; the old vector gloves remain only as a
+  fallback when the data file is missing.
+- **The clap** (as approved on the references): button pressed (hands apart, fingers bent, idling) ->
+  wind-up 320 ms (the hands reel back and turn outward, fingers open) -> swing 90 ms (speed lines) ->
+  contact at 410 ms (`HANDS_CONTACT_MS`, the clap sound is delayed by it) -> the clasp closes (80 ms,
+  squash, shock ring from contact for 500 ms) -> settles by 1.1 s -> resting clasp (idling). The clasp:
+  the right hand crosses over the left palm, its fingers curl round the left index side, its thumb
+  tucks along the edge of the left palm under the left thumb, the left thumb curls over it. The camera
+  view turns 15 deg further left during the swing (the button-pressed pose is seen 25 deg left of front,
+  the clasp 40 deg). Sequences: `ready` and `rest` are 2 s loops at 30 fps, `clap` is 60 fps.
+- **Seamless phases.** The rest loop runs on the time since the clap began (`Frame.since_clap`, set from
+  `Indicator.clap_t0` in `Model._go`; `ClapPose.since_clap`), so it continues exactly where the clap's
+  last frame ended, through the clap state's end and the exit. The clap's first 80 ms cross-fade from the
+  idle frame that was showing (`hands2d.CROSSFADE_MS`). `HANDS_CLAP_TOTAL_MS` (the clap state) is now
+  790 ms; the drawing keeps following the clap frames to 1.1 s regardless.
+- **Two looks** (`ClipIndicatorSettings.hands_look`, `style["hands_look"]`, Settings "Hands look", enabled
+  for the Hands style): `retro` (default: cream gloves, black ink, red cuffs, a warm deep-shadow shape,
+  pie-cut shines, heavier outline) and `cel` (the theme's pale gloves, one hard shadow shape, tapered
+  ink). Same four colour keys for both; `draw.afterglow_defaults(appearance, hands_look)` gives each
+  look's defaults (`hands2d.RETRO_COLORS` for retro; the clapper's colours never change with the look).
+  A clip type's chosen colours apply to both looks. The per-clip-type dialog's "Default" values follow
+  the Settings page's current look.
+- **Icon** on the back of the right glove: an icon square projected from the 3D hand per frame, clipped to
+  the visible back of the hand, mapped unmirrored when the left hand is in front.
+- **Bounds.** The traced clasp is taller than it is wide; `test_indicator_draw` now checks that the gloves
+  fill the box along its limiting side and stay centred (7 % vertical tolerance).
+- Tests: `test_indicator_draw` (sequences, timing contract with `HANDS_CONTACT_MS`, frame selection and
+  phase lock, both looks' colours, mirroring, the icon unmirrored), `test_indicator_model` (`since_clap`,
+  `hands_look` validation), `test_indicator_pipeline` (`hands_look` and its default colours reach the start
+  event), `test_clip_indicator_ui` (the Hands look combo: default, enabled state, preview, saved).
+- Unverified on real hardware, like the rest of the indicator: frame rate of the traced drawing on the
+  overlay surface (paths are built once per frame and cached; a frame is ~30 paths).
+
+### Revision round: what changed after the first build
 Changes to the indicator and a few Settings / Library UI fixes. Where each lives:
 - **Edge handling.** Corners enter / leave through their top or bottom edge, not the side edge
   (`draw.edge_vec`); `lateral_toward_centre` / `Space.lateral` make sideways arcs and launches go
@@ -349,12 +388,16 @@ Changes to the indicator and a few Settings / Library UI fixes. Where each lives
   (`GlovePose.inplane`). The right glove shows the back of the hand (stitching, the custom icon),
   the left glove its palm (pad, creases, joint creases); both have the thumb on the left as drawn,
   coming out of the palm's edge (`GLOVE_FINGERS`, `GLOVE_THUMB`, `GLOVE_PALM`, `draw_glove`,
-  `glove_geometry`). Timeline (`hands_frame`, from `ClapPose.clap_ms`): READY (apart, fingers a
+  `glove_geometry`). The thumb leaves the palm low on the side facing the other hand and sticks out
+  (`GLOVE_THUMB` direction -58 deg); only its part outside the palm is drawn, so it has no rounded end
+  at its root, and a web of skin (`_thumb_web`) joins it to the hand. In the clasp the layering is: palm
+  glove, back-of-hand glove without its thumb, the palm glove's thumb over the front fingertips, then the
+  front thumb over the root of that one. Timeline (`hands_frame`, from `ClapPose.clap_ms`): READY (apart, fingers a
   little bent, idling) -> wind-up `HANDS_WINDUP_MS` (hands pull apart, fingers open) -> swing
   `HANDS_SWING_MS` (speed streaks) -> IMPACT at `HANDS_CONTACT_MS` (the clasp from the classic
   clapping photo: the right hand crosses over the left palm, its fingers curl over and tuck between
   the left thumb and fingers, its thumb lies across the left heel, the left fingers come out past
-  the right pinky; the back-of-hand glove sits higher so the thumb below it has room; squash, shock
+  the right pinky; the back-of-hand glove sits about 0.11 x the box width above the palm glove so the thumb below it has room; squash, shock
   ring + impact lines over `HANDS_FX_MS`) -> settle -> REST (relaxed clasp, idling), clasped through
   the exit. Idle wobble (`_wobble`): each finger bends on its own rhythm with all three joints
   together, plus a slight sway. The keyframes (`HANDS_READY`, `HANDS_WINDUP`, `HANDS_IMPACT`,

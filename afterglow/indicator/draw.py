@@ -44,10 +44,12 @@ def circle_diameter(size: float) -> float:
     return max(20.0, round(size * 0.30))
 
 
-def afterglow_defaults(appearance=None) -> "dict[str, str]":
+def afterglow_defaults(appearance=None, hands_look: str = "retro") -> "dict[str, str]":
     """The default part colours: the afterglow theme's own colours (``appearance`` is an
     ``config.AppearanceSettings``; None = the theme's built-in values).  Taken from the stored hex
-    values rather than ``gui.theme.Theme`` so the headless daemon can compute them too."""
+    values rather than ``gui.theme.Theme`` so the headless daemon can compute them too.
+    ``hands_look``: the retro look has its own glove colours (cream, black ink, red cuffs); the cel
+    look uses the theme's."""
     if appearance is None:
         from ..config import AppearanceSettings
         appearance = AppearanceSettings()
@@ -67,7 +69,13 @@ def afterglow_defaults(appearance=None) -> "dict[str, str]":
         # hands: pale gloves outlined in the dark app colour, turquoise cuffs and stitching
         "glove": mix(teal, QColor("#ffffff"), 0.92).name(), "glove_outline": app_bg.name(),
         "cuff": teal.name(), "stitches": teal.name(),
+        **(_retro_colors() if hands_look == "retro" else {}),
     }
+
+
+def _retro_colors() -> "dict[str, str]":
+    from .hands2d import RETRO_COLORS
+    return dict(RETRO_COLORS)
 
 
 DEFAULT_COLORS = None     # filled in below (needs mix())
@@ -100,7 +108,7 @@ def mix(a: QColor, b: QColor, t: float) -> QColor:
 
 # ------------------------------------------------------------------ easing
 
-DEFAULT_COLORS = afterglow_defaults()
+DEFAULT_COLORS = afterglow_defaults(hands_look="retro")
 
 
 def clamp01(t: float) -> float:
@@ -159,6 +167,8 @@ class ClapPose:
     age: float = 0.0        # seconds since the indicator appeared (drives the idle wobble)
     clapped: bool = False   # after the clap: the hands rest clasped
     front: str = "right"    # which glove ends up in front ("right" / "left")
+    since_clap: float = -1.0  # seconds since the clap began (-1 before it): keeps the clasp's idle in step
+    look: str = "retro"     # the Hands look: "retro" / "cel" (see hands2d.py)
 
 
 def clap_pose(t_ms: float) -> ClapPose:
@@ -386,8 +396,8 @@ def _impact_lines(p: QPainter, tip: QPointF, length: float, strength: float, col
 
 from . import HANDS_CONTACT_MS, HANDS_SWING_MS, HANDS_WINDUP_MS   # noqa: E402
 
-HANDS_IMPACT_MS = 130.0          # the impact pose is held this long after contact
-HANDS_SETTLE_MS = 220.0          # then eases into the resting clasp
+HANDS_IMPACT_MS = 80.0           # the hands close into the clasp this long after contact
+HANDS_SETTLE_MS = 300.0          # then the clap state ends (the clasp keeps settling while the item moves on)
 HANDS_CLAP_TOTAL_MS = HANDS_CONTACT_MS + HANDS_IMPACT_MS + HANDS_SETTLE_MS
 HANDS_FX_MS = 300.0              # ring + lines fade over this long from contact
 
@@ -398,7 +408,7 @@ GLOVE_FINGERS = (   # name, anchor, segment lengths, width, base direction (deg,
     ("middle", (0.005, -0.62), (0.21, 0.165, 0.12), 0.265, 0.0),
     ("index", (-0.165, -0.58), (0.195, 0.155, 0.115), 0.26, -8.0),
 )
-GLOVE_THUMB = ((-0.24, -0.27), (0.19, 0.15), 0.255, -48.0)
+GLOVE_THUMB = ((-0.20, -0.16), (0.25, 0.16), 0.25, -58.0)   # leaves the palm low, sticking out like a real thumb
 GLOVE_PALM = ((-0.21, -0.02), (-0.30, -0.22), (-0.30, -0.48), (-0.20, -0.63), (0.0, -0.69), (0.20, -0.63),
               (0.30, -0.48), (0.29, -0.22), (0.21, -0.02))
 _FINGER_NAMES = ("index", "middle", "pinky")
@@ -430,22 +440,23 @@ def _gp(x, y, rot, s, side, bend, inplane, spread=0.0, thumb=0.0, thumb_bend=(0.
 
 # the keyframes (left glove = palm view, right glove = back view; the right one ends up in front)
 HANDS_READY = (
-    _gp(0.17, 0.675, 11.0, 0.53, "palmar", (10, 12, 8), 0.45, 0.3, 26.0, (4, 6)),
-    _gp(0.83, 0.675, -11.0, 0.53, "dorsal", (12, 14, 10), -0.45, 0.0, 50.0, (14, 14)),
+    _gp(0.240, 0.675, 11.0, 0.53, "palmar", (10, 12, 8), 0.45, 0.3, 0.0, (4, 6)),
+    _gp(0.900, 0.675, -11.0, 0.53, "dorsal", (12, 14, 10), -0.45, 0.0, 6.0, (6, 8)),
 )
 HANDS_WINDUP = (
-    _gp(0.115, 0.70, -6.0, 0.56, "palmar", (-6, -4, 0), 0.4, 1.0, 10.0, (0, 0)),
-    _gp(0.885, 0.70, 6.0, 0.56, "dorsal", (-6, -4, 0), -0.4, 0.8, 36.0, (0, 0)),
+    _gp(0.155, 0.700, -6.0, 0.56, "palmar", (-6, -4, 0), 0.4, 1.0, -8.0, (0, 0)),
+    _gp(0.925, 0.700, 6.0, 0.56, "dorsal", (-6, -4, 0), -0.4, 0.8, -8.0, (0, 0)),
 )
+# the back-of-hand glove sits well above the palm glove, so the thumb below it has room
 HANDS_IMPACT = (
-    _gp(0.36, 0.69, 20.0, 0.60, "palmar", {"index": (14, 18, 10), "middle": (12, 16, 10), "pinky": (10, 14, 8)}, 0.3, 1.0, 34.0, (6, 8)),
-    _gp(0.68, 0.62, -40.0, 0.60, "dorsal", {"index": (38, 48, 32), "middle": (38, 48, 32), "pinky": (36, 44, 30)}, -0.42, 0.0, -28.0, (0, 0)),
+    _gp(0.392, 0.693, 20.0, 0.60, "palmar", {"index": (14, 18, 10), "middle": (12, 16, 10), "pinky": (10, 14, 8)}, 0.3, 1.0, 48.0, (6, 8)),
+    _gp(0.682, 0.583, -40.0, 0.60, "dorsal", {"index": (38, 48, 32), "middle": (38, 48, 32), "pinky": (36, 44, 30)}, -0.42, 0.0, 0.0, (0, 0)),
 )
 HANDS_REST = (
-    _gp(0.365, 0.685, 18.0, 0.60, "palmar", {"index": (12, 15, 8), "middle": (10, 13, 8), "pinky": (8, 11, 6)}, 0.3, 0.6, 32.0, (4, 6)),
-    _gp(0.675, 0.63, -36.0, 0.60, "dorsal", {"index": (32, 40, 26), "middle": (32, 40, 26), "pinky": (30, 37, 24)}, -0.42, 0.0, -24.0, (0, 0)),
+    _gp(0.394, 0.693, 18.0, 0.60, "palmar", {"index": (12, 15, 8), "middle": (10, 13, 8), "pinky": (8, 11, 6)}, 0.3, 0.6, 46.0, (4, 6)),
+    _gp(0.674, 0.598, -36.0, 0.60, "dorsal", {"index": (32, 40, 26), "middle": (32, 40, 26), "pinky": (30, 37, 24)}, -0.42, 0.0, 4.0, (0, 0)),
 )
-HANDS_CONTACT = QPointF(0.45, 0.21)    # where the hands meet (box units): the ring and lines start here
+HANDS_CONTACT = QPointF(0.47, 0.20)    # where the hands meet (box units): the ring and lines start here
 
 
 def _lerp_glove(a: GlovePose, b: GlovePose, t: float) -> GlovePose:
@@ -587,6 +598,39 @@ def glove_transform(rect: QRectF, g: GlovePose) -> QTransform:
     return t
 
 
+def _thumb_web(thumb, palm: QPainterPath, s: float) -> "tuple[QPainterPath, QPainterPath]":
+    """The skin between the thumb and the hand: from partway up the thumb's inner side back to the
+    palm's edge above the root, a soft concave curve.  Returns (the web's area, its free edge)."""
+    r0, j1 = thumb[0], thumb[1]
+    dx, dy = j1.x() - r0.x(), j1.y() - r0.y()
+    n = math.hypot(dx, dy) or 1.0
+    ux, uy = dx / n, dy / n
+    nx, ny = uy, -ux                                   # the thumb's inner side (toward the fingers)
+    if ny > 0:
+        nx, ny = -nx, -ny
+    half = GLOVE_THUMB[2] * s / 2
+    a = QPointF(r0.x() + ux * n * 0.62 + nx * half * 0.92, r0.y() + uy * n * 0.62 + ny * half * 0.92)
+    # the palm's edge, a little above where the thumb leaves it
+    target = QPointF(r0.x() - 0.06 * s, r0.y() - 0.24 * s)
+    best, bd = target, 1e18
+    for i in range(121):
+        q = palm.pointAtPercent(i / 120.0)
+        if q.x() > r0.x() + 0.05 * s:                  # only the thumb side of the palm
+            continue
+        d = (q.x() - target.x()) ** 2 + (q.y() - target.y()) ** 2
+        if d < bd:
+            best, bd = q, d
+    b = best
+    crotch = QPointF((a.x() + b.x()) / 2 + (r0.x() - (a.x() + b.x()) / 2) * 0.35,
+                     (a.y() + b.y()) / 2 + (r0.y() - (a.y() + b.y()) / 2) * 0.35)
+    edge = QPainterPath(a)
+    edge.quadTo(crotch, b)
+    area = QPainterPath(edge)
+    area.lineTo(r0)
+    area.closeSubpath()
+    return area, edge
+
+
 def glove_geometry(g: GlovePose, size: float) -> dict:
     """The glove's pieces in its own frame (origin at the wrist): finger joint lists, thumb joints,
     the palm path, the icon box (back of the hand) and the silhouette."""
@@ -607,8 +651,10 @@ def glove_geometry(g: GlovePose, size: float) -> dict:
     st.setWidth(GLOVE_THUMB[2] * s)
     st.setCapStyle(Qt.RoundCap)
     sil = sil.united(st.createStroke(_smooth_open(thumb)))
+    web, web_edge = _thumb_web(thumb, palm, s)
+    sil = sil.united(web)
     side = s * 0.24
-    return {"fingers": fingers, "thumb": thumb, "palm": palm, "silhouette": sil,
+    return {"fingers": fingers, "thumb": thumb, "palm": palm, "silhouette": sil, "web": web, "web_edge": web_edge,
             "icon_box": QRectF(-side / 2, -0.36 * s - side / 2, side, side)}
 
 
@@ -676,8 +722,6 @@ def draw_glove(p: QPainter, rect: QRectF, g: GlovePose, colors: "dict[str, QColo
                     n = math.hypot(dx, dy) or 1.0
                     nx, ny = -dy / n * fw * s * 0.25, dx / n * fw * s * 0.25
                     p.drawLine(QPointF(q.x() - nx, q.y() - ny), QPointF(q.x() + nx, q.y() + ny))
-    if "thumb" in parts and dorsal:                          # back view: the thumb comes from behind the palm edge
-        _tube(p, geo["thumb"], GLOVE_THUMB[2] * s, tones, lw)
     if "palm" in parts:
         p.setPen(Qt.NoPen)
         p.setBrush(pg)
@@ -744,25 +788,37 @@ def draw_glove(p: QPainter, rect: QRectF, g: GlovePose, colors: "dict[str, QColo
             st.setWidth(fw * s * 0.98)
             st.setCapStyle(Qt.RoundCap)
             keep = keep.subtracted(st.createStroke(_smooth_open(geo["fingers"][name])))
-        if dorsal and "thumb" in parts:
-            st = QPainterPathStroker()
-            st.setWidth(GLOVE_THUMB[2] * s * 0.98)
-            st.setCapStyle(Qt.RoundCap)
-            keep = keep.subtracted(st.createStroke(_smooth_open(geo["thumb"])))
+        st = QPainterPathStroker()                           # the thumb (and its web) always grow out of this edge
+        st.setWidth(GLOVE_THUMB[2] * s * 0.98)
+        st.setCapStyle(Qt.RoundCap)
+        keep = keep.subtracted(st.createStroke(_smooth_open(geo["thumb"])))
+        keep = keep.subtracted(geo["web"])
         p.setClipPath(keep, Qt.IntersectClip)
         p.setPen(_pen(tones["ink"], lw))
         p.setBrush(Qt.NoBrush)
         p.drawPath(palm)
         p.restore()
-    if ("thumb" in parts and not dorsal) or "thumb_only" in parts:   # palm view: the thumb lies in front of the palm
+    if "thumb" in parts or "thumb_only" in parts:
+        # the thumb grows out of the palm's edge: only what is outside the palm is drawn, so it has no
+        # rounded end at its root and its outline stops where it meets the hand
+        p.save()
+        outside = QPainterPath()
+        outside.addRect(QRectF(-3 * s, -3 * s, 6 * s, 6 * s))
+        p.setClipPath(outside.subtracted(palm), Qt.IntersectClip)
         _tube(p, geo["thumb"], GLOVE_THUMB[2] * s, tones, lw)
-        if not dorsal and "palm" in parts:
-            p.save()                                          # its root melts into the palm
-            root = QPainterPath()
-            root.addEllipse(QPointF(geo["thumb"][0].x() + 0.02 * s, geo["thumb"][0].y() + 0.02 * s), 0.11 * s, 0.12 * s)
-            p.setClipPath(palm.intersected(root), Qt.IntersectClip)
-            p.fillPath(root, pg)
-            p.restore()
+        # the web of skin joining it to the hand, over the thumb's root
+        web = geo["web"]
+        p.setPen(Qt.NoPen)
+        p.setBrush(pg)
+        p.drawPath(web)
+        wc = QColor(tones["deep"])
+        wc.setAlpha(70)
+        p.setBrush(wc)
+        p.drawPath(web)
+        p.setPen(_pen(tones["ink"], lw))
+        p.setBrush(Qt.NoBrush)
+        p.drawPath(geo["web_edge"])                        # only its part outside the palm shows
+        p.restore()
     p.restore()
     return icon_rect
 
@@ -811,9 +867,14 @@ def _hands_streaks(p: QPainter, rect: QRectF, g: GlovePose, outward: float, stre
 
 def draw_hands(p: QPainter, rect: QRectF, pose: ClapPose, colors: "dict[str, QColor]",
                icon: "QImage | None" = None) -> "QRectF | None":
-    """The two gloves for ``pose`` (see the section comment).  ``pose.front == "left"`` mirrors the
-    whole picture (the left hand ends up in front); the icon is never mirrored.  Returns the icon's
-    rect on the back-of-hand glove."""
+    """The two gloves for ``pose``.  Drawn from the traced 2D frames (hands2d.py) in the pose's look;
+    the articulated vector gloves below are the fallback when the frame data is missing.
+    ``pose.front == "left"`` mirrors the whole picture (the left hand ends up in front); the icon is
+    never mirrored.  Returns the icon's rect on the back-of-hand glove."""
+    if _traced():
+        from . import hands2d
+        return hands2d.draw(p, rect, pose.look, pose.age, pose.since_clap, pose.clap_ms, pose.clapped, pose.front,
+                            colors, icon)
     hf = hands_frame(pose)
     tones = _glove_tones(colors)
     flip = pose.front == "left"
@@ -835,9 +896,12 @@ def draw_hands(p: QPainter, rect: QRectF, pose: ClapPose, colors: "dict[str, QCo
         _hands_streaks(p, rect, hf.right, 1.0, hf.swing, tones)
     everything = ("shadow", "cuff", "fingers", "thumb", "palm")
     if hf.clasped:
+        # back to front: the palm glove, the back-of-hand glove (its thumb aside), the palm glove's thumb
+        # over the front fingertips, and the front thumb over the root of that one
         draw_glove(p, rect, hf.left, colors, None, ("shadow", "cuff", "fingers", "palm"))
-        icon_rect = draw_glove(p, rect, hf.right, colors, icon, everything, unflip_icon=flip)
+        icon_rect = draw_glove(p, rect, hf.right, colors, icon, ("shadow", "cuff", "fingers", "palm"), unflip_icon=flip)
         draw_glove(p, rect, hf.left, colors, None, ("thumb_only",))
+        draw_glove(p, rect, hf.right, colors, None, ("thumb_only",))
     else:
         draw_glove(p, rect, hf.left, colors, None, everything)
         icon_rect = draw_glove(p, rect, hf.right, colors, icon, everything, unflip_icon=flip)
@@ -845,8 +909,16 @@ def draw_hands(p: QPainter, rect: QRectF, pose: ClapPose, colors: "dict[str, QCo
     return icon_rect
 
 
+def _traced() -> bool:
+    from . import hands2d
+    return hands2d.available()
+
+
 def hands_bounds(rect: QRectF, pose: ClapPose) -> QRectF:
     """The area both gloves cover for a pose (for tests and layout checks)."""
+    if _traced():
+        from . import hands2d
+        return hands2d.bounds(rect, pose.look, pose.age, pose.since_clap, pose.clap_ms, pose.clapped, pose.front)
     hf = hands_frame(pose)
     out = QRectF()
     for g in (hf.left, hf.right):

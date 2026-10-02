@@ -81,6 +81,7 @@ class ClipIndicatorSettings:
     clapper_opacity: float = 1.0              # the clapper's own opacity (0.05 - 1)
     ring_pulse: bool = True                   # the ring pulses as each stage completes
     hands_front: str = "right"                # the Hands style: which glove ends up in front ("right" | "left")
+    hands_look: str = "retro"                 # the Hands style: "retro" (cream, black ink, red cuffs) | "cel" (theme colours)
     clap_sound: str = ""                      # JUST the clapper's noise ("" = the clip's usual sound)
     screen: str = "focused"                   # "focused": the screen holding the focused window | "primary"
 

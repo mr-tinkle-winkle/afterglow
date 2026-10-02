@@ -55,6 +55,8 @@ class StackPainter:
                 pose = draw.ClapPose(open=0.0 if fr.clapped else 1.0)
             pose.age, pose.clapped = fr.age, fr.clapped
             pose.front = getattr(style, "hands_front", "right")
+            pose.look = getattr(style, "hands_look", "retro")
+            pose.since_clap = getattr(fr, "since_clap", -1.0)
             icon = draw.load_icon(style.icon)
             p.save()
             draw.apply_xform(p, rect, xf)

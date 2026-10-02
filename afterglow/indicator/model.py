@@ -31,7 +31,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from . import (ANCHORS, DEFAULT_ANCHOR, ENTER_ANIMATIONS, EXIT_ANIMATIONS, MAX_VISIBLE, PROCESSING_MODES,
-               SCREEN_MODES, STYLES, WATCHDOG, HANDS_FRONT)
+               SCREEN_MODES, STYLES, WATCHDOG, HANDS_FRONT, HANDS_LOOKS, DEFAULT_HANDS_LOOK)
 from . import draw
 
 CIRCLE_FADE_IN = 0.200
@@ -66,6 +66,7 @@ class Style:
     opacity: float = 1.0                     # the clapper's own opacity
     pulse: bool = True                       # the ring pulses when a stage completes
     hands_front: str = "right"               # the Hands style: which glove ends up in front
+    hands_look: str = DEFAULT_HANDS_LOOK     # the Hands style: "retro" / "cel"
     screen: str = "focused"
     screen_hint: "dict | None" = None        # {"x": .., "y": ..} = centre of the focused window
 
@@ -90,6 +91,7 @@ class Style:
         s.opacity = min(1.0, max(0.05, float(d.get("opacity", 1.0))))
         s.pulse = bool(d.get("pulse", True))
         s.hands_front = d.get("hands_front") if d.get("hands_front") in HANDS_FRONT else "right"
+        s.hands_look = d.get("hands_look") if d.get("hands_look") in HANDS_LOOKS else DEFAULT_HANDS_LOOK
         s.screen = d.get("screen") if d.get("screen") in SCREEN_MODES else "focused"
         hint = d.get("screen_hint")
         s.screen_hint = dict(hint) if isinstance(hint, dict) else None
@@ -113,6 +115,7 @@ class Frame:
     circle_pulse: float = -1.0                 # 0..1 while the ring is pulsing (a stage just completed), else -1
     clapped: bool = False                      # the clap has happened (the item rests shut); False = ready / open
     age: float = 0.0                           # seconds since the capture appeared (the hands idle with it)
+    since_clap: float = -1.0                   # seconds since the clap began, -1 before it (the clasp's idle runs on it)
 
 
 class Indicator:
@@ -130,6 +133,7 @@ class Indicator:
         self.mix = 0.0                   # gray -> purple, remembered for the fade-out
         self.circle_alpha_start = 1.0    # alpha the circle had when it started fading out
         self.pulse_t0 = -1.0             # when the ring's last pulse began (a stage completed), -1 = never
+        self.clap_t0 = -1.0              # when the clap state began, -1 = not yet
 
     # -- slots
     def slot_at(self, now: float) -> float:
@@ -230,6 +234,8 @@ class Model:
     def _go(self, ind: Indicator, state: str, t0: float) -> None:
         ind.state = state
         ind.t0 = t0
+        if state == "clap":
+            ind.clap_t0 = t0
         # the ring pulses as each stage completes: it arrives (the clip is saved), turns purple (the
         # clip is in the library, the overlay renders), and bursts as it leaves (everything done)
         if ind.style.pulse and state in ("circle_in", "cross", "circle_out"):
@@ -399,6 +405,8 @@ class Model:
         st = ind.style
         fr = Frame(id=ind.id, state=s, slot=ind.slot_at(now))
         fr.age = max(0.0, now - ind.born)
+        if getattr(ind, "clap_t0", -1.0) >= 0:
+            fr.since_clap = max(0.0, now - ind.clap_t0)
         fr.clapped = s in ("leave", "stay", "popin", "fail", "clap") and "clap" in ind.flags
         if s == "enter":
             fr.anim = ("enter", st.enter, el / ind.enter_dur())

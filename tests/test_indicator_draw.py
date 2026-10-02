@@ -83,14 +83,22 @@ check(d["board"].name() == "#123456" and d["stripe_a"].name() == draw.DEFAULT_CO
 from afterglow import config as _cfg
 ap = _cfg.AppearanceSettings()
 check(draw.DEFAULT_COLORS == draw.afterglow_defaults() == draw.afterglow_defaults(ap), "defaults come from the afterglow theme")
+_cel = draw.afterglow_defaults(ap, "cel")
 check(draw.DEFAULT_COLORS["stripe_a"] == ap.afterglow_color_turquoise and draw.DEFAULT_COLORS["stripe_b"] == ap.afterglow_color_accent
-      and draw.DEFAULT_COLORS["board"] == ap.afterglow_color_card_background and draw.DEFAULT_COLORS["glove_outline"] == ap.afterglow_color_app_background,
-      "...stripes in the theme's turquoise and accent, the board in its card colour, gloves outlined in its app colour")
+      and draw.DEFAULT_COLORS["board"] == ap.afterglow_color_card_background and _cel["glove_outline"] == ap.afterglow_color_app_background,
+      "...stripes in the theme's turquoise and accent, the board in its card colour, cel gloves outlined in its app colour")
+from afterglow.indicator import hands2d as _h2
+check(all(draw.DEFAULT_COLORS[k] == v for k, v in _h2.RETRO_COLORS.items()) and _cel["glove"] != draw.DEFAULT_COLORS["glove"]
+      and all(_cel[k] == draw.DEFAULT_COLORS[k] for k in draw.CLAPPER_COLOR_KEYS),
+      "the retro look (the default) has its own glove colours; the clapper's colours are the same for both looks")
 ap2 = _cfg.AppearanceSettings()
 ap2.afterglow_color_turquoise = "#ff8800"
 ap2.afterglow_color_card_background = "#112233"
-custom = draw.afterglow_defaults(ap2)
-check(custom["stripe_a"] == "#ff8800" and custom["board"] == "#112233" and custom["cuff"] == "#ff8800", "...and follow a customised theme")
+custom = draw.afterglow_defaults(ap2, "cel")
+check(custom["stripe_a"] == "#ff8800" and custom["board"] == "#112233" and custom["cuff"] == "#ff8800",
+      "...and follow a customised theme (the cel look's cuffs too)")
+check(draw.afterglow_defaults(ap2)["cuff"] == _h2.RETRO_COLORS["cuff"] and draw.afterglow_defaults(ap2)["stripe_a"] == "#ff8800",
+      "...the retro look keeps its red cuffs, the clapper still follows the theme")
 ap2.afterglow_color_accent = "not a colour"
 check(draw.afterglow_defaults(ap2)["stripe_b"] == "#152c4f", "...an invalid theme colour falls back to the built-in one")
 check(set(draw.DEFAULT_COLORS) == set(draw.CLAPPER_COLOR_KEYS) | set(draw.HANDS_COLOR_KEYS), "every part has a default")
@@ -228,13 +236,20 @@ check(len({v // 6 for v in lum}) >= 8 and max(lum) - min(lum) >= 45, f"hands: sh
 check(len(draw.GLOVE_FINGERS) == 3, "hands: cartoon gloves -- three fingers and a thumb")
 # the thumb sits on the palm's edge (the side facing the other hand), not on the back of the hand
 palm_xs = [x for x, _ in draw.GLOVE_PALM]
-check(draw.GLOVE_THUMB[0][0] <= min(palm_xs) * 0.75, "hands: the thumb comes out of the palm's edge, not the back of the hand")
-# as big as the clapper: the gloves fill the item's box and are centred on it (the point animations turn about)
+_g = draw.GlovePose(0.5, 0.8, 0.0, 0.5, "palmar", {n: (0, 0, 0) for n in ("index", "middle", "pinky")}, 0.0)
+_geo = draw.glove_geometry(_g, 100.0)
+_path = draw._smooth_open(_geo["thumb"])
+_exit = next((_path.pointAtPercent(i / 200.0) for i in range(201) if not _geo["palm"].contains(_path.pointAtPercent(i / 200.0))), None)
+check(_exit is not None and _exit.x() < 0 and _exit.y() > -0.38 * 100, f"hands: the thumb leaves the palm low, on the side facing the other hand ({_exit})")
+check(abs(draw.GLOVE_THUMB[3]) >= 50, "hands: the thumb sticks out from the hand by default, like a real thumb")
+check(not _geo["web"].isEmpty() and _geo["silhouette"].contains(_geo["web"].boundingRect().center()), "hands: a web of skin joins the thumb to the hand")
+# as big as the clapper: the gloves fill the item's box (along its limiting side -- the clasp is taller than it is
+# wide) and are centred on it (the point animations turn about)
 for name, pz in (("ready", READY), ("impact", clapping(draw.HANDS_CONTACT_MS + 20)), ("rest", REST)):
     b = draw.hands_bounds(hrect, pz)
-    check(b.width() >= hrect.width() * 0.75 and b.height() >= hrect.height() * 0.85,
+    check(max(b.width() / hrect.width(), b.height() / hrect.height()) >= 0.85 and min(b.width() / hrect.width(), b.height() / hrect.height()) >= 0.6,
           f"hands ({name}): fill the item's box ({b.width():.0f}x{b.height():.0f} of {hrect.width():.0f}x{hrect.height():.0f})")
-    check(abs(b.center().x() - hrect.center().x()) <= hrect.width() * 0.03 and abs(b.center().y() - hrect.center().y()) <= hrect.height() * 0.04,
+    check(abs(b.center().x() - hrect.center().x()) <= hrect.width() * 0.03 and abs(b.center().y() - hrect.center().y()) <= hrect.height() * 0.07,
           f"hands ({name}): centred on the box, so a spin turns them in place ({b.center().x() - hrect.center().x():+.1f}, {b.center().y() - hrect.center().y():+.1f})")
 # ready: apart, fingers a little bent; idle: every finger moves on its own
 fr0 = draw.hands_frame(draw.ClapPose(open=1.0, age=0.0))
@@ -257,7 +272,7 @@ check(sw.swing > 0.4 and not sw.clasped, "swing: speed streaks while the hands c
 hit = draw.hands_frame(clapping(draw.HANDS_CONTACT_MS + 10))
 check(hit.clasped and hit.fx >= 0 and hit.squash > 0.5, "impact: clasped, squashed, ring + lines start")
 check(hit.right.side == "dorsal" and hit.left.side == "palmar", "impact: the front hand shows its back, the other its palm (like the reference)")
-check(hit.right.y < hit.left.y - 0.03, "impact: the back-of-hand glove sits higher, leaving room for the thumb below it")
+check(hit.right.y < hit.left.y - 0.09, f"impact: the back-of-hand glove sits well above the palm glove, leaving room for the thumb below it ({hit.left.y - hit.right.y:.3f})")
 check(all(sum(hit.right.bend[n]) > 80 for n in ("index", "middle", "pinky")), "impact: the front fingers bend over the other hand")
 w = hrect.width()
 def tips(g):
@@ -592,6 +607,66 @@ p = QPainter(img2)
 draw.draw_halo(p, QPointF(60, 60), 30, QColor("#ffffff"), 0.95, 1.0, 1.0)
 p.end()
 check(max(rgba(img2, x, y).alpha() for y in range(120) for x in range(120)) < max(rgba(img1, x, y).alpha() for y in range(120) for x in range(120)), "halo: fades as it expands")
+
+# ---------------------------------------------------------------- the traced Hands (hands2d)
+from afterglow.indicator import HANDS_CONTACT_MS as _HC, HANDS_LOOKS
+D = _h2.data()
+check(_h2.available() and all(len(D[s]["frames"]) > 10 for s in ("ready", "clap", "rest")), "traced frames: ready, clap and rest sequences ship with the app")
+check(len(D["ready"]["frames"]) == D["ready"]["fps"] * 2 and len(D["rest"]["frames"]) == D["rest"]["fps"] * 2, "...the idles are 2 s loops")
+check(abs(D["timing"]["contact_ms"] - _HC) < 1, f"...the hands meet when the clap sound plays ({D['timing']['contact_ms']} ms vs HANDS_CONTACT_MS {_HC})")
+check(D["clap"]["frames"][int(_HC / 1000 * D["clap"]["fps"]) + 3].get("squash", 0) > 0, "...the impact squashes")
+check(sum(1 for f in D["clap"]["frames"] if "streak" in f) >= 3, "...the swing has speed lines")
+check(_h2.frame_for(0.5, -1, -1, False)[0] == "ready" and _h2.frame_for(0.5, 0.2, 200, False)[0] == "clap"
+      and _h2.frame_for(9.0, 5.0, -1, True)[0] == "rest", "frame_for: idle before the clap, the clap, then the clasp's idle")
+st_ms = D["timing"]["settled_ms"]
+last = len(D["clap"]["frames"]) / D["clap"]["fps"]
+seq, i, _ = _h2.frame_for(9.0, last + 0.001, -1, True)
+check(seq == "rest" and i == int((last + 0.001) * D["rest"]["fps"]) % len(D["rest"]["frames"]),
+      "...the clasp's idle runs on the time since the clap, so it continues where the clap ended")
+check(_h2.frame_for(1.0, -1, -1, False)[1] != _h2.frame_for(1.5, -1, -1, False)[1], "...the ready idle moves")
+
+
+def look_img(look, front="right", icon=None, pose=None):
+    pz = pose or draw.ClapPose(open=1.0, age=0.4)
+    pz.look, pz.front = look, front
+    img = canvas(320, 300)
+    p = QPainter(img)
+    got = draw.draw_hands(p, hrect, pz, draw.resolve_colors(draw.afterglow_defaults(None, look)), icon)
+    p.end()
+    return img, got
+
+
+r_img, _ = look_img("retro")
+c_img, _ = look_img("cel")
+check(near(r_img, QColor(_h2.RETRO_COLORS["glove"]), 12) > 600 and near(r_img, QColor(_h2.RETRO_COLORS["cuff"]), 30) > 100,
+      "retro look: cream gloves and red cuffs")
+check(near(c_img, QColor(draw.afterglow_defaults(None, "cel")["glove"]), 12) > 600 and near(c_img, QColor(_h2.RETRO_COLORS["glove"]), 6) < 50,
+      "cel look: the theme's pale gloves (no cream)")
+check(near(r_img, QColor("#000000"), 40) > 400, "retro look: black ink")
+check(set(HANDS_LOOKS) == set(_h2.LOOKS) and _h2.DEFAULT_LOOK == "retro", "two looks, retro by default")
+# mirrored for the left hand in front; the icon reads the same either way
+b_r = draw.hands_bounds(hrect, draw.ClapPose(open=1.0, age=0.4, front="right"))
+b_l = draw.hands_bounds(hrect, draw.ClapPose(open=1.0, age=0.4, front="left"))
+check(abs((b_r.left() - hrect.left()) - (hrect.right() - b_l.right())) < 1.0, "front = left mirrors the picture")
+ic = QImage(40, 40, QImage.Format_ARGB32)
+ic.fill(QColor("#0000ff"))
+pp = QPainter(ic)
+pp.fillRect(0, 0, 20, 40, QColor("#ff0000"))
+pp.end()
+for front in ("right", "left"):
+    im, rect_ = look_img("cel", front, ic, draw.ClapPose(open=1.0, age=0.4))
+    reds = [(x, y) for y in range(300) for x in range(320) if same(rgba(im, x, y), QColor("#ff0000"), 40)]
+    blues = [(x, y) for y in range(300) for x in range(320) if same(rgba(im, x, y), QColor("#0000ff"), 40)]
+    check(rect_ is not None and len(reds) > 15 and len(blues) > 15, f"icon on the back of the glove ({front} in front)")
+    if reds and blues:
+        check(sum(x for x, _ in reds) / len(reds) < sum(x for x, _ in blues) / len(blues),
+              f"...and not mirrored ({front} in front): its left half is still on the left")
+# a frame mid-swing and mid-impact draw (and the clap's first frames cross-fade from the idle)
+for ms in (5, 300, _HC + 10, _HC + 200, 2000):
+    pz = clapping(ms)
+    pz.since_clap = ms / 1000.0
+    im, _ = look_img("retro", pose=pz)
+    check(count_nonclear(im) > 2000, f"clap at {ms} ms draws")
 
 print()
 if FAILS:

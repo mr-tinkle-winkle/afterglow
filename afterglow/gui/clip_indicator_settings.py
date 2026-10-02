@@ -41,6 +41,7 @@ SOUND_FILTER = "Audio Files (*.wav *.mp3 *.ogg *.flac);;All Files (*)"
 STYLE_LABELS = {"clapper": "Clapper", "hands": "Hands"}
 PROCESSING_LABELS = {"circle": "Clapper leaves, a loading circle shows", "stay": "Clapper stays until it's done"}
 FRONT_LABELS = {"right": "Right hand in front", "left": "Left hand in front"}
+LOOK_LABELS = {"retro": "Retro (cream gloves, black ink)", "cel": "Cel-shaded (theme colours)"}
 SCREEN_LABELS = {"focused": "The screen with the focused window", "primary": "The primary screen"}
 
 
@@ -131,6 +132,10 @@ class ClipIndicatorGroup(CustomGroupBox):
         self.front_combo = _combo(list(FRONT_LABELS.items()), getattr(ci, "hands_front", "right"))
         self.front_combo.setToolTip("The Hands style: which glove ends up in front when the hands clasp")
         form.addRow("Front hand:", self.front_combo)
+        self.look_combo = _combo(list(LOOK_LABELS.items()), getattr(ci, "hands_look", "retro"))
+        self.look_combo.setToolTip("The Hands style: how the gloves are drawn. Each look has its own default "
+                                   "colours; colours chosen for a clip type apply to both.")
+        form.addRow("Hands look:", self.look_combo)
 
         self.anchor_picker = AnchorPicker(ci.anchor)
         form.addRow("Position:", self.anchor_picker)
@@ -222,7 +227,8 @@ class ClipIndicatorGroup(CustomGroupBox):
                     self.pad_y_spin.valueChanged, self.size_spin.valueChanged, self.enter_combo.currentIndexChanged,
                     self.exit_combo.currentIndexChanged, self.processing_combo.currentIndexChanged,
                     self.circle_swatch.changed, self.overlay_swatch.changed, self.opacity_spin.valueChanged,
-                    self.clapper_opacity_spin.valueChanged, self.pulse_check.toggled, self.front_combo.currentIndexChanged):
+                    self.clapper_opacity_spin.valueChanged, self.pulse_check.toggled, self.front_combo.currentIndexChanged,
+                    self.look_combo.currentIndexChanged):
             sig.connect(self._refresh)
         self.enter_combo.itemHovered.connect(lambda i: self.preview.set_overrides(enter=self.enter_combo.itemData(i)))
         self.exit_combo.itemHovered.connect(lambda i: self.preview.set_overrides(exit=self.exit_combo.itemData(i)))
@@ -284,6 +290,7 @@ class ClipIndicatorGroup(CustomGroupBox):
                   self.clap_sound_clear, self.clap_sound_play, self.screen_combo, self.test_btn):
             w.setEnabled(on)
         self.front_combo.setEnabled(on and self.style_combo.currentData() == "hands")
+        self.look_combo.setEnabled(on and self.style_combo.currentData() == "hands")
         if on:
             self._sync_padding_enabled()
         else:
@@ -309,7 +316,7 @@ class ClipIndicatorGroup(CustomGroupBox):
         """The settings as they are in the widgets right now, in the shape of a `start` event's style."""
         return {
             "style": self.style_combo.currentData(),
-            "colors": draw.afterglow_defaults(self._appearance), "icon": "",
+            "colors": draw.afterglow_defaults(self._appearance, self.look_combo.currentData()), "icon": "",
             "anchor": self.anchor_picker.anchor(),
             "padding_x": self.pad_x_spin.value(), "padding_y": self.pad_y_spin.value(),
             "size": self.size_spin.value(),
@@ -320,6 +327,7 @@ class ClipIndicatorGroup(CustomGroupBox):
             "opacity": self.clapper_opacity_spin.value() / 100.0,
             "pulse": self.pulse_check.isChecked(),
             "hands_front": self.front_combo.currentData(),
+            "hands_look": self.look_combo.currentData(),
             "screen": self.screen_combo.currentData(), "screen_hint": None,
         }
 
@@ -337,6 +345,7 @@ class ClipIndicatorGroup(CustomGroupBox):
         ci.clapper_opacity = d["opacity"]
         ci.ring_pulse = d["pulse"]
         ci.hands_front = d["hands_front"]
+        ci.hands_look = d["hands_look"]
         ci.clap_sound = self.clap_sound_edit.text().strip()
         ci.screen = d["screen"]
 
@@ -396,7 +405,7 @@ class ClipIndicatorDialog(QDialog):
             pal.setColor(role, text)
         self.setPalette(pal)
         self._style_provider = style_provider
-        self._defaults = draw.afterglow_defaults(appearance)
+        self._defaults = draw.afterglow_defaults(appearance, self._current_look())
         self._colors: dict[str, str] = {k: v for k, v in (colors or {}).items() if QColor(str(v)).isValid()}
 
         layout = QVBoxLayout(self)
@@ -486,6 +495,18 @@ class ClipIndicatorDialog(QDialog):
         self._colors.pop(key, None)
         self.swatches[key].set_color(self._defaults[key])
         self._refresh_preview()
+
+    def _current_look(self) -> str:
+        """The Hands look the colours' defaults follow: the Settings page's current (unsaved) choice when
+        there is one, else the saved setting."""
+        try:
+            if self._style_provider is not None:
+                look = (self._style_provider() or {}).get("hands_look")
+                if look:
+                    return look
+            return getattr(config_module.load_readonly().clip_indicator, "hands_look", "retro")
+        except Exception:  # noqa: BLE001
+            return "retro"
 
     def _refresh_preview(self, *_a) -> None:
         base = {}

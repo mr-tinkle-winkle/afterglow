@@ -84,7 +84,7 @@ def build_style(settings, clip_cfg=None, screen_hint: "dict | None" = None) -> d
     # the afterglow theme's colours, with this clip type's own choices on top
     try:
         from .indicator import draw          # lazily: draw pulls in QtGui, which the headless daemon should not load up front
-        colors = draw.afterglow_defaults(getattr(settings, "appearance", None))
+        colors = draw.afterglow_defaults(getattr(settings, "appearance", None), getattr(ci, "hands_look", "retro"))
     except Exception:  # noqa: BLE001 -- the helper falls back to its own afterglow defaults
         colors = {}
     colors.update({k: v for k, v in (getattr(clip_cfg, "indicator_colors", None) or {}).items() if v})
@@ -105,6 +105,7 @@ def build_style(settings, clip_cfg=None, screen_hint: "dict | None" = None) -> d
         "opacity": ci.clapper_opacity,
         "pulse": ci.ring_pulse,
         "hands_front": getattr(ci, "hands_front", "right"),
+        "hands_look": getattr(ci, "hands_look", "retro"),
         "screen": ci.screen,
         "screen_hint": screen_hint if ci.screen == "focused" else None,
     }

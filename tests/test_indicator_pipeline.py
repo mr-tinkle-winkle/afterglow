@@ -415,6 +415,21 @@ check(played.count("/sounds/clap.wav") == 1, "hands: the delayed clap sound stil
 set_ind(style="clapper", hands_front="right")
 clips.update_clip_config(cfg.id, indicator_clap_sound="")
 
+# ---- the Hands look: in the payload, and the glove colours follow it
+set_ind(style="hands", hands_look="cel")
+reset()
+clips.trigger_clip(cfg.id)
+check(MSGS and MSGS[0]["style"]["hands_look"] == "cel", "hands_look reaches the start event")
+check(MSGS and MSGS[0]["style"]["colors"]["glove"] == _draw.afterglow_defaults(config.load().appearance, "cel")["glove"],
+      "...with the cel look's glove colour as the default")
+set_ind(style="hands", hands_look="retro")
+reset()
+clips.trigger_clip(cfg.id)
+from afterglow.indicator import hands2d as _h2
+check(MSGS and MSGS[0]["style"]["colors"]["glove"] == _h2.RETRO_COLORS["glove"] and MSGS[0]["style"]["colors"]["cuff"] == _h2.RETRO_COLORS["cuff"],
+      "...and the retro look's cream gloves and red cuffs by default")
+set_ind(style="clapper", hands_look="retro")
+
 print()
 print("ALL PASS" if not FAILS else f"{len(FAILS)} FAILED: " + "; ".join(FAILS))
 sys.exit(1 if FAILS else 0)

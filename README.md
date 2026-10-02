@@ -31,11 +31,14 @@ Settings > Clipping > Clip Indicator:
   A failed capture launches the clapper into the air.
 - Position (any corner, edge middle or the centre, with padding), size (156 px by default), separate enter
   and exit animations, the clapper's opacity, the processing mode (loading circle, or the clapper stays),
-  the circle colours and opacity, which glove ends up in front (Hands style), a clap sound used only for the clapper, and the screen (the one holding
+  the circle colours and opacity, which glove ends up in front and how the gloves are drawn (Hands style:
+  retro -- cream gloves, black ink, red cuffs -- by default, or cel-shaded in the theme colours), a clap sound used only for the clapper, and the screen (the one holding
   the focused window, or the primary one) are all settings, with a live preview and a Test button.
   Corner and edge positions enter and leave through the top or bottom edge where there is one; the centre
   fades by default.
-- The clapper is coloured from the afterglow theme colours by default. Per clip type (the "Indicator" row of
+- The clapper (and the cel-shaded gloves) are coloured from the afterglow theme colours by default; the retro
+  gloves have their own default colours. The gloves are hand-drawn-style 2D frames traced from a 3D model of
+  the clap (`tools/hands_bake/`), so the hands interlock without passing through each other. Per clip type (the "Indicator" row of
   a clip option): colours for each part, a custom icon (on the board, or on the back of the glove) and a
   clap sound.
 - Rapid repeats stack, up to five visible, with a "+N" badge beyond that.

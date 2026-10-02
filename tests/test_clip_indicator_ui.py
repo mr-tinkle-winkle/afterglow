@@ -343,6 +343,16 @@ check(g.style_dict()["hands_front"] == "left" and g.preview.style().hands_front 
 page._save()
 check(config.load().clip_indicator.hands_front == "left", "...and is saved")
 
+# ---- Hands look (Hands style only): retro by default, cel to choose
+check(g.look_combo.isEnabled() and g.look_combo.currentData() == "retro", "Hands look: on for the Hands style, retro by default")
+g.look_combo.setCurrentIndex(g.look_combo.findData("cel"))
+check(g.style_dict()["hands_look"] == "cel" and g.preview.style().hands_look == "cel", "...reaches the style and the preview")
+check(g.style_dict()["colors"]["glove"] == draw.afterglow_defaults(None, "cel")["glove"], "...and the glove colours follow the look")
+page._save()
+check(config.load().clip_indicator.hands_look == "cel", "...and is saved")
+g.style_combo.setCurrentIndex(g.style_combo.findData("clapper"))
+check(not g.look_combo.isEnabled(), "Hands look is off for the clapper")
+
 print()
 print("ALL PASS" if not FAILS else f"{len(FAILS)} FAILED: " + "; ".join(FAILS))
 sys.exit(1 if FAILS else 0)

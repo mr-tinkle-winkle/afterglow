@@ -362,6 +362,16 @@ fr = mh.frame(mh._inds["h"], 1.2)
 check(abs(fr.age - 1.2) < 1e-6 and fr.clapped, "frames carry the capture's age (the idle wobble) and the clapped flag")
 check(mh._inds["h"].style.hands_front == "left" and M.Style.from_dict({"hands_front": "junk"}).hands_front == "right",
       "hands_front is carried in the style, unknown values fall back to right")
+check(M.Style.from_dict({}).hands_look == "retro" and M.Style.from_dict({"hands_look": "cel"}).hands_look == "cel"
+      and M.Style.from_dict({"hands_look": "junk"}).hands_look == "retro", "hands_look: retro by default, cel when chosen, junk falls back")
+fr0 = mh.frame(mh._inds["h"], 0.5)
+check(abs(fr0.since_clap - 0.0) < 1e-6, "since_clap starts at the clap")
+fr2 = mh.frame(mh._inds["h"], 2.0)
+check(abs(fr2.since_clap - 1.5) < 1e-6, "...and keeps counting after the clap state ends (the clasp's idle runs on it)")
+m0 = M.Model()
+m0.event("z", "start", 0.0, {"style": "hands", "enter": "fade"}, "s")
+m0.tick(0.3)
+check(m0.frame(m0._inds["z"], 0.3).since_clap == -1.0, "...and is -1 before the clap")
 
 print()
 if FAILS:
