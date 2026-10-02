@@ -343,9 +343,17 @@ Changes to the indicator and a few Settings / Library UI fixes. Where each lives
   (`draw.clap_pose`: 80 ms shut, squash, impact, small rebound; `Frame.clapped` selects the
   pose). The open arm rises above the item, so `layout.stack_gap(size)` (12 px + 0.42 x width) is the
   stack spacing instead of the fixed `STACK_GAP`.
-- **Hands.** Redrawn as plump three-finger gloves with a thumb (`draw.glove_path`, `draw_glove`,
-  `hands_geometry`, `draw_hands`); the clap is the two hands translating together, with a slight
-  tilt, not a rotation.
+- **Hands.** Two gloves in a three-quarter view, palms turned in toward each other (right hand
+  built in its own box, the left one mirrored). Modelled rather than flat: four fingers fanned in
+  depth and drawn back to front, each a tube with its own light-to-shadow gradient, back fingers
+  darker and shadowed by the finger in front, highlights on fingertips and knuckles, the thumb in
+  front of the palm with its own shadow, the back of the hand turning into shadow, a soft drop
+  shadow, a rolled cylindrical cuff (`glove_parts`, `draw_glove`, `_tube_gradient`). Where the
+  hands meet each is clipped to its own side of the middle, so they press flat along a seam.
+  Frames: READY (apart, fingertips leaning in 16 deg), SWINGING (sliding together with speed
+  streaks), a separate IMPACT frame while `pose.impact >= IMPACT_FRAME` (~110 ms from contact:
+  pressed together, squashed, fingers and thumbs splayed by the hit, a pale burst behind) and
+  CLAPPED (palms together at rest) (`draw_hands`, `hands_geometry`).
 - **Colours.** Defaults come from the afterglow theme colours (`draw.afterglow_defaults(appearance)`,
   computed from the stored hex values so the headless daemon needs no Qt theme); `build_style`
   merges them under the per-clip-type overrides, and the Settings group / per-clip dialog show them

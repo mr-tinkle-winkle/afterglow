@@ -27,7 +27,7 @@ from pathlib import Path
 
 from PySide6.QtCore import Qt, QPointF, QRectF, QSizeF
 from PySide6.QtGui import (
-    QColor, QImage, QPainter, QPainterPath, QPen, QTransform, QFont,
+    QColor, QImage, QLinearGradient, QPainter, QPainterPath, QPen, QRadialGradient, QTransform, QFont,
 )
 
 # ------------------------------------------------------------------ sizes / colours
@@ -359,170 +359,441 @@ def _impact_lines(p: QPainter, tip: QPointF, length: float, strength: float, col
 
 
 # ------------------------------------------------------------------ hands
+#
+# Two cartoon gloves in a three-quarter view, palms turned in toward each other (the way
+# clapping hands are drawn), modelled rather than flat: every finger is a soft cylinder with
+# its own light-to-shadow gradient, fingers further back are darker and catch the shadow of
+# the finger in front, the thumb sits in front of the palm, the cuff is a rolled band.
+#
+# A hand is built in its own box, as the RIGHT hand (palm facing left, toward the middle);
+# the left hand is its mirror image.  Coordinates: u across the box (0 = the palm side, 1 =
+# the back of the hand), v down it, both in units of the box WIDTH so nothing stretches.
 
-# Mickey-style glove: three plump fingers and a thumb.  Finger centres / tops (v), thumb side
-# first; the middle finger is the tallest.
-_FINGER_X = (0.355, 0.585, 0.815)
-_FINGER_TOP = (0.15, 0.06, 0.18)
-_FINGER_W = 0.235
+HAND_BOX_ASPECT = 1.45          # glove box height / width
+# fingers back to front: (name, base u, base v, lean degrees (- = toward the palm side),
+# length, base width, tip width, extra darkness for depth)
+_FINGERS = (
+    ("pinky", 0.715, 0.90, -3.0, 0.50, 0.215, 0.220, 0.34),
+    ("ring", 0.600, 0.83, -5.5, 0.64, 0.232, 0.238, 0.22),
+    ("middle", 0.480, 0.80, -8.0, 0.72, 0.242, 0.250, 0.10),
+    ("index", 0.355, 0.83, -10.5, 0.66, 0.250, 0.258, 0.0),
+)
+_SPLAY = {"index": 2.0, "middle": 5.0, "ring": 8.0, "pinky": 11.0}   # degrees outward at full splay
+
+
+def _capsule(base: QPointF, angle: float, length: float, wb: float, wt: float, bow: float = 0.06) -> QPainterPath:
+    """A finger: a rounded tube from ``base`` (hidden in the hand) up to a round tip, leaning by
+    ``angle`` degrees (negative = toward the palm side) and bowed a little (knuckle side out)."""
+    L = length
+    b = L * bow
+    path = QPainterPath(QPointF(-wb / 2, 0))
+    path.cubicTo(QPointF(-wb / 2 + b, -L * 0.35), QPointF(-wt / 2 + b * 0.6, -L * 0.7), QPointF(-wt / 2, -(L - wt / 2)))
+    path.arcTo(QRectF(-wt / 2, -L, wt, wt), 180.0, -180.0)
+    path.cubicTo(QPointF(wt / 2 + b * 0.6, -L * 0.7), QPointF(wb / 2 + b, -L * 0.35), QPointF(wb / 2, 0))
+    path.cubicTo(QPointF(wb / 2, wb * 0.45), QPointF(-wb / 2, wb * 0.45), QPointF(-wb / 2, 0))
+    path.closeSubpath()
+    t = QTransform()
+    t.translate(base.x(), base.y())
+    t.rotate(angle)
+    return t.map(path)
+
+
+def _tube_gradient(base: QPointF, angle: float, width: float, c: "dict[str, QColor]") -> QLinearGradient:
+    """Light from the upper left: across a tube, a lit band a third of the way in, shadow on the far side."""
+    r = math.radians(angle)
+    nx, ny = math.cos(r), math.sin(r)                    # across the tube
+    a = QPointF(base.x() - nx * width / 2, base.y() - ny * width / 2)
+    b = QPointF(base.x() + nx * width / 2, base.y() + ny * width / 2)
+    g = QLinearGradient(a, b)
+    g.setColorAt(0.0, c["edge"])
+    g.setColorAt(0.30, c["hi"])
+    g.setColorAt(0.62, c["base"])
+    g.setColorAt(1.0, c["shade"])
+    return g
+
+
+def _glove_tones(colors: "dict[str, QColor]") -> "dict[str, QColor]":
+    g, ink = QColor(colors["glove"]), QColor(colors["glove_outline"])
+    white = QColor("#ffffff")
+    cuff = QColor(colors["cuff"])
+    return {
+        "base": g, "hi": mix(g, white, 0.75), "edge": mix(g, ink, 0.10), "shade": mix(g, ink, 0.30),
+        "deep": mix(g, ink, 0.55), "ink": ink,
+        "cuff": cuff, "cuff_hi": mix(cuff, white, 0.35), "cuff_shade": mix(cuff, ink, 0.35),
+    }
+
+
+def glove_parts(box: QRectF, splay: float = 0.0, squash: float = 0.0) -> dict:
+    """The paths of one RIGHT glove (palm facing left) in ``box``: ``fingers`` (back to front,
+    each (name, path, base, angle, width, depth)), ``body``, ``thumb`` (+ its base and angle),
+    ``silhouette`` (all of it but the cuff), ``cuff``, ``cuff_rim``, ``stitches`` (3 paths),
+    ``icon_area`` and ``palm_edge_u`` (where the palm side is, as a fraction of the width)."""
+    w = box.width()
+    P = lambda u, v: QPointF(box.left() + w * u, box.top() + w * v)       # noqa: E731
+    body = QPainterPath(P(0.30, 1.36))
+    body.cubicTo(P(0.20, 1.24), P(0.09, 1.08), P(0.11, 0.88))              # the heel of the palm
+    body.cubicTo(P(0.12, 0.74), P(0.20, 0.66), P(0.31, 0.65))              # up to the index knuckle
+    body.cubicTo(P(0.48, 0.62), P(0.66, 0.64), P(0.78, 0.74))              # across the knuckles
+    body.cubicTo(P(0.88, 0.84), P(0.90, 1.06), P(0.84, 1.22))              # the back of the hand, pinky side
+    body.cubicTo(P(0.81, 1.29), P(0.79, 1.34), P(0.77, 1.36))
+    body.closeSubpath()
+    fingers = []
+    for name, u, v, lean, length, wb, wt, depth in _FINGERS:
+        angle = lean + splay * _SPLAY[name]
+        L = w * length * (1.0 - 0.10 * squash)
+        base = P(u, v)
+        fingers.append((name, _capsule(base, angle, L, w * wb, w * wt), base, angle, w * wt, depth))
+    t_base = P(0.34, 1.15)
+    t_angle = -13.0 + 8.0 * splay
+    thumb = _capsule(t_base, t_angle, w * 0.50 * (1.0 - 0.08 * squash), w * 0.255, w * 0.25, bow=-0.04)
+    silhouette = QPainterPath(body)
+    for f in fingers:
+        silhouette = silhouette.united(f[1])
+    silhouette = silhouette.united(thumb)
+    # the cuff: a short rolled band around the wrist, its top rim a flattened ellipse
+    cuff = QPainterPath(P(0.22, 1.30))
+    cuff.lineTo(P(0.25, 1.45))
+    cuff.quadTo(P(0.54, 1.50), P(0.83, 1.45))
+    cuff.lineTo(P(0.86, 1.30))
+    cuff.quadTo(P(0.54, 1.37), P(0.22, 1.30))
+    cuff.closeSubpath()
+    rim = QPainterPath()
+    rim.addEllipse(QRectF(P(0.19, 1.255), P(0.89, 1.345)))
+    stitches = []
+    for u0 in (0.56, 0.655, 0.75):
+        sp = QPainterPath(P(u0, 0.80 + (u0 - 0.575) * 0.25))
+        sp.quadTo(P(u0 + 0.035, 0.88 + (u0 - 0.575) * 0.25), P(u0 + 0.01, 0.97 + (u0 - 0.575) * 0.2))
+        stitches.append(sp)
+    return {
+        "fingers": fingers, "body": body, "thumb": thumb, "thumb_base": t_base, "thumb_angle": t_angle,
+        "silhouette": silhouette, "cuff": cuff, "cuff_rim": rim, "stitches": stitches,
+        "icon_area": QRectF(P(0.50, 1.00), P(0.82, 1.24)), "palm_edge_u": 0.11,
+        "stitch_bottom": box.top() + w * 1.00,
+    }
 
 
 def glove_path(rect: QRectF) -> "tuple[QPainterPath, dict]":
-    """One plump cartoon glove, upright, fingers up, seen from the BACK of the hand with the
-    thumb on the left: three round fingers pressed together under a scalloped top, a soft palm
-    and a thumb leaning out a little.  Returns (hand shape without the cuff, parts)."""
-    w, h = rect.width(), rect.height()
-    X = lambda u: rect.left() + w * u      # noqa: E731
-    Y = lambda v: rect.top() + h * v       # noqa: E731
-    palm = QPainterPath()
-    palm.addRoundedRect(QRectF(X(0.24), Y(0.36), w * 0.70, h * 0.45), w * 0.16, w * 0.16)
-    hand = QPainterPath(palm)
-    fw = w * _FINGER_W
-    for cx, top in zip(_FINGER_X, _FINGER_TOP):
-        f = QPainterPath()
-        f.addRoundedRect(QRectF(X(cx) - fw / 2, Y(top), fw, h * 0.42), fw / 2, fw / 2)
-        hand = hand.united(f)
-    th = QPainterPath()
-    tw = w * 0.22
-    th.addRoundedRect(QRectF(-tw / 2, -tw / 2, tw, h * 0.34), tw / 2, tw / 2)
-    tt = QTransform()
-    tt.translate(X(0.30), Y(0.66))
-    tt.rotate(142.0)                                   # from the palm: tip up and out to the left
-    hand = hand.united(tt.map(th))
-    parts = {
-        "palm": QRectF(X(0.24), Y(0.36), w * 0.70, h * 0.45),
-        "notch": [(X(cx + _FINGER_W / 2), Y(max(a, b) + 0.13)) for cx, a, b in
-                  zip(_FINGER_X[:-1], _FINGER_TOP[:-1], _FINGER_TOP[1:])],
-        "finger_base": Y(0.47),
-        "stitch_top": Y(0.49), "stitch_bottom": Y(0.59), "stitch_x": (X(0.47), X(0.59), X(0.71)),
-        "icon_area": QRectF(X(0.36), Y(0.605), w * 0.46, h * 0.165),
-        "cuff": QRectF(X(0.30), Y(0.78), w * 0.58, h * 0.22),
-    }
-    return hand, parts
+    """(the glove's silhouette without the cuff, its parts) -- see ``glove_parts``."""
+    parts = glove_parts(rect)
+    return parts["silhouette"], parts
+
+
+def _soft_highlight(p: QPainter, center: QPointF, rx: float, ry: float, angle: float, alpha: float) -> None:
+    g = QRadialGradient(QPointF(0, 0), 1.0)
+    c0 = QColor(255, 255, 255, int(255 * alpha))
+    c1 = QColor(255, 255, 255, 0)
+    g.setColorAt(0.0, c0)
+    g.setColorAt(1.0, c1)
+    p.save()
+    p.translate(center)
+    p.rotate(angle)
+    p.scale(rx, ry)
+    p.setPen(Qt.NoPen)
+    p.setBrush(g)
+    p.drawEllipse(QPointF(0, 0), 1.0, 1.0)
+    p.restore()
 
 
 def draw_glove(p: QPainter, rect: QRectF, colors: "dict[str, QColor]", icon: "QImage | None" = None,
-               mirror: bool = False) -> "QRectF | None":
-    """A glove: a clean ink outline, short stitch lines on the back, a soft rolled cuff.  If
-    ``icon`` is given it sits on the back of the hand just below the stitch lines, fit inside
-    ~40% of the glove width and clipped to the glove."""
-    w, h = rect.width(), rect.height()
-    lw = max(1.4, h * 0.038)
+               mirror: bool = False, splay: float = 0.0, squash: float = 0.0) -> "QRectF | None":
+    """One glove in ``rect`` (a box ~1 : 1.45), drawn as the right hand, or mirrored as the left.
+    Fingers back to front, each shaded as a tube and shadowed by the one in front; then the back of
+    the hand, the thumb in front of the palm, stitching, the icon (on the back of the hand, never
+    mirrored) and the cuff."""
+    w = rect.width()
+    lw = max(1.3, w * 0.042)
+    tones = _glove_tones(colors)
+    ink = tones["ink"]
+    parts = glove_parts(rect, splay, squash)
     p.save()
     p.setRenderHint(QPainter.Antialiasing, True)
     if mirror:
         p.translate(rect.center().x(), 0)
         p.scale(-1, 1)
         p.translate(-rect.center().x(), 0)
-    hand, parts = glove_path(rect)
-    ink = colors["glove_outline"]
-    # cuff first (a soft, slightly flared band), so the hand overlaps its top edge
-    c = parts["cuff"]
-    cuff = QPainterPath(QPointF(c.left() + c.width() * 0.10, c.top()))
-    cuff.lineTo(c.right() - c.width() * 0.10, c.top())
-    cuff.cubicTo(QPointF(c.right() + c.width() * 0.10, c.top() + c.height() * 0.15),
-                 QPointF(c.right() + c.width() * 0.10, c.bottom() - c.height() * 0.1),
-                 QPointF(c.right() - c.width() * 0.04, c.bottom()))
-    cuff.lineTo(c.left() + c.width() * 0.04, c.bottom())
-    cuff.cubicTo(QPointF(c.left() - c.width() * 0.10, c.bottom() - c.height() * 0.1),
-                 QPointF(c.left() - c.width() * 0.10, c.top() + c.height() * 0.15),
-                 QPointF(c.left() + c.width() * 0.10, c.top()))
-    cuff.closeSubpath()
-    p.setPen(_pen(ink, lw))
-    p.setBrush(colors["cuff"])
-    p.drawPath(cuff)
-    # the hand: fingers, thumb and palm are one soft shape
-    p.setPen(_pen(ink, lw))
-    p.setBrush(colors["glove"])
-    p.drawPath(hand)
-    # the cuff's rolled edge sits over the hand's wrist end
-    p.setPen(_pen(ink, lw * 0.8))
-    p.drawLine(QPointF(c.left() + c.width() * 0.02, c.top()), QPointF(c.right() - c.width() * 0.02, c.top()))
-    # finger separations: short creases continuing each notch down into the hand
-    p.setPen(_pen(ink, lw * 0.75))
-    for x, y in parts["notch"]:
-        p.drawLine(QPointF(x, y), QPointF(x, parts["finger_base"]))
-    # three stitch lines on the back of the hand
-    p.setPen(_pen(colors["stitches"], lw * 0.7))
-    for x in parts["stitch_x"]:
-        seam = QPainterPath(QPointF(x, parts["stitch_top"]))
-        seam.quadTo(QPointF(x - w * 0.012, (parts["stitch_top"] + parts["stitch_bottom"]) / 2), QPointF(x, parts["stitch_bottom"]))
-        p.drawPath(seam)
+    # a soft contact shadow under the whole glove, so it reads on any background
+    p.save()
+    p.translate(w * 0.02, w * 0.035)
+    sh = QColor(0, 0, 0, 40)
+    p.setPen(Qt.NoPen)
+    p.setBrush(sh)
+    p.drawPath(parts["silhouette"].united(parts["cuff"]))
+    p.restore()
+    # fingers, back to front
+    drawn = QPainterPath()
+    for name, path, base, angle, width, depth in parts["fingers"]:
+        if not drawn.isEmpty():                         # the shadow this finger casts on the ones behind it
+            p.save()
+            p.setClipPath(drawn)
+            p.translate(w * 0.045, w * 0.02)
+            p.setPen(Qt.NoPen)
+            p.setBrush(QColor(tones["deep"].red(), tones["deep"].green(), tones["deep"].blue(), 120))
+            p.drawPath(path)
+            p.restore()
+        p.setPen(Qt.NoPen)
+        p.setBrush(_tube_gradient(base, angle, width * 1.15, tones))
+        p.drawPath(path)
+        if depth > 0:
+            d = QColor(tones["deep"])
+            d.setAlphaF(depth)
+            p.setBrush(d)
+            p.drawPath(path)
+        # a little light on the round tip
+        r = math.radians(angle)
+        L = path.boundingRect().height()
+        tip = QPointF(base.x() + math.sin(r) * (L * 0.80) - math.cos(r) * width * 0.16,
+                      base.y() - math.cos(r) * (L * 0.80) - math.sin(r) * width * 0.16)
+        _soft_highlight(p, tip, width * 0.26, width * 0.40, angle, 0.55 * (1.0 - depth))
+        p.setPen(_pen(ink, lw * 0.85))
+        p.setBrush(Qt.NoBrush)
+        p.drawPath(path)
+        drawn = drawn.united(path)
+    # the hand itself: over the finger roots, shaded like a big soft block lit from the upper left
+    body = parts["body"]
+    br = body.boundingRect()
+    g = QLinearGradient(QPointF(br.left(), br.top()), QPointF(br.right(), br.top() + br.height() * 0.35))
+    g.setColorAt(0.0, tones["edge"])
+    g.setColorAt(0.22, tones["hi"])
+    g.setColorAt(0.55, tones["base"])
+    g.setColorAt(1.0, tones["shade"])
+    p.setPen(Qt.NoPen)
+    p.setBrush(g)
+    p.drawPath(body)
+    # knuckle bumps catch the light; the wrist end falls into shadow toward the cuff
+    for u, v in ((0.33, 0.68), (0.50, 0.65), (0.66, 0.68)):
+        _soft_highlight(p, QPointF(rect.left() + w * u, rect.top() + w * v), w * 0.09, w * 0.05, -8.0, 0.55)
+    dark = QLinearGradient(QPointF(0, rect.top() + w * 1.02), QPointF(0, rect.top() + w * 1.36))
+    c0 = QColor(tones["deep"])
+    c0.setAlpha(0)
+    c1 = QColor(tones["deep"])
+    c1.setAlpha(110)
+    dark.setColorAt(0.0, c0)
+    dark.setColorAt(1.0, c1)
+    p.setBrush(dark)
+    p.drawPath(body)
+    # the back of the hand (the far side) turns away from the light
+    back = QLinearGradient(QPointF(rect.left() + w * 0.70, 0), QPointF(rect.left() + w * 0.97, 0))
+    b0 = QColor(tones["deep"])
+    b0.setAlpha(0)
+    b1 = QColor(tones["deep"])
+    b1.setAlpha(95)
+    back.setColorAt(0.0, b0)
+    back.setColorAt(1.0, b1)
+    p.setBrush(back)
+    p.drawPath(body)
+    # stitching on the back of the hand
+    p.setPen(_pen(colors["stitches"], lw * 0.62))
+    p.setBrush(Qt.NoBrush)
+    for sp in parts["stitches"]:
+        p.drawPath(sp)
+    # the icon: on the back of the hand, under the stitching, clipped to the glove, never mirrored
     icon_rect = None
     if icon is not None:
         area = parts["icon_area"]
-        side = min(w * 0.40, area.height(), area.width())
+        side = min(w * 0.30, area.height(), area.width())
         box = QRectF(area.center().x() - side / 2, area.center().y() - side / 2, side, side)
         p.save()
-        p.setClipPath(hand)
-        if mirror:                                          # the glove is flipped; the picture must not be
+        p.setClipPath(body)
+        if mirror:
             p.translate(box.center().x(), 0)
             p.scale(-1, 1)
             p.translate(-box.center().x(), 0)
         icon_rect = _draw_icon(p, box, icon)
         p.restore()
-        if icon_rect is not None and mirror:               # report in unmirrored painter space
+        if icon_rect is not None and mirror:
             icon_rect = QRectF(2 * rect.center().x() - icon_rect.right(), icon_rect.top(), icon_rect.width(), icon_rect.height())
+    # the thumb, in front of the palm: its shadow on the hand, then the thumb
+    thumb, tb, ta = parts["thumb"], parts["thumb_base"], parts["thumb_angle"]
+    p.save()
+    p.setClipPath(body)
+    p.translate(w * 0.05, w * 0.04)
+    p.setPen(Qt.NoPen)
+    p.setBrush(QColor(tones["deep"].red(), tones["deep"].green(), tones["deep"].blue(), 105))
+    p.drawPath(thumb)
+    p.restore()
+    p.setPen(Qt.NoPen)
+    p.setBrush(_tube_gradient(tb, ta, w * 0.29, tones))
+    p.drawPath(thumb)
+    r = math.radians(ta)
+    tip = QPointF(tb.x() + math.sin(r) * w * 0.36, tb.y() - math.cos(r) * w * 0.36)
+    _soft_highlight(p, tip, w * 0.07, w * 0.10, ta, 0.6)
+    p.save()                                            # the thumb's root melts into the palm: no outline there
+    root = QPainterPath()
+    root.addEllipse(tb, w * 0.17, w * 0.17)
+    keep = QPainterPath()
+    keep.addRect(rect.adjusted(-w, -w, w, w))
+    p.setClipPath(keep.subtracted(root))
+    p.setPen(_pen(ink, lw * 0.85))
+    p.setBrush(Qt.NoBrush)
+    p.drawPath(thumb)
+    p.restore()
+    # one crease where the thumb folds into the palm
+    crease = QPainterPath(QPointF(rect.left() + w * 0.47, rect.top() + w * 0.93))
+    crease.quadTo(QPointF(rect.left() + w * 0.50, rect.top() + w * 1.05), QPointF(rect.left() + w * 0.45, rect.top() + w * 1.17))
+    p.setPen(_pen(mix(tones["shade"], ink, 0.35), lw * 0.55))
+    p.drawPath(crease)
+    # a clean outer contour over everything
+    p.setBrush(Qt.NoBrush)
+    p.setPen(_pen(ink, lw))
+    p.drawPath(parts["silhouette"])
+    # the cuff: a rolled band, round like a cylinder
+    cuff = parts["cuff"]
+    cr = cuff.boundingRect()
+    cg = QLinearGradient(QPointF(cr.left(), 0), QPointF(cr.right(), 0))
+    cg.setColorAt(0.0, tones["cuff_shade"])
+    cg.setColorAt(0.28, tones["cuff_hi"])
+    cg.setColorAt(0.62, tones["cuff"])
+    cg.setColorAt(1.0, tones["cuff_shade"])
+    p.setPen(_pen(ink, lw * 0.9))
+    p.setBrush(cg)
+    p.drawPath(cuff)
+    rim = parts["cuff_rim"]                               # the rolled edge: a round tube around the wrist
+    rr = rim.boundingRect()
+    rg = QLinearGradient(QPointF(rr.left(), 0), QPointF(rr.right(), 0))
+    rg.setColorAt(0.0, tones["cuff"])
+    rg.setColorAt(0.30, mix(tones["cuff_hi"], QColor("#ffffff"), 0.30))
+    rg.setColorAt(1.0, tones["cuff_shade"])
+    p.setBrush(Qt.NoBrush)
+    p.setPen(_pen(ink, lw * 2.0))
+    p.drawPath(rim)
+    pen = QPen(rg, lw * 0.95)
+    pen.setCapStyle(Qt.RoundCap)
+    p.setPen(pen)
+    p.drawPath(rim)
     p.restore()
     return icon_rect
 
 
-HAND_TILT_APART = 10.0     # degrees: fingers lean toward each other while the hands wait
+HAND_TILT_APART = 16.0     # degrees: the fingers lean in toward each other while the hands wait
 HAND_TILT_CLAPPED = 3.0
+HAND_GAP_APART = 0.30      # x the item width, between the two palms when ready
+IMPACT_FRAME = 0.62        # pose.impact above this: the separate "hands collide" frame
 
 
 def hands_geometry(rect: QRectF, open_: float) -> dict:
-    """Where the two gloves sit for a given openness (1 = apart, ready to clap; 0 = clapped).
-    The hands MOVE: each glove slides toward the middle (and straightens up a little) until
-    the two meet, so a clap is the hands coming together, not a rotation.  The gloves are
-    bottom-aligned in the item's rect and leave headroom above for the tilt and the impact."""
+    """Where the two gloves sit for a given openness (1 = apart, ready; 0 = clapped).  The hands
+    MOVE: each glove slides toward the middle (straightening up a little) until the palms meet,
+    so the clap is the hands coming together.  The gloves are bottom-aligned in the item's rect,
+    leaving headroom above for the tilt and the impact burst."""
     w = rect.width()
-    gw = w * 0.45
-    gh = gw * 1.50
-    # the PALMS meet (the thumbs tuck in front of the other hand): measure the palm's inner edge
-    _, parts = glove_path(QRectF(0, 0, gw, gh))
-    inner = parts["palm"].left()                             # distance from the glove box's left edge
-    gap = w * (-0.01 + 0.38 * open_)                         # between the two palms' inner edges
+    gw = w * 0.40
+    gh = gw * HAND_BOX_ASPECT
+    inner = gw * glove_parts(QRectF(0, 0, gw, gh))["palm_edge_u"]
+    gap = w * (-0.012 + (HAND_GAP_APART + 0.012) * open_)
     cx = rect.center().x()
     top = rect.bottom() - gh
-    front = QRectF(cx + gap / 2 - inner, top, gw, gh)
-    back = QRectF(cx - gap / 2 - (gw - inner), top, gw, gh)
+    front = QRectF(cx + gap / 2 - inner, top, gw, gh)                     # the right hand
+    back = QRectF(cx - gap / 2 - (gw - inner), top, gw, gh)               # the left hand (mirrored)
     tilt = HAND_TILT_CLAPPED + (HAND_TILT_APART - HAND_TILT_CLAPPED) * open_
-    return {"back": back, "front": front, "tilt": tilt, "meet": QPointF(cx, top + gh * 0.28)}
+    return {"back": back, "front": front, "tilt": tilt, "gap": gap, "meet": QPointF(cx, top + gw * 0.10)}
+
+
+def _burst(p: QPainter, center: QPointF, r: float, strength: float, tones: "dict[str, QColor]", lw: float) -> None:
+    """The flash behind two hands colliding: a pale eight-point star that pops out and fades."""
+    n = 8
+    grow = 0.75 + 0.35 * (1.0 - strength)
+    star = QPainterPath()
+    for i in range(2 * n):
+        rad = r * grow * (1.0 if i % 2 == 0 else 0.48)
+        a = math.pi * i / n - math.pi / 2
+        pt = QPointF(center.x() + math.cos(a) * rad, center.y() + math.sin(a) * rad)
+        if i == 0:
+            star.moveTo(pt)
+        else:
+            star.lineTo(pt)
+    star.closeSubpath()
+    p.save()
+    p.setOpacity(p.opacity() * clamp01(strength * 1.4))
+    fill = mix(tones["cuff_hi"], QColor("#ffffff"), 0.55)
+    p.setPen(_pen(tones["cuff"], lw * 0.8))
+    p.setBrush(fill)
+    p.drawPath(star)
+    p.restore()
+
+
+def _speed_lines(p: QPainter, hand: QRectF, side: int, strength: float, color: QColor, lw: float) -> None:
+    """Short streaks trailing a hand that is swinging in (side: -1 = streaks to the left of it)."""
+    p.save()
+    c = QColor(color)
+    c.setAlphaF(clamp01(strength) * 0.8)
+    p.setPen(_pen(c, lw))
+    x = hand.left() + hand.width() * 0.08 if side < 0 else hand.right() - hand.width() * 0.08
+    for i, fy in enumerate((0.30, 0.48, 0.66)):
+        y = hand.top() + hand.height() * fy
+        ln = hand.width() * (0.30 - 0.06 * i) * strength
+        p.drawLine(QPointF(x + side * hand.width() * 0.06, y), QPointF(x + side * (hand.width() * 0.06 + ln), y))
+    p.restore()
 
 
 def draw_hands(p: QPainter, rect: QRectF, pose: ClapPose, colors: "dict[str, QColor]",
                icon: "QImage | None" = None) -> "QRectF | None":
-    """Two cartoon gloves clapping.  The FRONT glove shows the back of its hand, which is where
-    the custom icon goes."""
-    open_ = clamp01(pose.open)
+    """Two gloves clapping, palms facing each other.  Three looks: READY (apart, fingers leaning
+    in), SWINGING (sliding together, with speed streaks), the IMPACT frame (pressed flat against
+    each other, squashed, fingers splayed by the hit, a flash behind) and CLAPPED (palms together,
+    at rest).  The right hand carries the custom icon on the back of the hand."""
+    tones = _glove_tones(colors)
+    impact_frame = pose.impact >= IMPACT_FRAME
+    open_ = 0.0 if impact_frame else clamp01(pose.open)
     g = hands_geometry(rect, open_)
+    w = rect.width()
+    lw = max(1.3, w * 0.40 * 0.042)
+    splay = squash = 0.0
+    if impact_frame:
+        k = clamp01((pose.impact - IMPACT_FRAME) / (1.0 - IMPACT_FRAME))
+        splay, squash = 0.55 + 0.45 * k, 0.6 + 0.4 * k
+        press = w * 0.035 * (0.5 + 0.5 * k)
+        g["front"].translate(-press / 2, 0)
+        g["back"].translate(press / 2, 0)
+        g["tilt"] = 0.0
+    cx = rect.center().x()
     p.save()
     p.setRenderHint(QPainter.Antialiasing, True)
-    if pose.squash > 0:
-        p.translate(rect.center().x(), rect.bottom())
-        p.scale(1.0 + pose.squash / rect.width() * 0.5, max(0.6, 1.0 - pose.squash / rect.height()))
-        p.translate(-rect.center().x(), -rect.bottom())
+    if impact_frame:
+        _burst(p, QPointF(cx, g["front"].top() + g["front"].width() * 0.05), w * 0.27, pose.impact, tones, lw)
+    sq = pose.squash + (w * 0.03 * squash if impact_frame else 0.0)
+    if sq > 0:
+        p.translate(cx, rect.bottom())
+        p.scale(1.0 + sq / w * 0.6, max(0.6, 1.0 - sq / rect.height()))
+        p.translate(-cx, -rect.bottom())
+    swinging = (not impact_frame) and pose.impact <= 0.0 and 0.04 < open_ < 0.97
     icon_rect = None
+    shapes = {}
     for key, mirror, sign in (("back", True, 1.0), ("front", False, -1.0)):
         r = g[key]
-        p.save()
         pivot = QPointF(r.center().x(), r.bottom())
-        p.translate(pivot)
-        p.rotate(sign * g["tilt"])                         # fingers lean in toward each other
-        p.translate(-pivot)
-        got = draw_glove(p, r, colors, icon if key == "front" else None, mirror=mirror)
-        if key == "front" and got is not None:
-            t = QTransform()
-            t.translate(pivot.x(), pivot.y())
-            t.rotate(sign * g["tilt"])
-            t.translate(-pivot.x(), -pivot.y())
-            icon_rect = t.mapRect(got)
+        t = QTransform()
+        t.translate(pivot.x(), pivot.y())
+        t.rotate(sign * g["tilt"])                       # fingertips lean in toward each other
+        t.translate(-pivot.x(), -pivot.y())
+        if swinging:
+            _speed_lines(p, t.mapRect(r), -1 if key == "back" else 1, 1.0 - open_ * 0.6, tones["shade"], lw * 0.8)
+        p.save()
+        # each hand stays on its own side of the middle: where they meet they press flat
+        far = w * 4
+        p.setClipRect(QRectF(cx - far, rect.top() - far, far, 3 * far) if key == "back"
+                      else QRectF(cx, rect.top() - far, far, 3 * far))
+        p.setTransform(t, True)
+        got = draw_glove(p, r, colors, icon if key == "front" else None, mirror=mirror, splay=splay, squash=squash)
         p.restore()
+        sil = glove_parts(r, splay, squash)["silhouette"]
+        if mirror:
+            m = QTransform()
+            m.translate(r.center().x(), 0)
+            m.scale(-1, 1)
+            m.translate(-r.center().x(), 0)
+            sil = m.map(sil)
+        shapes[key] = t.map(sil)
+        if key == "front" and got is not None:
+            icon_rect = t.mapRect(got)
+    # the seam where the two hands press together
+    both = shapes["back"].intersected(shapes["front"])
+    if not both.isEmpty():
+        br = both.boundingRect()
+        p.setPen(_pen(tones["ink"], lw * 0.9))
+        p.drawLine(QPointF(cx, br.top()), QPointF(cx, br.bottom()))
     p.restore()
     if pose.impact > 0.02:
-        _impact_lines(p, g["meet"], rect.width() * 0.17, pose.impact, colors["lines"],
-                      max(1.4, rect.width() * 0.03), angles=(-125, -90, -55))
+        _impact_lines(p, g["meet"], w * 0.17, pose.impact, colors["lines"], max(1.4, w * 0.03), angles=(-150, -120, -60, -30))
     return icon_rect
 
 
