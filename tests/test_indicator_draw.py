@@ -192,16 +192,16 @@ b = draw.load_icon(str(cp))
 check(QColor(b.pixel(5, 5)).blue() == 255, "icon cache refreshes when the file changes")
 
 # ---------------------------------------------------------------- hands
-hrect = QRectF(30, 60, 200, draw.item_size(200).height())
+hrect = QRectF(60, 60, 200, draw.item_size(200).height())
 hv = draw.resolve_colors({"glove": "#ff0000", "glove_outline": "#0000ff", "cuff": "#ffff00", "stitches": "#00ff00"})
+DEF = draw.resolve_colors({})
 
 
 def near(img, color, tol=40):
-    """Pixels close to ``color`` -- the gloves are shaded, so a part's colour comes in tones around it."""
     return count_color(img, color, tol)
 
 
-def hands_img(pose, colors=hv, icon=None, w=300, h=300):
+def hands_img(pose, colors=hv, icon=None, w=320, h=300):
     img = canvas(w, h)
     p = QPainter(img)
     got = draw.draw_hands(p, hrect, pose, colors, icon)
@@ -209,95 +209,88 @@ def hands_img(pose, colors=hv, icon=None, w=300, h=300):
     return img, got
 
 
-img, _ = hands_img(draw.ClapPose())
+READY, REST = draw.ClapPose(open=1.0), draw.ClapPose(clapped=True)
+def clapping(ms, age=2.0):
+    pz = draw.clap_pose(ms)
+    pz.clap_ms, pz.age = ms, age
+    return pz
+
+
+img, _ = hands_img(REST)
 for key in draw.HANDS_COLOR_KEYS:
     n = near(img, hv[key])
-    check(n > 40, f"hands: the '{key}' colour is drawn ({n} px)")
+    check(n > 30, f"hands: the '{key}' colour is drawn ({n} px)")
 check(near(img, hv["glove"]) > near(img, hv["cuff"]), "hands: the glove fill is the dominant colour")
-# modelled, not flat: the glove is drawn in many tones (light side, shadow side, darker fingers behind)
-img, _ = hands_img(draw.ClapPose(open=1.0), draw.resolve_colors({}))
-glove = draw.resolve_colors({})["glove"]
-tones = {rgba(img, x, y).lightness() // 6 for y in range(img.height()) for x in range(img.width())
-         if rgba(img, x, y).alpha() > 250 and abs(rgba(img, x, y).hue() - glove.hue()) < 30 and rgba(img, x, y).lightness() > 120}
-check(len(tones) >= 8, f"hands: shaded in many tones, not flat ({len(tones)} lightness bands)")
+img, _ = hands_img(READY, DEF)
 lum = [rgba(img, x, y).lightness() for y in range(img.height()) for x in range(img.width())
        if rgba(img, x, y).alpha() > 250 and rgba(img, x, y).lightness() > 120]
-check(max(lum) - min(lum) >= 45, f"hands: from highlight to shadow ({min(lum)}..{max(lum)})")
-# the two gloves: separated when open, together when shut
-def width_of_gap(open_):
-    g = draw.hands_geometry(hrect, open_)
-    return g["gap"]
-check(width_of_gap(1.0) > width_of_gap(0.0) + 40, "hands: the gloves move apart when open and together on the clap")
-check(width_of_gap(0.0) <= 0 and width_of_gap(1.0) > 0, "hands: closed the palms meet, ready they are clearly apart")
-g_open, g_shut = draw.hands_geometry(hrect, 1.0), draw.hands_geometry(hrect, 0.0)
-move = (g_shut["front"].left() - g_open["front"].left())
-check(move < -hrect.width() * 0.08 and (g_shut["back"].left() - g_open["back"].left()) > hrect.width() * 0.08,
-      f"hands: each glove slides toward the middle on the clap ({move:.1f} px)")
-check(g_open["tilt"] > g_shut["tilt"] and abs(g_open["tilt"] - g_shut["tilt"]) <= 15.0, "hands: ready, the fingertips lean in toward each other (a modest tilt)")
-for o in (1.0, 0.0):
-    gg = draw.hands_geometry(hrect, o)
-    both = gg["back"].united(gg["front"])
-    check(both.left() > hrect.left() - hrect.width() * 0.15 and both.right() < hrect.right() + hrect.width() * 0.15 and both.bottom() <= hrect.bottom() + 0.5,
-          f"hands (open={o}): stay within the item's width, bottom-aligned")
-# palms facing in: the right glove's palm side (with the thumb) faces the middle, the back of the hand faces out
-parts = draw.glove_parts(QRectF(0, 0, 100, 145))
-th = parts["thumb"].boundingRect()
-check(th.center().x() < 50 and parts["icon_area"].center().x() > 50, "hands: thumb on the palm side (toward the other hand), back of the hand outward")
-fx = [f[2].x() for f in parts["fingers"]]
-check(fx == sorted(fx, reverse=True) and [f[0] for f in parts["fingers"]][-1] == "index",
-      "hands: fingers drawn back to front (pinky behind ... index in front), fanned like a turned hand")
-rects = [f[1].boundingRect() for f in parts["fingers"]]
-overl = [rects[i].intersected(rects[i + 1]).width() / rects[i].width() for i in range(3)]
-check(all(o > 0.3 for o in overl), f"hands: the fingers overlap in depth (not laid side by side as seen from the front) {[round(o, 2) for o in overl]}")
-# clapped: nothing of either hand crosses the middle line (they press flat against each other there)
-img, _ = hands_img(draw.ClapPose(), draw.resolve_colors({}))
-cx = int(hrect.center().x())
-left_ink = sum(1 for y in range(img.height()) for x in range(cx - 3, cx + 4) if rgba(img, x, y).alpha() > 200)
-check(left_ink > 20, "hands: clapped, the two hands touch at the middle (a seam, no gap)")
-# ---- the separate impact frame
-ready, _ = hands_img(draw.ClapPose(open=1.0))
-mid, _ = hands_img(draw.ClapPose(open=0.5))
-hit, _ = hands_img(draw.ClapPose(open=0.0, impact=1.0, squash=3))
-rest, _ = hands_img(draw.ClapPose())
-top_band = lambda im: sum(1 for y in range(0, int(hrect.top() + hrect.height() * 0.25)) for x in range(im.width()) if rgba(im, x, y).alpha() > 120)  # noqa: E731
-check(top_band(hit) > top_band(rest) + 150, f"impact frame: a flash bursts above the hands ({top_band(hit)} vs {top_band(rest)} px)")
-diff = sum(1 for y in range(0, 300, 2) for x in range(0, 300, 2) if not same(rgba(hit, x, y), rgba(rest, x, y), 10) or abs(rgba(hit, x, y).alpha() - rgba(rest, x, y).alpha()) > 30)
-check(diff > 400, f"impact frame: drawn differently from the resting clap, not just the same pose ({diff} samples differ)")
-hp = draw.glove_parts(QRectF(0, 0, 100, 145), splay=1.0, squash=1.0)
-rp = draw.glove_parts(QRectF(0, 0, 100, 145))
-check(all(a[3] > b[3] for a, b in zip(hp["fingers"], rp["fingers"])), "impact frame: the hit splays the fingers outward")
-check(hp["silhouette"].boundingRect().top() > rp["silhouette"].boundingRect().top(), "impact frame: the hands squash on the hit")
-check(draw.ClapPose(impact=draw.IMPACT_FRAME + 0.01).impact >= draw.IMPACT_FRAME, "impact frame threshold sanity")
-t_hit = [t for t in range(int(draw.CLAP_SHUT_MS), int(draw.CLAP_TOTAL_MS), 5) if draw.clap_pose(t).impact >= draw.IMPACT_FRAME]
-check(len(t_hit) >= 15 and min(t_hit) <= draw.CLAP_SHUT_MS + 5, f"impact frame: held for ~{len(t_hit) * 5} ms right from the contact")
-# swinging: speed streaks on the outer sides while closing, none when waiting
-streak = lambda im: sum(1 for y in range(im.height()) for x in range(0, int(hrect.left() + 4)) if rgba(im, x, y).alpha() > 60)  # noqa: E731
-check(streak(mid) > 10 and streak(ready) == 0, f"swinging: speed streaks trail the hands while they close ({streak(mid)}), none while ready")
-
-# icon on the back of the glove
-gl_rect = QRectF(10, 10, 120, 174)
-img = canvas(160, 200)
+check(len({v // 6 for v in lum}) >= 8 and max(lum) - min(lum) >= 45, f"hands: shaded round, not flat ({len({v // 6 for v in lum})} tone bands)")
+check(len(draw.GLOVE_FINGERS) == 3, "hands: cartoon gloves -- three fingers and a thumb")
+# the thumb sits on the palm's edge (the side facing the other hand), not on the back of the hand
+palm_xs = [x for x, _ in draw.GLOVE_PALM]
+check(draw.GLOVE_THUMB[0][0] <= min(palm_xs) * 0.75, "hands: the thumb comes out of the palm's edge, not the back of the hand")
+# as big as the clapper: the gloves fill the item's box and are centred on it (the point animations turn about)
+for name, pz in (("ready", READY), ("impact", clapping(draw.HANDS_CONTACT_MS + 20)), ("rest", REST)):
+    b = draw.hands_bounds(hrect, pz)
+    check(b.width() >= hrect.width() * 0.75 and b.height() >= hrect.height() * 0.85,
+          f"hands ({name}): fill the item's box ({b.width():.0f}x{b.height():.0f} of {hrect.width():.0f}x{hrect.height():.0f})")
+    check(abs(b.center().x() - hrect.center().x()) <= hrect.width() * 0.03 and abs(b.center().y() - hrect.center().y()) <= hrect.height() * 0.04,
+          f"hands ({name}): centred on the box, so a spin turns them in place ({b.center().x() - hrect.center().x():+.1f}, {b.center().y() - hrect.center().y():+.1f})")
+# ready: apart, fingers a little bent; idle: every finger moves on its own
+fr0 = draw.hands_frame(draw.ClapPose(open=1.0, age=0.0))
+fr1 = draw.hands_frame(draw.ClapPose(open=1.0, age=0.7))
+check(not fr0.clasped and fr0.right.x - fr0.left.x > 0.5, "ready: the hands wait apart")
+check(all(min(fr0.left.bend[n]) > 0 and min(fr0.right.bend[n]) > 0 for n in ("index", "middle", "pinky")), "ready: fingers slightly bent, not stiff")
+deltas = [round(fr1.right.bend[n][0] - fr0.right.bend[n][0], 2) for n in ("index", "middle", "pinky")]
+check(any(abs(d) > 0.5 for d in deltas) and len(set(deltas)) == 3, f"ready idle: each finger wobbles on its own rhythm {deltas}")
+d2 = [fr1.right.bend["middle"][j] - fr0.right.bend["middle"][j] for j in range(3)]
+check(all(x * d2[0] >= 0 for x in d2), "idle: a finger's joints bend together (a natural curl), not against each other")
+rs0, rs1 = draw.hands_frame(draw.ClapPose(clapped=True, age=3.0)), draw.hands_frame(draw.ClapPose(clapped=True, age=3.8))
+check(rs0.clasped and any(abs(rs1.right.bend[n][0] - rs0.right.bend[n][0]) > 0.3 for n in ("index", "middle", "pinky")),
+      "rest: the clasp idles too")
+# the clap: wind up, swing in (streaks), impact (clasp + fx), settle, rest -- clasped from contact on
+wind = draw.hands_frame(clapping(draw.HANDS_WINDUP_MS))
+check(wind.right.x - wind.left.x > fr0.right.x - fr0.left.x and wind.right.spread > fr0.right.spread and sum(wind.right.bend["middle"]) < sum(fr0.right.bend["middle"]),
+      "wind-up: the hands pull further apart and the fingers open before the swing")
+sw = draw.hands_frame(clapping(draw.HANDS_WINDUP_MS + draw.HANDS_SWING_MS * 0.6))
+check(sw.swing > 0.4 and not sw.clasped, "swing: speed streaks while the hands come in")
+hit = draw.hands_frame(clapping(draw.HANDS_CONTACT_MS + 10))
+check(hit.clasped and hit.fx >= 0 and hit.squash > 0.5, "impact: clasped, squashed, ring + lines start")
+check(hit.right.side == "dorsal" and hit.left.side == "palmar", "impact: the front hand shows its back, the other its palm (like the reference)")
+check(hit.right.y < hit.left.y - 0.03, "impact: the back-of-hand glove sits higher, leaving room for the thumb below it")
+check(all(sum(hit.right.bend[n]) > 80 for n in ("index", "middle", "pinky")), "impact: the front fingers bend over the other hand")
+w = hrect.width()
+def tips(g):
+    geo = draw.glove_geometry(g, g.s * w)
+    tr = draw.glove_transform(hrect, g)
+    return {n: tr.map(geo["fingers"][n][-1]) for n in ("index", "middle", "pinky")}, tr.map(geo["silhouette"]), tr.map(geo["thumb"][-1])
+ltips, lsil, lthumb = tips(hit.left)
+rtips, rsil, _ = tips(hit.right)
+check(sum(1 for t in ltips.values() if not rsil.contains(t)) >= 2 and max(t.x() for t in ltips.values()) > max(t.x() for t in rtips.values()),
+      "impact: the back hand's fingers come out past the front hand's pinky side")
+check(min(math.hypot(t.x() - lthumb.x(), t.y() - lthumb.y()) for t in rtips.values()) < w * 0.22 and min(t.x() for t in rtips.values()) < hrect.center().x(),
+      "impact: the front hand's fingertips reach across to the other hand's thumb")
+settle = draw.hands_frame(clapping(draw.HANDS_CLAP_TOTAL_MS))
+check(settle.clasped and settle.squash < 0.05 and sum(settle.right.bend["middle"]) < sum(hit.right.bend["middle"]), "settle: the clasp relaxes a little")
+check(draw.hands_frame(draw.ClapPose(clapped=True)).clasped, "after the clap (processing, exit): the hands stay clasped")
+check(draw.clap_total_ms("hands") == draw.HANDS_CLAP_TOTAL_MS > draw.clap_total_ms("clapper") == draw.CLAP_TOTAL_MS,
+      "the hands' clap lasts longer than the clapper's (the wind-up)")
+# what gets drawn: streaks beside the hands in the swing, the ring above them on the hit, nothing extra at rest
+mid_img, _ = hands_img(clapping(draw.HANDS_WINDUP_MS + draw.HANDS_SWING_MS * 0.7), DEF)
+hit_img, _ = hands_img(clapping(draw.HANDS_CONTACT_MS + 60), DEF)
+rest_img, _ = hands_img(REST, DEF)
+def outside_hands(im, pz):
+    b = draw.hands_bounds(hrect, pz)
+    return sum(1 for y in range(im.height()) for x in range(im.width()) if rgba(im, x, y).alpha() > 60 and not b.adjusted(-2, -2, 2, 2).contains(QPointF(x, y)))
+check(outside_hands(mid_img, clapping(draw.HANDS_WINDUP_MS + draw.HANDS_SWING_MS * 0.7)) > 30, "swing: streaks are drawn beside the hands")
+o_hit, o_rest = outside_hands(hit_img, clapping(draw.HANDS_CONTACT_MS + 60)), outside_hands(rest_img, REST)
+check(o_hit > 150 and o_hit > 3 * o_rest, f"impact: the ring and lines reach beyond the hands; at rest only the outline / shadow edge does ({o_hit} vs {o_rest})")
+# front hand: right by default; "left" mirrors the picture, the icon is never flipped
 icon = draw.load_icon(solid_icon(TMP / "sq.png", 200, 200, "#ff00ff"))
-p = QPainter(img)
-ir = draw.draw_glove(p, gl_rect, draw.resolve_colors({}), icon)
-p.end()
-hand, parts = draw.glove_path(gl_rect)
-check(ir is not None and ir.width() <= gl_rect.width() * 0.40 + 0.5, f"glove icon is fit inside ~40% of the glove width ({ir.width():.1f} <= {gl_rect.width() * .4:.1f})")
-check(ir.top() >= parts["stitch_bottom"] - 0.5, "glove icon sits just below the three stitch lines")
-check(all(hand.contains(pt) for pt in (ir.topLeft(), ir.topRight(), ir.bottomLeft(), ir.bottomRight())), "glove icon lies inside the glove shape")
-check(abs(ir.center().x() - parts["icon_area"].center().x()) < 3, "glove icon is centred on the back of the hand")
-check(same(px(img, ir.center().x(), ir.center().y()), QColor("#ff00ff")), "glove icon pixels drawn")
-big = draw.load_icon(solid_icon(TMP / "bigw.png", 3000, 100, "#ff00ff"))
-img = canvas(160, 200)
-p = QPainter(img)
-draw.draw_glove(p, gl_rect, draw.resolve_colors({}), big)
-p.end()
-outside = 0
-for y in range(img.height()):
-    for x in range(img.width()):
-        if same(px(img, x, y), QColor("#ff00ff"), 4) and rgba(img, x, y).alpha() > 200 and not hand.contains(QPointF(x + .5, y + .5)):
-            outside += 1
-check(outside == 0, "glove icon is clipped to the glove shape")
+img, ir = hands_img(REST, DEF, icon)
+check(ir is not None and ir.center().x() > hrect.center().x() - hrect.width() * 0.05, "icon: on the back of the front (right) glove")
+check(count_color(img, QColor("#ff00ff")) > 30, "icon: visible")
+check(all(hand.contains(pt) for hand in [tips(draw.hands_frame(REST).right)[1]] for pt in (ir.center(),)), "icon: inside the glove")
 asym = QImage(100, 100, QImage.Format_ARGB32)
 asym.fill(QColor("#0000ff"))
 q = QPainter(asym)
@@ -305,20 +298,21 @@ q.fillRect(0, 0, 50, 100, QColor("#ff0000"))
 q.end()
 asym.save(str(TMP / "asym.png"))
 ai = draw.load_icon(str(TMP / "asym.png"))
-for mirror in (False, True):
-    img = canvas(160, 200)
-    p = QPainter(img)
-    ir = draw.draw_glove(p, gl_rect, draw.resolve_colors({}), ai, mirror=mirror)
-    p.end()
-    on_screen_left = px(img, ir.left() + ir.width() * 0.25, ir.center().y())
-    on_screen_right = px(img, ir.left() + ir.width() * 0.75, ir.center().y())
-    check(same(on_screen_left, QColor("#ff0000")) and same(on_screen_right, QColor("#0000ff")),
-          f"glove icon is not flipped (mirror={mirror})")
-img, ir = hands_img(draw.ClapPose(), draw.resolve_colors({}), icon)
-check(ir is not None and ir.center().x() > hrect.center().x(), "hands: the icon is on the right-hand glove")
-check(count_color(img, QColor("#ff00ff")) > 30, "hands: the icon is visible")
-img, ir = hands_img(draw.ClapPose(impact=1.0), draw.resolve_colors({}), icon)
-check(ir is not None and count_color(img, QColor("#ff00ff")) > 30, "hands: the icon stays on through the impact frame")
+for front in ("right", "left"):
+    pz = draw.ClapPose(clapped=True, front=front)
+    img, ir = hands_img(pz, DEF, ai)
+    c = ir.center()
+    l, r = px(img, ir.left() + ir.width() * 0.3, c.y()), px(img, ir.right() - ir.width() * 0.3, c.y())
+    check(l.red() > 150 and l.blue() < 120 and r.blue() > 150 and r.red() < 120, f"icon: not flipped (front={front})")
+bl, br = draw.hands_bounds(hrect, draw.ClapPose(clapped=True, front="left")), draw.hands_bounds(hrect, REST)
+check(abs((bl.center().x() - hrect.center().x()) + (br.center().x() - hrect.center().x())) < 1.0, "front=left: the mirror image of front=right")
+img, ir = hands_img(clapping(draw.HANDS_CONTACT_MS + 30), DEF, icon)
+check(ir is not None and count_color(img, QColor("#ff00ff")) > 30, "icon: stays on through the impact")
+# opacity layer leaves room for the wind-up and the effects
+for ms in (draw.HANDS_WINDUP_MS, draw.HANDS_CONTACT_MS + 40):
+    b = draw.hands_bounds(hrect, clapping(ms))
+    m = hrect.width() * 0.35
+    check(hrect.adjusted(-m, -m, m, m).contains(b), f"hands at {ms:.0f} ms fit the opacity layer")
 
 # ---------------------------------------------------------------- loading circle
 for name, col in (("gray", draw.DEFAULT_CIRCLE_COLOR), ("purple", draw.DEFAULT_OVERLAY_CIRCLE_COLOR)):

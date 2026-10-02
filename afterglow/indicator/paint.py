@@ -50,8 +50,11 @@ class StackPainter:
             # ready to clap (stick up / hands apart) until the clap; shut afterwards
             if fr.clap_ms >= 0:
                 pose = draw.clap_pose(fr.clap_ms)
+                pose.clap_ms = fr.clap_ms
             else:
                 pose = draw.ClapPose(open=0.0 if fr.clapped else 1.0)
+            pose.age, pose.clapped = fr.age, fr.clapped
+            pose.front = getattr(style, "hands_front", "right")
             icon = draw.load_icon(style.icon)
             p.save()
             draw.apply_xform(p, rect, xf)

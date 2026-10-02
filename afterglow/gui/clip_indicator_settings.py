@@ -40,6 +40,7 @@ IMAGE_FILTER = "Images (*.png *.jpg *.jpeg *.webp *.bmp *.gif *.svg);;All Files 
 SOUND_FILTER = "Audio Files (*.wav *.mp3 *.ogg *.flac);;All Files (*)"
 STYLE_LABELS = {"clapper": "Clapper", "hands": "Hands"}
 PROCESSING_LABELS = {"circle": "Clapper leaves, a loading circle shows", "stay": "Clapper stays until it's done"}
+FRONT_LABELS = {"right": "Right hand in front", "left": "Left hand in front"}
 SCREEN_LABELS = {"focused": "The screen with the focused window", "primary": "The primary screen"}
 
 
@@ -127,6 +128,9 @@ class ClipIndicatorGroup(CustomGroupBox):
 
         self.style_combo = _combo([(s, STYLE_LABELS[s]) for s in STYLES], ci.style)
         form.addRow("Style:", self.style_combo)
+        self.front_combo = _combo(list(FRONT_LABELS.items()), getattr(ci, "hands_front", "right"))
+        self.front_combo.setToolTip("The Hands style: which glove ends up in front when the hands clasp")
+        form.addRow("Front hand:", self.front_combo)
 
         self.anchor_picker = AnchorPicker(ci.anchor)
         form.addRow("Position:", self.anchor_picker)
@@ -218,7 +222,7 @@ class ClipIndicatorGroup(CustomGroupBox):
                     self.pad_y_spin.valueChanged, self.size_spin.valueChanged, self.enter_combo.currentIndexChanged,
                     self.exit_combo.currentIndexChanged, self.processing_combo.currentIndexChanged,
                     self.circle_swatch.changed, self.overlay_swatch.changed, self.opacity_spin.valueChanged,
-                    self.clapper_opacity_spin.valueChanged, self.pulse_check.toggled):
+                    self.clapper_opacity_spin.valueChanged, self.pulse_check.toggled, self.front_combo.currentIndexChanged):
             sig.connect(self._refresh)
         self.enter_combo.itemHovered.connect(lambda i: self.preview.set_overrides(enter=self.enter_combo.itemData(i)))
         self.exit_combo.itemHovered.connect(lambda i: self.preview.set_overrides(exit=self.exit_combo.itemData(i)))
@@ -226,6 +230,7 @@ class ClipIndicatorGroup(CustomGroupBox):
         self.exit_combo.popupHidden.connect(self.preview.clear_overrides)
         self.anchor_picker.changed.connect(self._sync_padding_enabled)
         self.anchor_picker.changed.connect(self._sync_centre_animations)
+        self.style_combo.currentIndexChanged.connect(self._sync_enabled)
         self.clap_sound_edit.textChanged.connect(lambda *_: self.changed.emit())
         self.enabled_check.toggled.connect(self._sync_enabled)
         self.enabled_check.toggled.connect(lambda *_: self.changed.emit())
@@ -278,6 +283,7 @@ class ClipIndicatorGroup(CustomGroupBox):
                   self.clapper_opacity_spin, self.pulse_check, self.clap_sound_edit, self.clap_sound_browse,
                   self.clap_sound_clear, self.clap_sound_play, self.screen_combo, self.test_btn):
             w.setEnabled(on)
+        self.front_combo.setEnabled(on and self.style_combo.currentData() == "hands")
         if on:
             self._sync_padding_enabled()
         else:
@@ -313,6 +319,7 @@ class ClipIndicatorGroup(CustomGroupBox):
             "circle_opacity": self.opacity_spin.value() / 100.0,
             "opacity": self.clapper_opacity_spin.value() / 100.0,
             "pulse": self.pulse_check.isChecked(),
+            "hands_front": self.front_combo.currentData(),
             "screen": self.screen_combo.currentData(), "screen_hint": None,
         }
 
@@ -329,6 +336,7 @@ class ClipIndicatorGroup(CustomGroupBox):
         ci.circle_opacity = d["circle_opacity"]
         ci.clapper_opacity = d["opacity"]
         ci.ring_pulse = d["pulse"]
+        ci.hands_front = d["hands_front"]
         ci.clap_sound = self.clap_sound_edit.text().strip()
         ci.screen = d["screen"]
 
@@ -359,6 +367,9 @@ class ClipIndicatorGroup(CustomGroupBox):
                 if event == "clap" and sound:
                     try:
                         from ..clips import play_sound
+                        from ..indicator import HANDS_CONTACT_MS
+                        if style["style"] == "hands":            # lands on the impact, after the wind-up
+                            time.sleep(HANDS_CONTACT_MS / 1000.0)
                         play_sound(sound)
                     except Exception:  # noqa: BLE001 -- the test is visual first
                         pass

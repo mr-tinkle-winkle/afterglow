@@ -396,6 +396,25 @@ config.save(st)
 st2 = config.load()
 check(st2.clip_indicator.anchor == "top_left" and st2.clip_indicator.circle_opacity == 0.3, "global indicator settings round-trip through config")
 
+
+# ---- the Hands style: front hand in the payload; the clap sound waits for the impact
+set_ind(style="hands", hands_front="left")
+check(clips.clap_sound_delay(config.load()) == __import__("afterglow.indicator", fromlist=["x"]).HANDS_CONTACT_MS / 1000.0,
+      "hands: the clap sound is held back until the hands meet")
+set_ind(style="clapper")
+check(clips.clap_sound_delay(config.load()) == 0.0, "clapper: the clap sound plays at once")
+set_ind(style="hands", hands_front="left")
+reset()
+t0 = time.time()
+clips.trigger_clip(clips.update_clip_config(cfg.id, indicator_clap_sound="/sounds/clap.wav").id)
+check(MSGS and MSGS[0]["style"]["hands_front"] == "left" and MSGS[0]["style"]["style"] == "hands", "hands_front reaches the start event")
+deadline = time.time() + 3
+while time.time() < deadline and "/sounds/clap.wav" not in played:
+    time.sleep(0.02)
+check(played.count("/sounds/clap.wav") == 1, "hands: the delayed clap sound still plays, once")
+set_ind(style="clapper", hands_front="right")
+clips.update_clip_config(cfg.id, indicator_clap_sound="")
+
 print()
 print("ALL PASS" if not FAILS else f"{len(FAILS)} FAILED: " + "; ".join(FAILS))
 sys.exit(1 if FAILS else 0)

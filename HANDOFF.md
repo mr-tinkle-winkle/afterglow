@@ -343,17 +343,29 @@ Changes to the indicator and a few Settings / Library UI fixes. Where each lives
   (`draw.clap_pose`: 80 ms shut, squash, impact, small rebound; `Frame.clapped` selects the
   pose). The open arm rises above the item, so `layout.stack_gap(size)` (12 px + 0.42 x width) is the
   stack spacing instead of the fixed `STACK_GAP`.
-- **Hands.** Two gloves in a three-quarter view, palms turned in toward each other (right hand
-  built in its own box, the left one mirrored). Modelled rather than flat: four fingers fanned in
-  depth and drawn back to front, each a tube with its own light-to-shadow gradient, back fingers
-  darker and shadowed by the finger in front, highlights on fingertips and knuckles, the thumb in
-  front of the palm with its own shadow, the back of the hand turning into shadow, a soft drop
-  shadow, a rolled cylindrical cuff (`glove_parts`, `draw_glove`, `_tube_gradient`). Where the
-  hands meet each is clipped to its own side of the middle, so they press flat along a seam.
-  Frames: READY (apart, fingertips leaning in 16 deg), SWINGING (sliding together with speed
-  streaks), a separate IMPACT frame while `pose.impact >= IMPACT_FRAME` (~110 ms from contact:
-  pressed together, squashed, fingers and thumbs splayed by the hit, a pale burst behind) and
-  CLAPPED (palms together at rest) (`draw_hands`, `hands_geometry`).
+- **Hands (second redesign).** Cartoon gloves with three fingers and a thumb, articulated: every
+  finger and thumb is a chain of joints drawn as a shaded tube (`_tube`: ink outline, shadow body,
+  lit band, highlight), so fingers bend; a bend shows as foreshortening plus a share of in-plane curl
+  (`GlovePose.inplane`). The right glove shows the back of the hand (stitching, the custom icon),
+  the left glove its palm (pad, creases, joint creases); both have the thumb on the left as drawn,
+  coming out of the palm's edge (`GLOVE_FINGERS`, `GLOVE_THUMB`, `GLOVE_PALM`, `draw_glove`,
+  `glove_geometry`). Timeline (`hands_frame`, from `ClapPose.clap_ms`): READY (apart, fingers a
+  little bent, idling) -> wind-up `HANDS_WINDUP_MS` (hands pull apart, fingers open) -> swing
+  `HANDS_SWING_MS` (speed streaks) -> IMPACT at `HANDS_CONTACT_MS` (the clasp from the classic
+  clapping photo: the right hand crosses over the left palm, its fingers curl over and tuck between
+  the left thumb and fingers, its thumb lies across the left heel, the left fingers come out past
+  the right pinky; the back-of-hand glove sits higher so the thumb below it has room; squash, shock
+  ring + impact lines over `HANDS_FX_MS`) -> settle -> REST (relaxed clasp, idling), clasped through
+  the exit. Idle wobble (`_wobble`): each finger bends on its own rhythm with all three joints
+  together, plus a slight sway. The keyframes (`HANDS_READY`, `HANDS_WINDUP`, `HANDS_IMPACT`,
+  `HANDS_REST`) are in box units and are sized to fill the item's rect, centred on it; previously the
+  gloves filled only its lower two thirds while every animation turns about the rect's centre,
+  which made them look small and orbit when spinning. The clap state lasts
+  `draw.clap_total_ms(style)` (hands 530 ms, clapper 380 ms); frames carry `age` for the idle.
+  `ClipIndicatorSettings.hands_front` ("right" default / "left": mirrors the picture, icon never
+  flipped; Settings "Front hand", enabled for the Hands style; `style["hands_front"]`).
+  `clips.clap_sound_delay`: with the Hands style the clap sound is delayed by `HANDS_CONTACT_MS`
+  so it lands on the impact (the Test button does the same).
 - **Colours.** Defaults come from the afterglow theme colours (`draw.afterglow_defaults(appearance)`,
   computed from the stored hex values so the headless daemon needs no Qt theme); `build_style`
   merges them under the per-clip-type overrides, and the Settings group / per-clip dialog show them

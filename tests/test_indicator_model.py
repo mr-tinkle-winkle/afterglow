@@ -348,6 +348,21 @@ m.tick(t_ring + 1.4)
 m.event("a", "overlay_fail", t_ring + 1.5)
 check(pulse_at(m, "a", t_ring + 1.6) == -1.0 and m._inds["a"].state == "circle_fail", "a failing overlay shakes red instead of pulsing")
 
+
+# ---- the Hands style: a longer clap (wind-up first), idling age, which hand is in front
+mh = M.Model()
+mh.event("h", "start", 0.0, {"style": "hands", "enter": "fade", "hands_front": "left"}, "s")
+mh.tick(0.5)
+mh.event("h", "clap", 0.5)
+mh.tick(0.5 + draw.CLAP_TOTAL_MS / 1000.0 + 0.01)
+check(mh._inds["h"].state == "clap", "hands: still clapping after the clapper's clap length (the wind-up comes first)")
+mh.tick(0.5 + draw.HANDS_CLAP_TOTAL_MS / 1000.0 + 0.01)
+check(mh._inds["h"].state != "clap", "hands: the clap ends after the hands' own clap length")
+fr = mh.frame(mh._inds["h"], 1.2)
+check(abs(fr.age - 1.2) < 1e-6 and fr.clapped, "frames carry the capture's age (the idle wobble) and the clapped flag")
+check(mh._inds["h"].style.hands_front == "left" and M.Style.from_dict({"hands_front": "junk"}).hands_front == "right",
+      "hands_front is carried in the style, unknown values fall back to right")
+
 print()
 if FAILS:
     print(f"{len(FAILS)} FAILED")

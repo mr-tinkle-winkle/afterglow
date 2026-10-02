@@ -8,7 +8,7 @@ Per-capture states
   queued      beyond the visible stack ("+N" badge); starts when a slot frees up
   enter       the chosen enter animation
   hold        landed, waiting for the clap (OBS confirming the save)
-  clap        the clap (CLAP_TOTAL_MS)
+  clap        the clap (draw.clap_total_ms(style): the hands wind up first, so theirs is longer)
   stay        "stay" mode: the clapper stays on screen, idle bob, until the clip is done
   leave       the chosen exit animation
   circle_in   the loading circle fades in where the clapper's centre was
@@ -31,7 +31,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from . import (ANCHORS, DEFAULT_ANCHOR, ENTER_ANIMATIONS, EXIT_ANIMATIONS, MAX_VISIBLE, PROCESSING_MODES,
-               SCREEN_MODES, STYLES, WATCHDOG)
+               SCREEN_MODES, STYLES, WATCHDOG, HANDS_FRONT)
 from . import draw
 
 CIRCLE_FADE_IN = 0.200
@@ -65,6 +65,7 @@ class Style:
     circle_opacity: float = 0.55
     opacity: float = 1.0                     # the clapper's own opacity
     pulse: bool = True                       # the ring pulses when a stage completes
+    hands_front: str = "right"               # the Hands style: which glove ends up in front
     screen: str = "focused"
     screen_hint: "dict | None" = None        # {"x": .., "y": ..} = centre of the focused window
 
@@ -88,6 +89,7 @@ class Style:
         s.circle_opacity = min(1.0, max(0.05, float(d.get("circle_opacity", 0.55))))
         s.opacity = min(1.0, max(0.05, float(d.get("opacity", 1.0))))
         s.pulse = bool(d.get("pulse", True))
+        s.hands_front = d.get("hands_front") if d.get("hands_front") in HANDS_FRONT else "right"
         s.screen = d.get("screen") if d.get("screen") in SCREEN_MODES else "focused"
         hint = d.get("screen_hint")
         s.screen_hint = dict(hint) if isinstance(hint, dict) else None
@@ -110,6 +112,7 @@ class Frame:
     circle_red: float = 0.0
     circle_pulse: float = -1.0                 # 0..1 while the ring is pulsing (a stage just completed), else -1
     clapped: bool = False                      # the clap has happened (the item rests shut); False = ready / open
+    age: float = 0.0                           # seconds since the capture appeared (the hands idle with it)
 
 
 class Indicator:
@@ -259,8 +262,9 @@ class Model:
             if "fail" in f:
                 self._go(ind, "fail", max(ind.t0, f["fail"]))
                 return True
-            if el * 1000.0 >= draw.CLAP_TOTAL_MS:
-                end = ind.t0 + draw.CLAP_TOTAL_MS / 1000.0
+            total = draw.clap_total_ms(st.style)
+            if el * 1000.0 >= total:
+                end = ind.t0 + total / 1000.0
                 self._go(ind, "leave" if st.mode == "circle" else "stay", end)
                 return True
         elif s == "stay":
@@ -394,6 +398,7 @@ class Model:
         s, el = ind.state, now - ind.t0
         st = ind.style
         fr = Frame(id=ind.id, state=s, slot=ind.slot_at(now))
+        fr.age = max(0.0, now - ind.born)
         fr.clapped = s in ("leave", "stay", "popin", "fail", "clap") and "clap" in ind.flags
         if s == "enter":
             fr.anim = ("enter", st.enter, el / ind.enter_dur())

@@ -104,6 +104,7 @@ def build_style(settings, clip_cfg=None, screen_hint: "dict | None" = None) -> d
         "circle_opacity": ci.circle_opacity,
         "opacity": ci.clapper_opacity,
         "pulse": ci.ring_pulse,
+        "hands_front": getattr(ci, "hands_front", "right"),
         "screen": ci.screen,
         "screen_hint": screen_hint if ci.screen == "focused" else None,
     }

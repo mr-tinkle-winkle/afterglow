@@ -35,6 +35,12 @@ ANIMATION_LABELS = {
 }
 
 STYLES = ("clapper", "hands")
+HANDS_FRONT = ("right", "left")      # which glove ends up in front in the clasp (Hands style)
+# The Hands clap: a wind-up, then the swing in; the hands meet this long after the `clap` event,
+# so the clap sound is delayed by the same amount to land on the impact.
+HANDS_WINDUP_MS = 110.0
+HANDS_SWING_MS = 70.0
+HANDS_CONTACT_MS = HANDS_WINDUP_MS + HANDS_SWING_MS
 PROCESSING_MODES = ("circle", "stay")
 SCREEN_MODES = ("focused", "primary")
 

@@ -24,14 +24,14 @@ Build order, in progress:
 A small on-screen indicator for clip captures, enabled by default and configured under
 Settings > Clipping > Clip Indicator:
 
-- A movie clapper (or a pair of clapping gloves, as the alternative style) slides onto the screen when a
-  clip hotkey fires, waits with its top stick raised, claps when OBS has saved the clip, then gives way to a
+- A movie clapper (or, as the alternative style, a pair of cartoon gloves that idle, wind up, swing in and
+  clasp) slides onto the screen when a clip hotkey fires, waits ready to clap, claps when OBS has saved the clip, then gives way to a
   gray loading circle until the clip is in the library. When the clip type captures an input overlay, the
   circle turns purple until the overlay has rendered. The ring pulses as each stage completes (switchable).
   A failed capture launches the clapper into the air.
 - Position (any corner, edge middle or the centre, with padding), size (156 px by default), separate enter
   and exit animations, the clapper's opacity, the processing mode (loading circle, or the clapper stays),
-  the circle colours and opacity, a clap sound used only for the clapper, and the screen (the one holding
+  the circle colours and opacity, which glove ends up in front (Hands style), a clap sound used only for the clapper, and the screen (the one holding
   the focused window, or the primary one) are all settings, with a live preview and a Test button.
   Corner and edge positions enter and leave through the top or bottom edge where there is one; the centre
   fades by default.

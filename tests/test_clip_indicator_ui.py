@@ -332,6 +332,17 @@ new = clips.get_clip_config_by_name("Second")
 check(new.indicator_colors == {} and new.indicator_icon_path == "" and new.indicator_clap_sound == "", "a new clip option is created with default indicator fields")
 check(page._rows[-1].indicator_style_provider == g.style_dict, "rows preview with the Settings group's current values")
 
+
+# ---- Front hand (Hands style only)
+g.style_combo.setCurrentIndex(g.style_combo.findData("clapper"))
+check(not g.front_combo.isEnabled(), "Front hand is off for the clapper")
+g.style_combo.setCurrentIndex(g.style_combo.findData("hands"))
+check(g.front_combo.isEnabled() and g.front_combo.currentData() == "right", "Front hand applies to the Hands style, right by default")
+g.front_combo.setCurrentIndex(g.front_combo.findData("left"))
+check(g.style_dict()["hands_front"] == "left" and g.preview.style().hands_front == "left", "...reaches the style and the preview")
+page._save()
+check(config.load().clip_indicator.hands_front == "left", "...and is saved")
+
 print()
 print("ALL PASS" if not FAILS else f"{len(FAILS)} FAILED: " + "; ".join(FAILS))
 sys.exit(1 if FAILS else 0)

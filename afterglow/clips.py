@@ -300,9 +300,26 @@ def _resolve_keyframe_sound(keyframe: str, clip_cfg: "ClipConfig", settings) -> 
     return settings.advanced_sounds.get(keyframe) or None
 
 
+def clap_sound_delay(settings) -> float:
+    """Seconds to hold the clap sound back so it lands on the indicator's impact: the Hands style winds
+    up and swings in before the hands meet; the clapper snaps shut at once."""
+    ci = getattr(settings, "clip_indicator", None)
+    if ci is not None and getattr(ci, "enabled", False) and getattr(ci, "style", "") == "hands":
+        from .indicator import HANDS_CONTACT_MS
+        return HANDS_CONTACT_MS / 1000.0
+    return 0.0
+
+
 def _play_keyframe_sound(keyframe: str, clip_cfg: "ClipConfig", settings) -> None:
     try:
-        play_sound(_resolve_keyframe_sound(keyframe, clip_cfg, settings))
+        sound = _resolve_keyframe_sound(keyframe, clip_cfg, settings)
+        delay = clap_sound_delay(settings) if keyframe == keyframes.REPLAY_BUFFER_COMPLETED else 0.0
+        if sound and delay > 0:
+            timer = threading.Timer(delay, play_sound, args=(sound,))
+            timer.daemon = True
+            timer.start()
+            return
+        play_sound(sound)
     except Exception as e:
         print(f"Warning: failed to play '{keyframe}' clip sound (pipeline continues): {e}")
 
