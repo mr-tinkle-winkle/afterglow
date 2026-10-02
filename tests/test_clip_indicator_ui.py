@@ -51,6 +51,8 @@ app.processEvents()
 g = page.indicator_group
 check(isinstance(g, ClipIndicatorGroup) and g.isVisibleTo(page.parent() or page) is not None, "Settings > Clipping has a Clip Indicator group")
 d = config.ClipIndicatorSettings()
+check(d.size == 156 and d.clapper_opacity == 1.0 and d.ring_pulse is True and d.clap_sound == "", "defaults: 156 px, opaque, pulse on, no own clap sound")
+check(g.clapper_opacity_spin.value() == 100 and g.pulse_check.isChecked() and g.clap_sound_edit.text() == "", "...and the group shows them")
 check(g.enabled_check.isChecked() == d.enabled and g.style_combo.currentData() == d.style
       and g.anchor_picker.anchor() == d.anchor and g.pad_x_spin.value() == d.padding_x and g.size_spin.value() == d.size
       and g.enter_combo.currentData() == d.enter_animation and g.exit_combo.currentData() == d.exit_animation
@@ -60,7 +62,16 @@ check(g.enabled_check.isChecked() == d.enabled and g.style_combo.currentData() =
 check([g.enter_combo.itemData(i) for i in range(g.enter_combo.count())] == list(ENTER_ANIMATIONS), "every enter animation is listed")
 check([g.exit_combo.itemData(i) for i in range(g.exit_combo.count())] == list(EXIT_ANIMATIONS), "every exit animation is listed")
 
-# ---- position picker: 8 cells, the centre is not one
+# ---- Clip Options keeps a usable height under the tall Clip Indicator group
+from afterglow.gui.settings_page import CLIP_OPTIONS_MIN_HEIGHT
+page.resize(1100, 700)
+app.processEvents()
+rows_scroll = page.rows_container.parentWidget().parentWidget()
+check(rows_scroll.height() >= CLIP_OPTIONS_MIN_HEIGHT >= 300, f"Clip Options list is not squashed ({rows_scroll.height()} px)")
+page.resize(1100, 1000)
+app.processEvents()
+
+# ---- position picker: 9 cells, the centre is one
 ap = g.anchor_picker
 ap.resize(ap.size())
 picked = []
@@ -72,10 +83,22 @@ for r in range(3):
 for (r, c), name in AnchorPicker._CELLS.items():
     QTest.mouseClick(ap, Qt.LeftButton, Qt.NoModifier, cells[(r, c)].toPoint())
     check(ap.anchor() == name, f"clicking cell ({r},{c}) selects {name}")
-check(set(AnchorPicker._CELLS.values()) == set(ANCHORS), "the picker covers exactly the eight anchors")
-before = ap.anchor()
-QTest.mouseClick(ap, Qt.LeftButton, Qt.NoModifier, cells[(1, 1)].toPoint())
-check(ap.anchor() == before, "the centre cell does nothing")
+check(set(AnchorPicker._CELLS.values()) == set(ANCHORS) and len(ANCHORS) == 9, "the picker covers exactly the nine anchors")
+check(AnchorPicker._CELLS[(1, 1)] == "center", "the middle cell is the centre anchor")
+ap.set_anchor("bottom_right")
+g.enter_combo.setCurrentIndex(g.enter_combo.findData("slide"))
+g.exit_combo.setCurrentIndex(g.exit_combo.findData("slide"))
+ap.set_anchor("center")
+check(not g.pad_x_spin.isEnabled() and not g.pad_y_spin.isEnabled(), "centre: neither padding applies")
+check(g.enter_combo.currentData() == "fade" and g.exit_combo.currentData() == "fade", "centre: slide defaults switch to fade")
+ap.set_anchor("top")
+check(g.enter_combo.currentData() == "slide" and g.exit_combo.currentData() == "slide", "leaving the centre restores slide")
+ap.set_anchor("center")
+g.enter_combo.setCurrentIndex(g.enter_combo.findData("pop"))
+ap.set_anchor("bottom")
+check(g.enter_combo.currentData() == "pop" and g.exit_combo.currentData() == "slide", "a hand-picked animation survives leaving the centre")
+g.enter_combo.setCurrentIndex(g.enter_combo.findData("slide"))
+ap.set_anchor("bottom_right")
 ap.set_anchor("top")
 check(not g.pad_x_spin.isEnabled() and g.pad_y_spin.isEnabled(), "top: padding X is unused (centred), Y applies")
 ap.set_anchor("left")
@@ -97,6 +120,9 @@ g.circle_swatch.changed.emit("#112233")
 g.overlay_swatch.set_color("#445566")
 g.overlay_swatch.changed.emit("#445566")
 g.opacity_spin.setValue(70)
+g.clapper_opacity_spin.setValue(60)
+g.pulse_check.setChecked(False)
+g.clap_sound_edit.setText("/tmp/clap.wav")
 g.screen_combo.setCurrentIndex(g.screen_combo.findData("primary"))
 page._save()
 ci = config.load().clip_indicator
@@ -106,7 +132,10 @@ check((ci.enter_animation, ci.exit_animation, ci.processing, ci.screen) == ("swi
       "...animations, processing mode and screen")
 check((ci.circle_color, ci.overlay_circle_color) == ("#112233", "#445566") and abs(ci.circle_opacity - 0.7) < 1e-9,
       "...circle colours and opacity")
+check((ci.clapper_opacity, ci.ring_pulse, ci.clap_sound) == (0.6, False, "/tmp/clap.wav"), "...clapper opacity, ring pulse and the clap sound")
 g2 = SettingsPage().indicator_group
+check(g2.clapper_opacity_spin.value() == 60 and not g2.pulse_check.isChecked() and g2.clap_sound_edit.text() == "/tmp/clap.wav",
+      "...and the new page shows them again")
 check(g2.anchor_picker.anchor() == "top_right" and g2.size_spin.value() == 140 and g2.exit_combo.currentData() == "zip",
       "a new Settings page loads what was saved")
 g.enabled_check.setChecked(False)
@@ -254,6 +283,8 @@ check([m["event"] for m in sent] == ["start", "clap", "processing", "overlay", "
       f"Test sends start, clap, processing, overlay, overlay_done ({[m['event'] for m in sent]})")
 check(len({m["id"] for m in sent}) == 1 and sent[0]["style"]["anchor"] == "top_right" and sent[0]["style"]["size"] == 140,
       "...for one capture, with the settings as they are in the widgets (unsaved changes included)")
+check(sent[0]["style"]["opacity"] == 0.6 and sent[0]["style"]["pulse"] is False, "...including the clapper opacity and the pulse switch")
+check(sent[0]["style"]["colors"] == draw.afterglow_defaults(), "...and the afterglow colours as the base look")
 ic.set_test_sink(None)
 
 # ------------------------------------------------------------------ per-clip-type dialog
@@ -273,7 +304,9 @@ dlg._reset_color("board")
 vals = dlg.result_values()
 check(vals["indicator_colors"] == {"stripe_a": "#ff0000"}, f"setting a colour adds it, resetting one removes it ({vals['indicator_colors']})")
 check(dlg.swatches["board"].color() == draw.DEFAULT_COLORS["board"], "...and a reset swatch shows the default again")
-check(dlg.preview.style().colors == {"stripe_a": "#ff0000"} and dlg.preview.style().icon == str(icon), "the dialog's preview uses the colours and icon")
+_pc = dlg.preview.style().colors
+check(_pc["stripe_a"] == "#ff0000" and _pc["board"] == draw.DEFAULT_COLORS["board"] and dlg.preview.style().icon == str(icon),
+      "the dialog's preview uses the overrides over the afterglow defaults, and the icon")
 check(dlg.preview.style().anchor == "top_right" and dlg.preview.style().style == "hands", "...and the global style from Settings (as currently edited)")
 dlg.icon_edit.setText("")
 dlg.sound_edit.setText("")

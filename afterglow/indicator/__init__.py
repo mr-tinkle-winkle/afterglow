@@ -22,7 +22,7 @@ from __future__ import annotations
 EVENTS = ("start", "clap", "processing", "done", "overlay", "overlay_done", "overlay_fail", "fail")
 
 # --- positions ------------------------------------------------------------------
-ANCHORS = ("top_left", "top", "top_right", "left", "right", "bottom_left", "bottom", "bottom_right")
+ANCHORS = ("top_left", "top", "top_right", "left", "right", "bottom_left", "bottom", "bottom_right", "center")
 DEFAULT_ANCHOR = "bottom_right"
 
 # --- animations (enter and exit are chosen separately; fail is fixed) -----------------

@@ -126,7 +126,11 @@ ev = events()
 check(ev == ["start", "clap", "done"], f"a plain capture sends start, clap, done in that order ({ev})")
 check(len({m["id"] for m in MSGS}) == 1, "...all for one capture id")
 st = MSGS[0]["style"]
-check(st["colors"] == {"body": "#ff0000"} and st["icon"] == "/icons/a.png", "the start carries the clip type's colours and icon")
+from afterglow.indicator import draw as _draw
+check(st["colors"].get("body") == "#ff0000" and st["icon"] == "/icons/a.png", "the start carries the clip type's colours and icon")
+check(all(st["colors"].get(k) == v for k, v in _draw.afterglow_defaults(config.load().appearance).items()),
+      "...over the afterglow theme's colours as the default look")
+check(st["size"] == 156 and st["opacity"] == 1.0 and st["pulse"] is True, "...and the 156 px size, full opacity and ring pulse by default")
 check(st["anchor"] == "bottom_right" and st["style"] == "clapper" and st["enter"] == "slide", "...and the global settings")
 check(played.count("/sounds/clap.wav") == 1 and "/sounds/global.wav" not in played,
       f"the clip type's clap sound plays once and replaces the global one ({played})")
@@ -136,6 +140,24 @@ reset()
 cfg2 = clips.update_clip_config(cfg.id, indicator_clap_sound="")
 clips.trigger_clip(cfg2.id)
 check(played.count("/sounds/global.wav") == 1, "no clap sound set: the global clip sound plays, once")
+
+# the global clapper-only sound: beats the usual chain, loses to the clip type's own clap sound
+set_ind(clap_sound="/sounds/global_clap.wav")
+reset()
+clips.trigger_clip(cfg2.id)
+check(played.count("/sounds/global_clap.wav") == 1 and "/sounds/global.wav" not in played,
+      f"a global clap sound replaces the usual clip sound, once ({played})")
+reset()
+clips.trigger_clip(clips.update_clip_config(cfg.id, indicator_clap_sound="/sounds/clap.wav").id)
+check(played.count("/sounds/clap.wav") == 1 and "/sounds/global_clap.wav" not in played,
+      "...but the clip type's own clap sound wins over it")
+clips.update_clip_config(cfg.id, indicator_clap_sound="")
+set_ind(clap_sound="", clapper_opacity=0.4, ring_pulse=False, size=200)
+reset()
+clips.trigger_clip(cfg2.id)
+st = MSGS[0]["style"]
+check(st["opacity"] == 0.4 and st["pulse"] is False and st["size"] == 200, "opacity, pulse and size from Settings reach the start event")
+set_ind(clapper_opacity=1.0, ring_pulse=True, size=156)
 
 # indicator disabled: nothing sent, and the old sound chain is untouched
 set_ind(enabled=False)
@@ -342,11 +364,23 @@ clips.wait_for_overlays(120)
 time.sleep(0.3)
 
 # ------------------------------------------------------------------ the CLI path (no daemon): start comes from trigger_clip itself
+def settle(quiet=1.0, limit=60.0):
+    """Wait until no event has arrived for `quiet` seconds: a capture abandoned by the watchdog above can
+    still be finishing on its thread (slowly, on a loaded machine) and must not leak into this section."""
+    ic.flush()
+    n, since, end = len(MSGS), time.time(), time.time() + limit
+    while time.time() < end and time.time() - since < quiet:
+        time.sleep(0.1)
+        ic.flush()
+        if len(MSGS) != n:
+            n, since = len(MSGS), time.time()
+settle()
 reset()
 daemon.CAPTURE_TIMEOUT_SECONDS = 120
 clips.update_clip_config(cfg.id, overlay_enabled=False)
 clips.trigger_clip(cfg.id)
-check(events() == ["start", "clap", "done"], "a CLI / GUI trigger (no daemon) starts the indicator itself")
+_ev = events()
+check(_ev == ["start", "clap", "done"], f"a CLI / GUI trigger (no daemon) starts the indicator itself ({_ev})")
 
 # DB / config round trip
 c = clips.get_clip_config(cfg.id)

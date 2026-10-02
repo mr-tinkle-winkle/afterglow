@@ -47,6 +47,9 @@ from .smooth_scroll_area import SmoothScrollArea
 from .themed_dialogs import get_color, get_existing_directory, get_open_file_name, get_save_file_name
 
 
+CLIP_OPTIONS_MIN_HEIGHT = 340   # px, the clip option list inside Settings > Clipping
+
+
 class SettingsPage(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -830,6 +833,10 @@ class SettingsPage(QWidget):
         self.rows_layout = QVBoxLayout(self.rows_container)
         self.rows_layout.addStretch(1)
         scroll.setWidget(self.rows_container)
+        # The Clipping tab scrolls as a whole (see _add_settings_tab), so a stretch factor alone
+        # lets this list shrink to nothing under the tall Clip Indicator group above it: give it
+        # a floor of about one and a half rows.
+        scroll.setMinimumHeight(CLIP_OPTIONS_MIN_HEIGHT)
         outer.addWidget(scroll, stretch=1)
 
         add_btn = CustomButton("+ Add Clip Option")

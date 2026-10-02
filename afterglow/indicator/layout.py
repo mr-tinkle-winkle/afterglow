@@ -22,7 +22,7 @@ BADGE_HEIGHT_FACTOR = 0.40        # the "+N" badge is this fraction of an item's
 
 
 def anchor_edges(anchor: str) -> "set[str]":
-    """The screen edges the surface is anchored to (corners = two, edge anchors = one)."""
+    """The screen edges the surface is anchored to (corners = two, edge anchors = one, the centre = none)."""
     if anchor not in ANCHORS:
         anchor = "bottom_right"
     edges = set()
@@ -37,9 +37,18 @@ def anchor_edges(anchor: str) -> "set[str]":
     return edges
 
 
-def _stack_height(h: float) -> float:
+ARM_HEADROOM = 0.42      # the clapper waits with its arm open: this much of the width rises above the board
+
+
+def stack_gap(size: float) -> float:
+    """The space between two stacked items: STACK_GAP plus the headroom the open arm needs, so
+    a waiting clapper's arm never reaches into the item next to it."""
+    return STACK_GAP + float(size) * ARM_HEADROOM
+
+
+def _stack_height(h: float, gap: float = STACK_GAP) -> float:
     n = MAX_VISIBLE
-    return n * h + (n - 1) * STACK_GAP + (STACK_GAP + h * BADGE_HEIGHT_FACTOR)
+    return n * h + (n - 1) * gap + (gap + h * BADGE_HEIGHT_FACTOR)
 
 
 def surface_size(anchor: str, size: float, pad_x: float, pad_y: float,
@@ -50,9 +59,11 @@ def surface_size(anchor: str, size: float, pad_x: float, pad_y: float,
     and tall enough for the stack to grow up from the middle."""
     it = item_size(size)
     w, h = it.width(), it.height()
-    stack = _stack_height(h)
+    stack = _stack_height(h, stack_gap(size))
     if anchor in ("top", "bottom"):
         W, H = 4 * w, pad_y + stack + 2 * h
+    elif anchor == "center":
+        W, H = 4 * w, 2 * (stack + 2 * h)
     elif anchor in ("left", "right"):
         W, H = pad_x + 3 * w, 2 * (stack + 2 * h)
     else:
@@ -68,8 +79,8 @@ def slot_rect(anchor: str, size: float, pad_x: float, pad_y: float, slot: float,
     it = item_size(size)
     w, h = it.width(), it.height()
     W, H = surface
-    step = h + STACK_GAP
-    if anchor in ("top", "bottom"):
+    step = h + stack_gap(size)
+    if anchor in ("top", "bottom", "center"):
         left = (W - w) / 2
     elif anchor.endswith("left") or anchor == "left":
         left = pad_x
@@ -79,7 +90,7 @@ def slot_rect(anchor: str, size: float, pad_x: float, pad_y: float, slot: float,
         top = pad_y + slot * step
     elif anchor.startswith("bottom"):
         top = H - pad_y - h - slot * step
-    else:                                   # left / right: slot 0 centred, stack grows upward
+    else:                                   # left / right / centre: slot 0 centred, stack grows upward
         top = (H - h) / 2 - slot * step
     return QRectF(left, top, w, h)
 
@@ -89,10 +100,11 @@ def badge_rect(anchor: str, size: float, pad_x: float, pad_y: float, surface: "t
     it = item_size(size)
     last = slot_rect(anchor, size, pad_x, pad_y, MAX_VISIBLE - 1, surface)
     bh = it.height() * BADGE_HEIGHT_FACTOR
+    gap = stack_gap(size)
     if anchor.startswith("top"):
-        top = last.bottom() + STACK_GAP
+        top = last.bottom() + gap
     else:
-        top = last.top() - STACK_GAP - bh
+        top = last.top() - gap - bh
     return QRectF(last.left(), top, last.width(), bh)
 
 

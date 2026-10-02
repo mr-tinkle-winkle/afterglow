@@ -1,10 +1,17 @@
-# Input visualizer prep: Puppetry → afterglow input overlay (v6)
+# Input visualizer prep: Puppetry → afterglow input overlay (v7)
 
 Prepared on the Puppetry side for the afterglow project: what Puppetry
 provides, the design for the afterglow side, a drop-in module, and a
 passing integration test.
 
-**Changed since v5:**
+**Changed since v6:**
+- Puppetry can block its input visualizer (a toggle, or automatically while
+  an ignored app is focused or open). Blocked time is a gap in the input
+  buffer, with held keys released at the start of it (FORMAT.md). Nothing
+  to change on the afterglow side; an overlay over a blocked stretch simply
+  shows nothing pressed.
+
+**Changed in v6:**
 - The `mouse` piece includes mouse movement again: the mouse plus the
   layout's movement view(s), as arranged in Puppetry. (Since v4 it had
   been the mouse alone, so clips captured with `keyboard` + `mouse` showed

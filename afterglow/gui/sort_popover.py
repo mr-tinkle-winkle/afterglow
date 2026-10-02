@@ -35,8 +35,9 @@ from .scale_reveal import animate_popup_from_point
 
 class _PopoverTabButton(QAbstractButton):
     def __init__(self, text: str, position: str, theme: Theme, radius: float, parent=None):
-        """position: 'left' | 'middle' | 'right' -- decides which single
-        corner (if any) this tab is allowed to round."""
+        """position: 'left' | 'middle' | 'right' | 'only' -- decides which
+        corner(s) this tab is allowed to round ('only': a single tab, so
+        both top corners)."""
         super().__init__(parent)
         self._pulse = PressPulse(self)  # shared hover/press pulse, see press_pulse.py
         self.setText(text)
@@ -53,15 +54,15 @@ class _PopoverTabButton(QAbstractButton):
         painter.setRenderHint(QPainter.Antialiasing)
         rect = QRectF(self.rect())
 
-        top_left = self._position == "left"
-        top_right = self._position == "right"
+        top_left = self._position in ("left", "only")
+        top_right = self._position in ("right", "only")
         # Neighbor tabs touch side-to-side and every tab touches the page
         # box below it: extend those sides so they stay flush at rest
         # despite the pulse headroom (PressPulse.touching_extension).
         ext_x, ext_y = self._pulse.touching_extension(rect)
         rect = rect.adjusted(
-            0 if self._position == "left" else -ext_x, 0,
-            0 if self._position == "right" else ext_x, ext_y,
+            0 if self._position in ("left", "only") else -ext_x, 0,
+            0 if self._position in ("right", "only") else ext_x, ext_y,
         )
         radius = min(self._radius, rect.height()) if self._radius else 0
 
@@ -143,7 +144,7 @@ class _RoundedContentArea(QStackedWidget):
 class SortPopover(QWidget):
     TAB_LABELS = ("Filters", "Sort By", "Info")
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, tab_labels: "tuple[str, ...] | None" = None):
         super().__init__(parent, Qt.Popup | Qt.FramelessWindowHint)
         self.setAttribute(Qt.WA_TranslucentBackground, True)
 
@@ -164,9 +165,10 @@ class SortPopover(QWidget):
         tab_row = QHBoxLayout()
         tab_row.setContentsMargins(0, 0, 0, 0)
         tab_row.setSpacing(0)
-        positions = ["left", "middle", "right"]
+        labels = tuple(tab_labels or self.TAB_LABELS)
+        positions = ["only"] if len(labels) == 1 else ["left"] + ["middle"] * (len(labels) - 2) + ["right"]
         self._tab_buttons: list[_PopoverTabButton] = []
-        for label, position in zip(self.TAB_LABELS, positions):
+        for label, position in zip(labels, positions):
             btn = _PopoverTabButton(label, position, theme, radius)
             btn.clicked.connect(lambda _checked, i=len(self._tab_buttons): self.set_current_index(i))
             tab_row.addWidget(btn, stretch=1)

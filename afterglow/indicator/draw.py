@@ -14,9 +14,10 @@ Conventions
   * ``Space`` says how far the item has to travel to leave the screen / surface,
     because the overlay surface is anchored to the screen edge with the padding
     applied in the drawing (so animations can start/finish truly off-screen).
-  * "The edge" is the anchor's own edge: right for ``right`` / ``top_right`` /
-    ``bottom_right``, left for the left-side anchors, top for ``top``, bottom for
-    ``bottom``.
+  * "The edge" is the edge the item comes in through / leaves by: the TOP or BOTTOM edge for
+    every corner and for ``top`` / ``bottom`` (never a side edge), a side edge only for ``left`` /
+    ``right``, and the bottom one for ``center`` (which has no edge of its own, so the edge-bound
+    animations fade while they travel).
 """
 from __future__ import annotations
 
@@ -43,13 +44,33 @@ def circle_diameter(size: float) -> float:
     return max(20.0, round(size * 0.30))
 
 
-DEFAULT_COLORS = {
-    # clapper
-    "stripe_a": "#f2f2f2", "stripe_b": "#1c1c1c", "hinge": "#8a8a8a",
-    "board": "#232323", "lines": "#f2f2f2", "outline": "#3b3b3b",
-    # hands
-    "glove": "#ffffff", "glove_outline": "#111111", "cuff": "#f4f4f4", "stitches": "#111111",
-}
+def afterglow_defaults(appearance=None) -> "dict[str, str]":
+    """The default part colours: the afterglow theme's own colours (``appearance`` is an
+    ``config.AppearanceSettings``; None = the theme's built-in values).  Taken from the stored hex
+    values rather than ``gui.theme.Theme`` so the headless daemon can compute them too."""
+    if appearance is None:
+        from ..config import AppearanceSettings
+        appearance = AppearanceSettings()
+
+    def col(name: str, fallback: str) -> QColor:
+        c = QColor(str(getattr(appearance, name, "") or ""))
+        return c if c.isValid() else QColor(fallback)
+    accent = col("afterglow_color_accent", "#152c4f")
+    card = col("afterglow_color_card_background", "#091e37")
+    app_bg = col("afterglow_color_app_background", "#0d1621")
+    teal = col("afterglow_color_turquoise", "#0c8ea0")
+    pale = mix(teal, QColor("#ffffff"), 0.82)
+    return {
+        # clapper: a navy board with turquoise / navy stripes and pale chalk lines
+        "stripe_a": teal.name(), "stripe_b": accent.name(), "hinge": mix(teal, QColor("#ffffff"), 0.45).name(),
+        "board": card.name(), "lines": pale.name(), "outline": mix(teal, app_bg, 0.15).name(),
+        # hands: pale gloves outlined in the dark app colour, turquoise cuffs and stitching
+        "glove": mix(teal, QColor("#ffffff"), 0.92).name(), "glove_outline": app_bg.name(),
+        "cuff": teal.name(), "stitches": teal.name(),
+    }
+
+
+DEFAULT_COLORS = None     # filled in below (needs mix())
 CLAPPER_COLOR_KEYS = ("stripe_a", "stripe_b", "hinge", "board", "lines", "outline")
 HANDS_COLOR_KEYS = ("glove", "glove_outline", "cuff", "stitches")
 COLOR_LABELS = {
@@ -63,7 +84,7 @@ FAIL_RED = "#e5484d"
 
 
 def resolve_colors(overrides: "dict | None" = None) -> "dict[str, QColor]":
-    """Defaults, overridden by any valid colour in ``overrides``."""
+    """The afterglow defaults, overridden by any valid colour in ``overrides``."""
     out = {}
     for k, default in DEFAULT_COLORS.items():
         c = QColor(str((overrides or {}).get(k) or ""))
@@ -78,6 +99,9 @@ def mix(a: QColor, b: QColor, t: float) -> QColor:
 
 
 # ------------------------------------------------------------------ easing
+
+DEFAULT_COLORS = afterglow_defaults()
+
 
 def clamp01(t: float) -> float:
     return 0.0 if t < 0.0 else 1.0 if t > 1.0 else t
@@ -119,35 +143,34 @@ def ease_out_back(t, s=1.70158):
 
 # ------------------------------------------------------------------ clap pose
 
-CLAP_OPEN_MS = 120.0       # the top stick swings open (ease-out)
-CLAP_SHUT_MS = 60.0        # ...and snaps shut
-CLAP_TOTAL_MS = 400.0      # until the impact has settled (the "processing" step starts here)
+CLAP_SHUT_MS = 80.0        # the clap itself: the top stick snaps shut / the hands come together
+CLAP_REBOUND_MS = 140.0    # a small bounce back after the impact
+CLAP_TOTAL_MS = 380.0      # until the impact has settled (the "processing" step starts here)
 CLAPPER_OPEN_DEGREES = 28.0
-REST_OPEN = 0.0
-HANDS_REST_OPEN = 0.12     # gloves rest a hair apart
 
 
 @dataclass
 class ClapPose:
-    open: float = 0.0       # 0 = shut, 1 = fully open (clapper: 28 deg; hands: apart)
-    squash: float = 0.0     # px the board is squashed on impact
+    open: float = 0.0       # 1 = ready to clap (clapper: stick up 28 deg; hands: apart), 0 = shut (neutral / clapped)
+    squash: float = 0.0     # px the item is squashed on impact
     impact: float = 0.0     # 0..1 strength of the impact lines
 
 
 def clap_pose(t_ms: float) -> ClapPose:
-    """The clap: open ~120 ms (ease-out), snap shut ~60 ms with a 2-3 px squash and a few
-    short impact lines at the tip, then settle (``CLAP_TOTAL_MS``)."""
+    """The clap, from the READY pose (stick already up / hands already apart -- that is how the
+    item arrives and waits for OBS): shut in ~80 ms (accelerating), a 2-3 px squash and a few
+    impact lines at the contact point, a small rebound, then settled shut (``CLAP_TOTAL_MS``)."""
     if t_ms <= 0:
-        return ClapPose()
-    if t_ms < CLAP_OPEN_MS:
-        return ClapPose(open=ease_out_cubic(t_ms / CLAP_OPEN_MS))
-    if t_ms < CLAP_OPEN_MS + CLAP_SHUT_MS:
-        return ClapPose(open=1.0 - ease_in_quad((t_ms - CLAP_OPEN_MS) / CLAP_SHUT_MS))
-    since = t_ms - (CLAP_OPEN_MS + CLAP_SHUT_MS)
-    squash = 3.0 * max(0.0, 1.0 - since / 90.0) * (1.0 if since < 90 else 0.0)
-    squash += 0.8 * math.sin(since / 60.0 * math.pi) * max(0.0, 1.0 - since / 160.0) if since < 160 else 0.0
-    impact = max(0.0, 1.0 - since / (CLAP_TOTAL_MS - CLAP_OPEN_MS - CLAP_SHUT_MS))
-    return ClapPose(open=0.0, squash=max(0.0, squash), impact=impact)
+        return ClapPose(open=1.0)
+    if t_ms < CLAP_SHUT_MS:
+        return ClapPose(open=1.0 - ease_in_quad(t_ms / CLAP_SHUT_MS))
+    since = t_ms - CLAP_SHUT_MS
+    squash = 3.0 * max(0.0, 1.0 - since / 90.0)
+    if since < 160:
+        squash += 0.8 * math.sin(since / 60.0 * math.pi) * max(0.0, 1.0 - since / 160.0)
+    rebound = 0.09 * math.sin(math.pi * since / CLAP_REBOUND_MS) if since < CLAP_REBOUND_MS else 0.0
+    impact = max(0.0, 1.0 - since / (CLAP_TOTAL_MS - CLAP_SHUT_MS))
+    return ClapPose(open=max(0.0, rebound), squash=max(0.0, squash), impact=impact)
 
 
 def idle_bob(t_seconds: float, h: float) -> float:
@@ -337,46 +360,54 @@ def _impact_lines(p: QPainter, tip: QPointF, length: float, strength: float, col
 
 # ------------------------------------------------------------------ hands
 
+# Mickey-style glove: three plump fingers and a thumb.  Finger centres / tops (v), thumb side
+# first; the middle finger is the tallest.
+_FINGER_X = (0.355, 0.585, 0.815)
+_FINGER_TOP = (0.15, 0.06, 0.18)
+_FINGER_W = 0.235
+
+
 def glove_path(rect: QRectF) -> "tuple[QPainterPath, dict]":
-    """One cartoon glove (3 fingers + thumb + puffy palm), upright, fingers up, seen from
-    the BACK of the hand, thumb on the left.  Returns (hand shape without the cuff, parts)."""
+    """One plump cartoon glove, upright, fingers up, seen from the BACK of the hand with the
+    thumb on the left: three round fingers pressed together under a scalloped top, a soft palm
+    and a thumb leaning out a little.  Returns (hand shape without the cuff, parts)."""
     w, h = rect.width(), rect.height()
     X = lambda u: rect.left() + w * u      # noqa: E731
     Y = lambda v: rect.top() + h * v       # noqa: E731
     palm = QPainterPath()
-    palm.addRoundedRect(QRectF(X(0.16), Y(0.36), w * 0.66, h * 0.48), w * 0.2, w * 0.2)
+    palm.addRoundedRect(QRectF(X(0.24), Y(0.36), w * 0.70, h * 0.45), w * 0.16, w * 0.16)
     hand = QPainterPath(palm)
-    for cx, top, tilt in ((0.28, 0.14, -9.0), (0.49, 0.05, 0.0), (0.70, 0.15, 9.0)):
+    fw = w * _FINGER_W
+    for cx, top in zip(_FINGER_X, _FINGER_TOP):
         f = QPainterPath()
-        fw = w * 0.19
-        f.addRoundedRect(QRectF(-fw / 2, 0, fw, h * 0.42), fw / 2, fw / 2)
-        t = QTransform()
-        t.translate(X(cx), Y(top))
-        t.rotate(tilt)
-        hand = hand.united(t.map(f))
+        f.addRoundedRect(QRectF(X(cx) - fw / 2, Y(top), fw, h * 0.42), fw / 2, fw / 2)
+        hand = hand.united(f)
     th = QPainterPath()
-    tw = w * 0.19
-    th.addRoundedRect(QRectF(-tw / 2, 0, tw, h * 0.27), tw / 2, tw / 2)
+    tw = w * 0.22
+    th.addRoundedRect(QRectF(-tw / 2, -tw / 2, tw, h * 0.34), tw / 2, tw / 2)
     tt = QTransform()
-    tt.translate(X(0.19), Y(0.55))
-    tt.rotate(38.0)
+    tt.translate(X(0.30), Y(0.66))
+    tt.rotate(142.0)                                   # from the palm: tip up and out to the left
     hand = hand.united(tt.map(th))
     parts = {
-        "palm": QRectF(X(0.16), Y(0.36), w * 0.66, h * 0.48),
-        "stitch_top": Y(0.40), "stitch_bottom": Y(0.55), "stitch_x": (X(0.35), X(0.49), X(0.63)),
-        "icon_area": QRectF(X(0.20), Y(0.58), w * 0.58, h * 0.25),
-        "cuff": QRectF(X(0.22), Y(0.80), w * 0.56, h * 0.20),
+        "palm": QRectF(X(0.24), Y(0.36), w * 0.70, h * 0.45),
+        "notch": [(X(cx + _FINGER_W / 2), Y(max(a, b) + 0.13)) for cx, a, b in
+                  zip(_FINGER_X[:-1], _FINGER_TOP[:-1], _FINGER_TOP[1:])],
+        "finger_base": Y(0.47),
+        "stitch_top": Y(0.49), "stitch_bottom": Y(0.59), "stitch_x": (X(0.47), X(0.59), X(0.71)),
+        "icon_area": QRectF(X(0.36), Y(0.605), w * 0.46, h * 0.165),
+        "cuff": QRectF(X(0.30), Y(0.78), w * 0.58, h * 0.22),
     }
     return hand, parts
 
 
 def draw_glove(p: QPainter, rect: QRectF, colors: "dict[str, QColor]", icon: "QImage | None" = None,
                mirror: bool = False) -> "QRectF | None":
-    """A glove: black ink outline, three stitch lines on the back, puffy rolled cuff.  If
+    """A glove: a clean ink outline, short stitch lines on the back, a soft rolled cuff.  If
     ``icon`` is given it sits on the back of the hand just below the stitch lines, fit inside
     ~40% of the glove width and clipped to the glove."""
     w, h = rect.width(), rect.height()
-    lw = max(1.3, h * 0.035)
+    lw = max(1.4, h * 0.038)
     p.save()
     p.setRenderHint(QPainter.Antialiasing, True)
     if mirror:
@@ -385,34 +416,34 @@ def draw_glove(p: QPainter, rect: QRectF, colors: "dict[str, QColor]", icon: "QI
         p.translate(-rect.center().x(), 0)
     hand, parts = glove_path(rect)
     ink = colors["glove_outline"]
-    # cuff (rolled, flared) first, so the hand overlaps its top edge
+    # cuff first (a soft, slightly flared band), so the hand overlaps its top edge
     c = parts["cuff"]
-    cuff = QPainterPath(QPointF(c.left() + c.width() * 0.08, c.top()))
-    cuff.cubicTo(QPointF(c.left() - c.width() * 0.10, c.top() + c.height() * 0.45),
-                 QPointF(c.left() - c.width() * 0.06, c.bottom()), QPointF(c.left() + c.width() * 0.16, c.bottom()))
-    cuff.lineTo(c.right() - c.width() * 0.16, c.bottom())
-    cuff.cubicTo(QPointF(c.right() + c.width() * 0.06, c.bottom()),
-                 QPointF(c.right() + c.width() * 0.10, c.top() + c.height() * 0.45),
-                 QPointF(c.right() - c.width() * 0.08, c.top()))
+    cuff = QPainterPath(QPointF(c.left() + c.width() * 0.10, c.top()))
+    cuff.lineTo(c.right() - c.width() * 0.10, c.top())
+    cuff.cubicTo(QPointF(c.right() + c.width() * 0.10, c.top() + c.height() * 0.15),
+                 QPointF(c.right() + c.width() * 0.10, c.bottom() - c.height() * 0.1),
+                 QPointF(c.right() - c.width() * 0.04, c.bottom()))
+    cuff.lineTo(c.left() + c.width() * 0.04, c.bottom())
+    cuff.cubicTo(QPointF(c.left() - c.width() * 0.10, c.bottom() - c.height() * 0.1),
+                 QPointF(c.left() - c.width() * 0.10, c.top() + c.height() * 0.15),
+                 QPointF(c.left() + c.width() * 0.10, c.top()))
     cuff.closeSubpath()
     p.setPen(_pen(ink, lw))
     p.setBrush(colors["cuff"])
     p.drawPath(cuff)
-    p.setPen(_pen(ink, lw * 0.7))
-    roll = QPainterPath(QPointF(c.left() + c.width() * 0.02, c.top() + c.height() * 0.42))
-    roll.quadTo(QPointF(c.center().x(), c.top() + c.height() * 0.62), QPointF(c.right() - c.width() * 0.02, c.top() + c.height() * 0.42))
-    p.drawPath(roll)
-    # the hand (fingers, thumb and palm are one soft shape)
+    # the hand: fingers, thumb and palm are one soft shape
     p.setPen(_pen(ink, lw))
     p.setBrush(colors["glove"])
     p.drawPath(hand)
-    # finger separations
-    p.setPen(_pen(ink, lw * 0.7))
-    for x0, x1 in ((0.385, 0.385), (0.595, 0.595)):
-        ya, yb = rect.top() + h * 0.26, rect.top() + h * 0.39
-        p.drawLine(QPointF(rect.left() + w * x0, ya), QPointF(rect.left() + w * x1, yb))
+    # the cuff's rolled edge sits over the hand's wrist end
+    p.setPen(_pen(ink, lw * 0.8))
+    p.drawLine(QPointF(c.left() + c.width() * 0.02, c.top()), QPointF(c.right() - c.width() * 0.02, c.top()))
+    # finger separations: short creases continuing each notch down into the hand
+    p.setPen(_pen(ink, lw * 0.75))
+    for x, y in parts["notch"]:
+        p.drawLine(QPointF(x, y), QPointF(x, parts["finger_base"]))
     # three stitch lines on the back of the hand
-    p.setPen(_pen(colors["stitches"], lw * 0.65))
+    p.setPen(_pen(colors["stitches"], lw * 0.7))
     for x in parts["stitch_x"]:
         seam = QPainterPath(QPointF(x, parts["stitch_top"]))
         seam.quadTo(QPointF(x - w * 0.012, (parts["stitch_top"] + parts["stitch_bottom"]) / 2), QPointF(x, parts["stitch_bottom"]))
@@ -436,16 +467,28 @@ def draw_glove(p: QPainter, rect: QRectF, colors: "dict[str, QColor]", icon: "QI
     return icon_rect
 
 
+HAND_TILT_APART = 10.0     # degrees: fingers lean toward each other while the hands wait
+HAND_TILT_CLAPPED = 3.0
+
+
 def hands_geometry(rect: QRectF, open_: float) -> dict:
-    """Where the two gloves sit for a given openness (0 = clapped, 1 = apart)."""
-    w, h = rect.width(), rect.height()
-    gw, gh = w * 0.46, h
-    apart = w * (0.10 + 0.26 * open_)
+    """Where the two gloves sit for a given openness (1 = apart, ready to clap; 0 = clapped).
+    The hands MOVE: each glove slides toward the middle (and straightens up a little) until
+    the two meet, so a clap is the hands coming together, not a rotation.  The gloves are
+    bottom-aligned in the item's rect and leave headroom above for the tilt and the impact."""
+    w = rect.width()
+    gw = w * 0.45
+    gh = gw * 1.50
+    # the PALMS meet (the thumbs tuck in front of the other hand): measure the palm's inner edge
+    _, parts = glove_path(QRectF(0, 0, gw, gh))
+    inner = parts["palm"].left()                             # distance from the glove box's left edge
+    gap = w * (-0.01 + 0.38 * open_)                         # between the two palms' inner edges
     cx = rect.center().x()
-    back = QRectF(cx - apart / 2 + w * 0.02 - gw, rect.top(), gw, gh)
-    front = QRectF(cx + apart / 2 - w * 0.02, rect.top(), gw, gh)
-    tilt = 7.0 + 15.0 * open_
-    return {"back": back, "front": front, "tilt": tilt, "meet": QPointF(cx, rect.top() + h * 0.16)}
+    top = rect.bottom() - gh
+    front = QRectF(cx + gap / 2 - inner, top, gw, gh)
+    back = QRectF(cx - gap / 2 - (gw - inner), top, gw, gh)
+    tilt = HAND_TILT_CLAPPED + (HAND_TILT_APART - HAND_TILT_CLAPPED) * open_
+    return {"back": back, "front": front, "tilt": tilt, "meet": QPointF(cx, top + gh * 0.28)}
 
 
 def draw_hands(p: QPainter, rect: QRectF, pose: ClapPose, colors: "dict[str, QColor]",
@@ -478,20 +521,41 @@ def draw_hands(p: QPainter, rect: QRectF, pose: ClapPose, colors: "dict[str, QCo
         p.restore()
     p.restore()
     if pose.impact > 0.02:
-        _impact_lines(p, g["meet"], rect.width() * 0.16, pose.impact, colors["glove_outline"],
-                      max(1.4, rect.width() * 0.03), angles=(-110, -90, -70))
+        _impact_lines(p, g["meet"], rect.width() * 0.17, pose.impact, colors["lines"],
+                      max(1.4, rect.width() * 0.03), angles=(-125, -90, -55))
     return icon_rect
 
 
 def draw_item(p: QPainter, rect: QRectF, style: str, pose: ClapPose, colors: "dict[str, QColor]",
-              icon: "QImage | None" = None) -> "QRectF | None":
-    if style == "hands":
-        return draw_hands(p, rect, pose, colors, icon)
-    return draw_clapper(p, rect, pose, colors, icon)
-
-
-def rest_open(style: str) -> float:
-    return HANDS_REST_OPEN if style == "hands" else REST_OPEN
+              icon: "QImage | None" = None, opacity: float = 1.0) -> "QRectF | None":
+    """The clapper or the hands.  At ``opacity`` < 1 the whole item is composed fully opaque on a
+    layer first and the layer is drawn at that opacity, so overlapping parts do not show through
+    each other (a stripe over the board, a glove over the other glove)."""
+    opacity = clamp01(opacity)
+    if opacity >= 0.995:
+        if style == "hands":
+            return draw_hands(p, rect, pose, colors, icon)
+        return draw_clapper(p, rect, pose, colors, icon)
+    if opacity <= 0.003:
+        return None
+    dpr = max(1.0, float(p.device().devicePixelRatioF()))
+    m = rect.width() * 0.35                              # room for impact lines, squash and tilted hands
+    box = rect.adjusted(-m, -m, m, m)
+    layer = QImage(int(math.ceil(box.width() * dpr)), int(math.ceil(box.height() * dpr)), QImage.Format_ARGB32_Premultiplied)
+    layer.setDevicePixelRatio(dpr)
+    layer.fill(Qt.transparent)
+    q = QPainter(layer)
+    q.setRenderHint(QPainter.Antialiasing, True)
+    q.setRenderHint(QPainter.SmoothPixmapTransform, True)
+    q.translate(-box.topLeft())
+    got = draw_hands(q, rect, pose, colors, icon) if style == "hands" else draw_clapper(q, rect, pose, colors, icon)
+    q.end()
+    p.save()
+    p.setRenderHint(QPainter.SmoothPixmapTransform, True)
+    p.setOpacity(p.opacity() * opacity)
+    p.drawImage(box.topLeft(), layer)
+    p.restore()
+    return got
 
 
 # ------------------------------------------------------------------ loading circle
@@ -552,6 +616,38 @@ def circle_fail(t: float) -> "tuple[float, float, float]":
     red = ease_out_quad(min(1.0, t * 5.0))
     alpha = 1.0 if t < 0.55 else 1.0 - (t - 0.55) / 0.45
     return shake, red, clamp01(alpha)
+
+
+PULSE_SECONDS = 0.40
+
+
+def pulse_scale(progress: float) -> float:
+    """The ring's bump when a stage completes: 1 -> ~1.3 -> 1 over ``PULSE_SECONDS``."""
+    if progress < 0 or progress >= 1:
+        return 1.0
+    return 1.0 + 0.30 * math.sin(math.pi * clamp01(progress)) ** 1.5
+
+
+def draw_halo(p: QPainter, center: QPointF, diameter: float, color: QColor, progress: float,
+              opacity: float = 0.55, alpha: float = 1.0) -> None:
+    """A thin ring that expands from the loading ring and fades -- the "ping" that goes with the
+    pulse.  ``progress`` in [0, 1); outside it nothing is drawn."""
+    if progress < 0 or progress >= 1:
+        return
+    a = clamp01(opacity) * clamp01(alpha) * (1.0 - ease_out_quad(progress)) * 0.9
+    if a <= 0.01:
+        return
+    r = diameter / 2.0 * (1.0 + 0.85 * ease_out_cubic(progress))
+    c = QColor(color)
+    c.setAlpha(255)
+    pen = QPen(c, max(1.5, diameter * 0.07 * (1.0 - 0.5 * progress)))
+    p.save()
+    p.setRenderHint(QPainter.Antialiasing, True)
+    p.setOpacity(p.opacity() * a)
+    p.setPen(pen)
+    p.setBrush(Qt.NoBrush)
+    p.drawEllipse(center, r, r)
+    p.restore()
 
 
 def draw_badge(p: QPainter, rect: QRectF, n: int, colors: "dict[str, QColor]") -> None:
@@ -633,6 +729,7 @@ class Space:
     room_down: float
     up_screen: bool = False
     down_screen: bool = False
+    lateral: float = 1.0          # horizontal direction toward the screen's middle (see lateral_toward_centre)
 
     @classmethod
     def for_rect(cls, anchor: str, rect: QRectF, surface_w: float, surface_h: float) -> "Space":
@@ -647,18 +744,27 @@ class Space:
             travel = surface_h - rect.top()
         return cls(rect.width(), rect.height(), travel, rect.bottom(), surface_h - rect.top(),
                    up_screen=anchor in ("top", "top_left", "top_right"),
-                   down_screen=anchor in ("bottom", "bottom_left", "bottom_right"))
+                   down_screen=anchor in ("bottom", "bottom_left", "bottom_right"),
+                   lateral=lateral_toward_centre(anchor))
 
 
 def edge_vec(anchor: str) -> "tuple[int, int]":
-    """Unit vector from the screen centre toward the anchor's own edge."""
-    if anchor in ("right", "top_right", "bottom_right"):
+    """Unit vector from the screen centre toward the edge the item comes in through / leaves by.
+    Corners use their TOP or BOTTOM edge (never the side edges); only the left / right anchors use
+    a side edge; the centre has no edge of its own and uses the bottom one."""
+    if anchor == "right":
         return (1, 0)
-    if anchor in ("left", "top_left", "bottom_left"):
+    if anchor == "left":
         return (-1, 0)
-    if anchor == "top":
+    if anchor in ("top", "top_left", "top_right"):
         return (0, -1)
     return (0, 1)
+
+
+def lateral_toward_centre(anchor: str) -> float:
+    """+1 / -1: which horizontal direction leads toward the middle of the screen (sideways arcs
+    and launches go that way, so they never run off the nearest side edge)."""
+    return -1.0 if anchor in ("right", "top_right", "bottom_right") else 1.0
 
 
 def _rot_sign(e) -> float:
@@ -690,12 +796,12 @@ def _off(e, m) -> "tuple[float, float]":
     return e[0] * m, e[1] * m
 
 
-def _arc(e, height: float, s: float) -> "tuple[float, float]":
+def _arc(e, height: float, s: float, lateral: float = 1.0) -> "tuple[float, float]":
     """A sideways arc offset (``height`` px at its peak, shaped by s in [0,1]): up for
-    left/right edges, sideways for top/bottom edges."""
+    left/right edges, sideways -- toward the screen's middle -- for top/bottom edges."""
     if e[0] != 0:
         return (0.0, -height * s)
-    return (height * s, 0.0)
+    return (height * s * lateral, 0.0)
 
 
 def _enter(kind: str, t: float, e, sp: Space) -> Xform:
@@ -747,10 +853,10 @@ def _enter(kind: str, t: float, e, sp: Space) -> Xform:
         if t < 0.8:
             u = t / 0.8
             dx, dy = _off(e, sp.edge_travel * (1 - ease_out_quad(u)))
-            ax, ay = _arc(e, min(0.9 * H, sp.room_up * 0.8) if ex != 0 else 0.9 * H, math.sin(math.pi * u))
+            ax, ay = _arc(e, min(0.9 * H, sp.room_up * 0.8) if ex != 0 else 0.9 * H, math.sin(math.pi * u), sp.lateral)
             return Xform(dx=dx + ax, dy=dy + ay, rot=-rs * 540.0 * (1 - ease_out_quad(u)))
         hop = math.sin(math.pi * (t - 0.8) / 0.2)
-        ax, ay = _arc(e, 0.12 * H, hop)
+        ax, ay = _arc(e, 0.12 * H, hop, sp.lateral)
         return Xform(dx=ax, dy=ay)
     if kind == "flip":
         p = ease_out_cubic(t)
@@ -767,7 +873,7 @@ def _enter(kind: str, t: float, e, sp: Space) -> Xform:
             m = half * (1 - ease_out_back(v, 1.2))
             hop = math.sin(math.pi * v)
         dx, dy = _off(e, m)
-        ax, ay = _arc(e, 0.18 * H, hop)
+        ax, ay = _arc(e, 0.18 * H, hop, sp.lateral)
         return Xform(dx=dx + ax, dy=dy + ay)
     if kind == "fade":
         p = ease_out_cubic(t)
@@ -810,11 +916,11 @@ def _exit(kind: str, t: float, e, sp: Space) -> Xform:
         return Xform(dx=dx, dy=dy, rot=rs * 360.0 * ease_in_quad(t))
     if kind == "toss":
         if t < 0.15:
-            ax, ay = _arc(e, 0.12 * H, math.sin(math.pi * t / 0.15))
+            ax, ay = _arc(e, 0.12 * H, math.sin(math.pi * t / 0.15), sp.lateral)
             return Xform(dx=ax, dy=ay)
         v = (t - 0.15) / 0.85
         dx, dy = _off(e, sp.edge_travel * ease_in_quad(v))
-        ax, ay = _arc(e, min(0.8 * H, sp.room_up * 0.6) if ex != 0 else 0.8 * H, 4 * v * (1 - v))
+        ax, ay = _arc(e, min(0.8 * H, sp.room_up * 0.6) if ex != 0 else 0.8 * H, 4 * v * (1 - v), sp.lateral)
         return Xform(dx=dx + ax, dy=dy + ay, rot=-rs * 720.0 * v)
     if kind == "flip":
         return Xform(sx=max(0.0, 1.0 - ease_in_cubic(t)), skew=-0.18 * t * rs, opacity=clamp01((1 - t) * 6))
@@ -841,22 +947,33 @@ def _fail(t: float, e, sp: Space) -> Xform:
     G = s * s
     V = 2 * math.sqrt(hp * G)
     dy = -V * t + G * t * t
-    away = -ex if ex else 1.0                           # away from the edge, toward the screen's middle
+    away = -ex if ex else sp.lateral                           # away from the edge, toward the screen's middle
     dx = away * 1.2 * sp.w * ease_out_quad(t)
     rot = rs * 1080.0 * (1 - (1 - t) ** 2) * 0.85
     op = 1.0 if sp.down_screen else clamp01((1 - t) / 0.15)
     return Xform(dx=dx, dy=dy, rot=rot, opacity=op)
 
 
+# Animations that travel through the edge.  The centre has no screen edge, so for these the item
+# fades in / out while it travels instead of appearing from the overlay surface's invisible boundary.
+_EDGE_KINDS = {"enter": ("slide", "spin", "toss", "peek", "swing"), "exit": ("slide", "zip", "spin", "toss", "bow")}
+
+
 def animate(phase: str, kind: str, t: float, anchor: str, space: Space) -> Xform:
     """The transform for ``phase`` ("enter" | "exit" | "fail") of animation ``kind`` at
-    progress ``t`` in [0, 1].  ``enter`` ends at the identity transform; ``exit`` starts at
+    progress ``t`` in [0, 1]. ``enter`` ends at the identity transform; ``exit`` starts at
     it and ends gone; ``fail`` starts at it and falls off the bottom of the surface."""
     e = edge_vec(anchor)
     if phase == "enter":
-        return _enter(kind, t, e, space)
+        xf = _enter(kind, t, e, space)
+        if anchor == "center" and kind in _EDGE_KINDS["enter"]:
+            xf.opacity *= clamp01(t / 0.5)
+        return xf
     if phase == "exit":
-        return _exit(kind, t, e, space)
+        xf = _exit(kind, t, e, space)
+        if anchor == "center" and kind in _EDGE_KINDS["exit"]:
+            xf.opacity *= clamp01((1.0 - t) / 0.5)
+        return xf
     if phase == "fail":
         return _fail(t, e, space)
     raise ValueError(f"unknown animation phase: {phase!r}")

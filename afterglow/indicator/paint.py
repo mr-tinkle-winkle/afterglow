@@ -47,16 +47,15 @@ class StackPainter:
             xf = draw.animate(phase, kind, t, self.anchor, space)
             if fr.idle_t >= 0:
                 xf.dy += draw.idle_bob(fr.idle_t, rect.height())
-            rest = draw.rest_open(style.style)
+            # ready to clap (stick up / hands apart) until the clap; shut afterwards
             if fr.clap_ms >= 0:
-                cp = draw.clap_pose(fr.clap_ms)
-                pose = draw.ClapPose(open=rest + (1.0 - rest) * cp.open, squash=cp.squash, impact=cp.impact)
+                pose = draw.clap_pose(fr.clap_ms)
             else:
-                pose = draw.ClapPose(open=rest)
+                pose = draw.ClapPose(open=0.0 if fr.clapped else 1.0)
             icon = draw.load_icon(style.icon)
             p.save()
             draw.apply_xform(p, rect, xf)
-            draw.draw_item(p, rect, style.style, pose, colors, icon)
+            draw.draw_item(p, rect, style.style, pose, colors, icon, opacity=style.opacity)
             p.restore()
         if fr.circle_alpha > 0.003:
             gray = QColor(style.circle_color)
@@ -69,5 +68,8 @@ class StackPainter:
             if fr.circle_red > 0:
                 col = draw.mix(col, QColor(draw.FAIL_RED), fr.circle_red)
             c = rect.center()
-            draw.draw_circle(p, QPointF(c.x() + fr.circle_dx, c.y()), draw.circle_diameter(self.size),
+            centre = QPointF(c.x() + fr.circle_dx, c.y())
+            dia = draw.circle_diameter(self.size)
+            draw.draw_circle(p, centre, dia * draw.pulse_scale(fr.circle_pulse),
                              fr.circle_angle, col, style.circle_opacity, fr.circle_alpha)
+            draw.draw_halo(p, centre, dia, col, fr.circle_pulse, style.circle_opacity, fr.circle_alpha)

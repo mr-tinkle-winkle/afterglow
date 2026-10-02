@@ -208,11 +208,11 @@ class IndicatorPreview(QWidget):
 
 
 class AnchorPicker(QWidget):
-    """A 3x3 grid of cells -- the eight anchors, the centre disabled -- one selected."""
+    """A 3x3 grid of cells -- the eight edge / corner anchors and the centre -- one selected."""
     changed = Signal(str)
 
     _CELLS = {(0, 0): "top_left", (0, 1): "top", (0, 2): "top_right",
-              (1, 0): "left", (1, 2): "right",
+              (1, 0): "left", (1, 1): "center", (1, 2): "right",
               (2, 0): "bottom_left", (2, 1): "bottom", (2, 2): "bottom_right"}
 
     def __init__(self, anchor: str = "bottom_right", parent=None):
@@ -270,11 +270,6 @@ class AnchorPicker(QWidget):
                 rect = self.cell_rect(r, c)
                 name = self._CELLS.get((r, c))
                 path = rounded_rect_path(rect, 6)
-                if name is None:                                  # the centre: not an anchor
-                    p.setOpacity(0.35)
-                    p.fillPath(path, card)
-                    p.setOpacity(1.0)
-                    continue
                 bg = self._theme.turquoise() if name == self._anchor else card
                 if name == self._hover and name != self._anchor:
                     bg = bg.lighter(125)

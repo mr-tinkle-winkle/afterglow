@@ -25,14 +25,19 @@ A small on-screen indicator for clip captures, enabled by default and configured
 Settings > Clipping > Clip Indicator:
 
 - A movie clapper (or a pair of clapping gloves, as the alternative style) slides onto the screen when a
-  clip hotkey fires, claps when OBS has saved the clip, then gives way to a gray loading circle until the
-  clip is in the library. When the clip type captures an input overlay, the circle turns purple until the
-  overlay has rendered. A failed capture launches the clapper into the air.
-- Position (any corner or edge middle, with padding), size, separate enter and exit animations, the
-  processing mode (loading circle, or the clapper stays), the circle colours and the screen (the one holding
+  clip hotkey fires, waits with its top stick raised, claps when OBS has saved the clip, then gives way to a
+  gray loading circle until the clip is in the library. When the clip type captures an input overlay, the
+  circle turns purple until the overlay has rendered. The ring pulses as each stage completes (switchable).
+  A failed capture launches the clapper into the air.
+- Position (any corner, edge middle or the centre, with padding), size (156 px by default), separate enter
+  and exit animations, the clapper's opacity, the processing mode (loading circle, or the clapper stays),
+  the circle colours and opacity, a clap sound used only for the clapper, and the screen (the one holding
   the focused window, or the primary one) are all settings, with a live preview and a Test button.
-- Per clip type (the "Indicator" row of a clip option): colours for each part, a custom icon (on the board,
-  or on the back of the glove) and a clap sound.
+  Corner and edge positions enter and leave through the top or bottom edge where there is one; the centre
+  fades by default.
+- The clapper is coloured from the afterglow theme colours by default. Per clip type (the "Indicator" row of
+  a clip option): colours for each part, a custom icon (on the board, or on the back of the glove) and a
+  clap sound.
 - Rapid repeats stack, up to five visible, with a "+N" badge beyond that.
 
 The indicator runs as its own small process (`afterglow-indicator`), started on demand by the daemon, the CLI

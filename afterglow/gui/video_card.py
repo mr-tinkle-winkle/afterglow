@@ -1152,14 +1152,16 @@ class VideoCard(QWidget):
         return row
 
     def _open_filters_menu_for_self(self) -> None:
-        """The "Filters" action button opens the SAME side-opening
-        category submenu the right-click menu's Filters entry does
-        (_build_filters_menu), just exec'd directly instead of nested
-        under another menu item -- scoped to this one video only."""
-        filters_menu = self._build_filters_menu(self, {self.video_id}, [self._video])
-        self.context_menu_opened.emit()
-        filters_menu.exec(self.mapToGlobal(self.rect().center()))
-        self.context_menu_closed.emit()
+        """The "Filters" action button opens the same filter selector the Library's sort popover
+        uses (FiltersPopup), scoped to this one video: ticking a tag adds it, unticking removes it,
+        and the popover stays open until a click lands outside it."""
+        from .filters_popup import FiltersPopup
+        btn = self.sender() if isinstance(self.sender(), QWidget) else self
+        popup = FiltersPopup({self.video_id}, [library.get_video(self.video_id)],
+                             self.tags_changed.emit, self._create_new_filter, parent=self)
+        self.context_menu_opened.emit()                 # no grid rebuild while it is open
+        popup.closed.connect(self.context_menu_closed.emit)
+        popup.show_below(btn)
 
     def _build_filters_menu(self, parent_menu: QMenu, target_ids: set[int],
                              target_videos: list["library.Video"]) -> QMenu:
@@ -1173,13 +1175,8 @@ class VideoCard(QWidget):
         dropdown's own "+ Add Filter", which also just creates the tag
         without applying it to anything).
 
-        Reverted back to this QMenu-based version (from the Qt.Popup-
-        based FiltersPopup) per the direct request, after that
-        rebuild both still didn't reliably stay open AND looked worse
-        than this version -- setting the underlying "stays open while
-        toggling" problem aside for now rather than attempting a sixth
-        fix blind. filters_popup.py is left in the tree, unused, in
-        case a future session picks this back up."""
+        Used by the right-click menu's Filters entry only; the card's own Filters
+        button opens filters_popup.FiltersPopup (the sorter's selector) instead."""
         menu = _NonClosingMenu("Filters", parent_menu)
         menu.setStyleSheet(_menu_stylesheet(self._appearance))
         tag_icon_paths = library.tag_icons()  # {tag_name: icon_path}, only for tags that have one set

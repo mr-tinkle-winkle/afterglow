@@ -63,6 +63,12 @@ Writing behaviour:
   consistent copy.
 - A final line without a trailing newline is still being written. Skip it.
 - Autorepeat is not recorded (only real down/up transitions).
+- While Puppetry's input visualizer is blocked (the user's block toggle, or
+  an ignored app such as a password manager being focused or open), nothing
+  is recorded: the file has a gap. At the moment of blocking, every key
+  still held gets a `ku` (and every off-center controller axis a `0`
+  value), so renders don't show keys stuck down through the gap.
+  `overlay_status.json` has `"blocked": true|false`.
 
 ### `overlay_status.json`
 

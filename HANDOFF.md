@@ -17,9 +17,9 @@ unverified on real hardware) -- see "Clip indicator ("the clapper") -- BUILT".
 then `DISPLAY=:99 QT_QPA_PLATFORM=xcb python3 tests/<suite>.py` (the
 previewer suites need GL for mpv); the `tests/test_nle_*.py` engine
 suites run with `QT_QPA_PLATFORM=offscreen`. Every suite prints PASS/FAIL
-lines and exits non-zero on failure. All 34 suites pass at handoff (incl. the overlay suites listed
+lines and exits non-zero on failure. All 36 suites pass at handoff (incl. the overlay suites listed
 under the Input overlay status, the five clip-indicator suites (`test_indicator_*`, `test_clip_indicator_ui`)
-and `test_themed_dialogs`; `test_overlay_mpv`
+`test_card_filters_popup`, `test_message_dialog` and `test_themed_dialogs`; `test_overlay_mpv`
 and the previewer / advanced-editor suites need libmpv + Xvfb (with `libxcb-cursor0` for the xcb platform;
 they hang or fail under offscreen); `test_nle_render`'s preview-
 speed check is timing-based, run it on its own, not alongside other suites).
@@ -324,6 +324,56 @@ alignment offset (a few frames at most; `offset_ms` corrects it).
 
 ## Clip indicator ("the clapper") -- BUILT (status first, then the original spec)
 
+### Revision round (newest): what changed after the first build
+Changes to the indicator and a few Settings / Library UI fixes. Where each lives:
+- **Edge handling.** Corners enter / leave through their top or bottom edge, not the side edge
+  (`draw.edge_vec`); `lateral_toward_centre` / `Space.lateral` make sideways arcs and launches go
+  inward. `left` / `right` still use the side edge. New anchor `center` (`ANCHORS`, `layout`): no padding
+  applies, enter / exit default to `fade`, and edge-bound animations fade while they travel. In
+  Settings, choosing the centre from the `slide` defaults switches enter / exit to `fade` and
+  leaving it restores them (`ClipIndicatorGroup._sync_centre_animations`); a hand-picked animation is
+  never overwritten.
+- **Opacity.** `ClipIndicatorSettings.clapper_opacity` (5-100 %, `style["opacity"]`): the item is
+  composed opaque on an image layer and drawn at that opacity, so its parts never show through one
+  another (`draw.draw_item(..., opacity)`, `paint.py`).
+- **Ring pulse.** `ClipIndicatorSettings.ring_pulse` (default on, `style["pulse"]`): on circle in,
+  gray -> purple and circle out the ring swells (`draw.pulse_scale`) and an expanding halo
+  (`draw.draw_halo`) fades out; triggered in `Model._go`, `Frame.circle_pulse`.
+- **Ready-open clap.** The clapper arrives with the top stick already raised and shuts on the clap
+  (`draw.clap_pose`: 80 ms shut, squash, impact, small rebound; `Frame.clapped` selects the
+  pose). The open arm rises above the item, so `layout.stack_gap(size)` (12 px + 0.42 x width) is the
+  stack spacing instead of the fixed `STACK_GAP`.
+- **Hands.** Redrawn as plump three-finger gloves with a thumb (`draw.glove_path`, `draw_glove`,
+  `hands_geometry`, `draw_hands`); the clap is the two hands translating together, with a slight
+  tilt, not a rotation.
+- **Colours.** Defaults come from the afterglow theme colours (`draw.afterglow_defaults(appearance)`,
+  computed from the stored hex values so the headless daemon needs no Qt theme); `build_style`
+  merges them under the per-clip-type overrides, and the Settings group / per-clip dialog show them
+  as the defaults.
+- **Size** default 156 px.
+- **Clap sound only.** `ClipIndicatorSettings.clap_sound` (Settings row with Browse / clear / Play).
+  Priority while the indicator is enabled: clip type `indicator_clap_sound` > global
+  `clap_sound` > the usual chain (clip sound, advanced sounds, default sound)
+  (`clips._resolve_keyframe_sound`). The Test button plays it at the clap.
+- **Delete prompt.** `gui/custom_message_dialog.py`: fixed width (`DIALOG_WIDTH`), height
+  asked at that width (`fit_height`, also on show), plain-text label, break points in long unbroken
+  tokens (`_breakable`). Previously the label was cut off.
+- **Card "Filters" button.** Opens `gui/filters_popup.FiltersPopup`, a `SortPopover` with a single
+  "Filters" tab (`SortPopover(tab_labels=...)`, tab position `only`): the sorter's category groups and
+  checkboxes, applied to the card's video; stays open while toggling and closes on an outside click.
+  The grid rebuild is held back while it is open (`context_menu_opened` / `closed`). The right-click
+  menu's Filters submenu is unchanged.
+- **Clip Options height.** The list inside Settings > Clipping has a floor
+  (`settings_page.CLIP_OPTIONS_MIN_HEIGHT`, 340 px); without it the group collapsed under the tall
+  Clip Indicator group.
+- **Puppetry prep v7** (`integrations/puppetry_input_overlay/`): module and test byte-identical to
+  v6; README / FORMAT updated. Puppetry can block its input visualizer, which shows up as a gap in the
+  input buffer with held keys released at its start. Nothing to change here.
+- Tests added / extended: `test_indicator_draw` / `_model` / `_helper` / `_pipeline`,
+  `test_clip_indicator_ui`, new `test_card_filters_popup`, `test_message_dialog`.
+  `test_indicator_pipeline` waits for abandoned captures to settle before its CLI section
+  (it was timing-sensitive on a loaded machine).
+
 ### Status (newest session)
 Build steps 1-5 of the plan below are implemented and tested. Step 6 (verification on a
 real KDE Plasma Wayland desktop) has not happened: everything was exercised under the offscreen Qt
@@ -456,7 +506,7 @@ any indicator with no event for that long, so nothing hangs on screen.
 
 ### Stacking (rapid repeats)
 - Each capture id gets its own indicator in a stack at the anchor. Slot 0
-  is at the anchor; each later slot sits one clapper height + 12 px further
+  is at the anchor; each later slot sits one clapper height + the stack gap (12 px + room for the open arm, see the revision round) further
   from the anchored edge: **upward** for bottom anchors and `left`/`right`,
   **downward** for top anchors ("above the first" from the user's bottom-
   right default).

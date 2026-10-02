@@ -81,9 +81,16 @@ def enabled(settings=None) -> bool:
 def build_style(settings, clip_cfg=None, screen_hint: "dict | None" = None) -> dict:
     """The ``style`` payload of a ``start`` event: global settings + this clip type's colours / icon."""
     ci = settings.clip_indicator
+    # the afterglow theme's colours, with this clip type's own choices on top
+    try:
+        from .indicator import draw          # lazily: draw pulls in QtGui, which the headless daemon should not load up front
+        colors = draw.afterglow_defaults(getattr(settings, "appearance", None))
+    except Exception:  # noqa: BLE001 -- the helper falls back to its own afterglow defaults
+        colors = {}
+    colors.update({k: v for k, v in (getattr(clip_cfg, "indicator_colors", None) or {}).items() if v})
     return {
         "style": ci.style,
-        "colors": dict(getattr(clip_cfg, "indicator_colors", None) or {}),
+        "colors": colors,
         "icon": getattr(clip_cfg, "indicator_icon_path", "") or "",
         "anchor": ci.anchor,
         "padding_x": ci.padding_x,
@@ -95,6 +102,8 @@ def build_style(settings, clip_cfg=None, screen_hint: "dict | None" = None) -> d
         "circle_color": ci.circle_color,
         "overlay_circle_color": ci.overlay_circle_color,
         "circle_opacity": ci.circle_opacity,
+        "opacity": ci.clapper_opacity,
+        "pulse": ci.ring_pulse,
         "screen": ci.screen,
         "screen_hint": screen_hint if ci.screen == "focused" else None,
     }

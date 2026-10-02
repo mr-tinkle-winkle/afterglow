@@ -56,13 +56,15 @@ class Style:
     anchor: str = DEFAULT_ANCHOR
     padding_x: float = 32.0
     padding_y: float = 32.0
-    size: float = 96.0
+    size: float = 156.0
     enter: str = "slide"
     exit: str = "slide"
     mode: str = "circle"
     circle_color: str = draw.DEFAULT_CIRCLE_COLOR
     overlay_circle_color: str = draw.DEFAULT_OVERLAY_CIRCLE_COLOR
     circle_opacity: float = 0.55
+    opacity: float = 1.0                     # the clapper's own opacity
+    pulse: bool = True                       # the ring pulses when a stage completes
     screen: str = "focused"
     screen_hint: "dict | None" = None        # {"x": .., "y": ..} = centre of the focused window
 
@@ -76,13 +78,16 @@ class Style:
         s.anchor = d.get("anchor") if d.get("anchor") in ANCHORS else DEFAULT_ANCHOR
         s.padding_x = max(0.0, float(d.get("padding_x", 32)))
         s.padding_y = max(0.0, float(d.get("padding_y", 32)))
-        s.size = min(512.0, max(24.0, float(d.get("size", 96))))
-        s.enter = d.get("enter") if d.get("enter") in ENTER_ANIMATIONS else "slide"
-        s.exit = d.get("exit") if d.get("exit") in EXIT_ANIMATIONS else "slide"
+        s.size = min(512.0, max(24.0, float(d.get("size", 156))))
+        fallback = "fade" if s.anchor == "center" else "slide"      # the centre has no edge to slide in from
+        s.enter = d.get("enter") if d.get("enter") in ENTER_ANIMATIONS else fallback
+        s.exit = d.get("exit") if d.get("exit") in EXIT_ANIMATIONS else fallback
         s.mode = d.get("mode") if d.get("mode") in PROCESSING_MODES else "circle"
         s.circle_color = str(d.get("circle_color") or draw.DEFAULT_CIRCLE_COLOR)
         s.overlay_circle_color = str(d.get("overlay_circle_color") or draw.DEFAULT_OVERLAY_CIRCLE_COLOR)
         s.circle_opacity = min(1.0, max(0.05, float(d.get("circle_opacity", 0.55))))
+        s.opacity = min(1.0, max(0.05, float(d.get("opacity", 1.0))))
+        s.pulse = bool(d.get("pulse", True))
         s.screen = d.get("screen") if d.get("screen") in SCREEN_MODES else "focused"
         hint = d.get("screen_hint")
         s.screen_hint = dict(hint) if isinstance(hint, dict) else None
@@ -103,6 +108,8 @@ class Frame:
     circle_mix: float = 0.0                    # 0 = gray ... 1 = purple
     circle_dx: float = 0.0
     circle_red: float = 0.0
+    circle_pulse: float = -1.0                 # 0..1 while the ring is pulsing (a stage just completed), else -1
+    clapped: bool = False                      # the clap has happened (the item rests shut); False = ready / open
 
 
 class Indicator:
@@ -119,6 +126,7 @@ class Indicator:
         self.slot_t0 = now
         self.mix = 0.0                   # gray -> purple, remembered for the fade-out
         self.circle_alpha_start = 1.0    # alpha the circle had when it started fading out
+        self.pulse_t0 = -1.0             # when the ring's last pulse began (a stage completed), -1 = never
 
     # -- slots
     def slot_at(self, now: float) -> float:
@@ -219,6 +227,10 @@ class Model:
     def _go(self, ind: Indicator, state: str, t0: float) -> None:
         ind.state = state
         ind.t0 = t0
+        # the ring pulses as each stage completes: it arrives (the clip is saved), turns purple (the
+        # clip is in the library, the overlay renders), and bursts as it leaves (everything done)
+        if ind.style.pulse and state in ("circle_in", "cross", "circle_out"):
+            ind.pulse_t0 = t0
 
     def _advance(self, ind: Indicator, now: float) -> None:
         for _ in range(32):                        # a long gap can chain several transitions
@@ -240,6 +252,7 @@ class Model:
                 return True
             for name in ("clap", "done", "overlay"):       # `done` without a clap implies it
                 if name in f:
+                    f.setdefault("clap", f[name])
                     self._go(ind, "clap", max(ind.t0, f[name]))
                     return True
         elif s == "clap":
@@ -381,6 +394,7 @@ class Model:
         s, el = ind.state, now - ind.t0
         st = ind.style
         fr = Frame(id=ind.id, state=s, slot=ind.slot_at(now))
+        fr.clapped = s in ("leave", "stay", "popin", "fail", "clap") and "clap" in ind.flags
         if s == "enter":
             fr.anim = ("enter", st.enter, el / ind.enter_dur())
         elif s == "hold":
@@ -410,6 +424,8 @@ class Model:
                 fr.circle_mix = ind.mix
             if s == "circle_fail":
                 fr.circle_dx, fr.circle_red, _ = draw.circle_fail(el / CIRCLE_FAIL)
+            elif ind.pulse_t0 >= 0 and 0 <= now - ind.pulse_t0 < draw.PULSE_SECONDS:
+                fr.circle_pulse = (now - ind.pulse_t0) / draw.PULSE_SECONDS
         return fr
 
     def frames(self, key: "tuple[str, str]", now: float) -> "list[Frame]":

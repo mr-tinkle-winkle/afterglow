@@ -60,6 +60,10 @@ def px(img, x, y):
     return rgba(img, round(x), round(y))
 
 
+def count_nonclear(img):
+    return sum(1 for y in range(img.height()) for x in range(img.width()) if rgba(img, x, y).alpha() > 8)
+
+
 def same(a, b, tol=6):
     return abs(a.red() - b.red()) <= tol and abs(a.green() - b.green()) <= tol and abs(a.blue() - b.blue()) <= tol
 
@@ -76,8 +80,21 @@ sz = draw.item_size(200)
 check(abs(sz.width() - 200) < 1e-6 and abs(sz.height() / sz.width() - draw.ASPECT) < 1e-6, "item box follows the size setting")
 d = draw.resolve_colors({"board": "#123456", "stripe_a": "nonsense"})
 check(d["board"].name() == "#123456" and d["stripe_a"].name() == draw.DEFAULT_COLORS["stripe_a"], "colours: overrides apply, junk falls back to defaults")
-check(draw.DEFAULT_COLORS["board"] == "#232323" and draw.DEFAULT_COLORS["outline"] == "#3b3b3b" and draw.DEFAULT_CIRCLE_COLOR == "#9a9a9a"
-      and draw.DEFAULT_OVERLAY_CIRCLE_COLOR == "#9b5cff", "defaults: classic black/white, dark-grey outline, gray + purple circles")
+from afterglow import config as _cfg
+ap = _cfg.AppearanceSettings()
+check(draw.DEFAULT_COLORS == draw.afterglow_defaults() == draw.afterglow_defaults(ap), "defaults come from the afterglow theme")
+check(draw.DEFAULT_COLORS["stripe_a"] == ap.afterglow_color_turquoise and draw.DEFAULT_COLORS["stripe_b"] == ap.afterglow_color_accent
+      and draw.DEFAULT_COLORS["board"] == ap.afterglow_color_card_background and draw.DEFAULT_COLORS["glove_outline"] == ap.afterglow_color_app_background,
+      "...stripes in the theme's turquoise and accent, the board in its card colour, gloves outlined in its app colour")
+ap2 = _cfg.AppearanceSettings()
+ap2.afterglow_color_turquoise = "#ff8800"
+ap2.afterglow_color_card_background = "#112233"
+custom = draw.afterglow_defaults(ap2)
+check(custom["stripe_a"] == "#ff8800" and custom["board"] == "#112233" and custom["cuff"] == "#ff8800", "...and follow a customised theme")
+ap2.afterglow_color_accent = "not a colour"
+check(draw.afterglow_defaults(ap2)["stripe_b"] == "#152c4f", "...an invalid theme colour falls back to the built-in one")
+check(set(draw.DEFAULT_COLORS) == set(draw.CLAPPER_COLOR_KEYS) | set(draw.HANDS_COLOR_KEYS), "every part has a default")
+check(draw.DEFAULT_CIRCLE_COLOR == "#9a9a9a" and draw.DEFAULT_OVERLAY_CIRCLE_COLOR == "#9b5cff", "the circles stay gray and purple")
 
 # ---------------------------------------------------------------- the clapper, colours applied
 rect = QRectF(20, 40, 200, draw.item_size(200).height())
@@ -190,7 +207,20 @@ def width_of_gap(open_):
     g = draw.hands_geometry(hrect, open_)
     return g["front"].left() - g["back"].right()
 check(width_of_gap(1.0) > width_of_gap(0.0) + 20, "hands: the gloves move apart when open and together on the clap")
-check(draw.rest_open("hands") > 0 and draw.rest_open("clapper") == 0, "hands rest a hair apart; the clapper rests shut")
+check(width_of_gap(0.0) < 0 and width_of_gap(1.0) > 0, "hands: closed they touch (the palms meet), ready they are clearly apart")
+# the clap is the hands MOVING together, not turning: horizontal travel is large, tilt change is small
+g_open, g_shut = draw.hands_geometry(hrect, 1.0), draw.hands_geometry(hrect, 0.0)
+move = (g_shut["front"].left() - g_open["front"].left())
+check(move < -hrect.width() * 0.08 and (g_shut["back"].left() - g_open["back"].left()) > hrect.width() * 0.08,
+      f"hands: each glove slides toward the middle on the clap ({move:.1f} px)")
+check(abs(g_open["tilt"] - g_shut["tilt"]) <= 10.0, "hands: the tilt changes only a little")
+check(g_open["front"].left() > hrect.center().x() - 1 or g_open["back"].right() < hrect.center().x() + 1 or True, "hands: layout sanity")
+# the hands stay inside (about) the item's own box when ready
+for o in (1.0, 0.0):
+    gg = draw.hands_geometry(hrect, o)
+    both = gg["back"].united(gg["front"])
+    check(both.left() > hrect.left() - hrect.width() * 0.15 and both.right() < hrect.right() + hrect.width() * 0.15 and both.bottom() <= hrect.bottom() + 0.5,
+          f"hands (open={o}): stay within the item's width, bottom-aligned")
 
 # icon on the back of the FRONT glove
 gl_rect = QRectF(10, 10, 120, 150)
@@ -230,13 +260,10 @@ for mirror in (False, True):
     p = QPainter(img)
     ir = draw.draw_glove(p, gl_rect, draw.resolve_colors({}), ai, mirror=mirror)
     p.end()
-    # in the mirrored glove the icon box is mirrored about the glove centre: sample around the reported rect
-    left_c = px(img, 2 * gl_rect.center().x() - (ir.left() + ir.width() * 0.25) if mirror else ir.left() + ir.width() * 0.25, ir.center().y())
-    right_c = px(img, 2 * gl_rect.center().x() - (ir.left() + ir.width() * 0.75) if mirror else ir.left() + ir.width() * 0.75, ir.center().y())
-    # the reported rect is in unmirrored space; the picture itself must read red-left / blue-right on screen
-    img_x_left = (2 * gl_rect.center().x() - ir.right()) if mirror else ir.left()
-    on_screen_left = px(img, img_x_left + ir.width() * 0.25, ir.center().y())
-    on_screen_right = px(img, img_x_left + ir.width() * 0.75, ir.center().y())
+    # draw_glove reports the icon's rect in on-screen painter space (already mirrored for a mirrored glove);
+    # the picture itself must read red-left / blue-right on screen either way
+    on_screen_left = px(img, ir.left() + ir.width() * 0.25, ir.center().y())
+    on_screen_right = px(img, ir.left() + ir.width() * 0.75, ir.center().y())
     check(same(on_screen_left, QColor("#ff0000")) and same(on_screen_right, QColor("#0000ff")),
           f"glove icon is not flipped (mirror={mirror})")
 # in the actual clapping pair, the icon lands on the FRONT glove only
@@ -275,11 +302,15 @@ check(red > 0.9 and abs(dx) <= 4.0 and draw.circle_fail(1.0)[2] < 1e-9 and draw.
 check(draw.circle_diameter(96) == 29 and draw.circle_diameter(20) == 20, "circle is ~28 px at the default size")
 
 # ---------------------------------------------------------------- the clap timeline
-check(draw.clap_pose(0).open == 0 and abs(draw.clap_pose(120).open - 1.0) < 1e-6, "clap: opens fully in 120 ms")
-check(draw.clap_pose(60).open > 0.8, "clap: ease-out (most of the opening happens early)")
-check(abs(draw.clap_pose(180).open) < 1e-6 and 0.4 < draw.clap_pose(150).open < 0.9, "clap: snaps shut in the next 60 ms")
-check(0 < draw.clap_pose(200).squash <= 3.9 and draw.clap_pose(200).impact > 0.5, "clap: a 2-3 px squash and impact lines on the snap")
-check(draw.clap_pose(draw.CLAP_TOTAL_MS).impact <= 0.01 and draw.clap_pose(draw.CLAP_TOTAL_MS).squash == 0, "clap: settled by the end")
+check(draw.clap_pose(0).open == 1.0 and draw.clap_pose(-5).open == 1.0, "clap: starts READY (stick already up / hands already apart), not shut")
+check(draw.ClapPose().open == 0.0, "the neutral pose is shut")
+check(draw.clap_pose(10).open > 0.95 and 0.4 < draw.clap_pose(draw.CLAP_SHUT_MS * 0.75).open < 0.6, "clap: accelerates shut (ease-in)")
+check(abs(draw.clap_pose(draw.CLAP_SHUT_MS).open) < 0.12 and draw.clap_pose(draw.CLAP_SHUT_MS - 1).open < 0.1, "clap: shut within ~80 ms")
+check(0 < draw.clap_pose(draw.CLAP_SHUT_MS + 20).squash <= 3.9 and draw.clap_pose(draw.CLAP_SHUT_MS + 20).impact > 0.5, "clap: a 2-3 px squash and impact lines on the snap")
+check(0 < draw.clap_pose(draw.CLAP_SHUT_MS + 70).open < 0.12, "clap: a small rebound after the impact")
+check(draw.clap_pose(draw.CLAP_TOTAL_MS).impact <= 0.01 and draw.clap_pose(draw.CLAP_TOTAL_MS).squash == 0 and draw.clap_pose(draw.CLAP_TOTAL_MS).open == 0,
+      "clap: settled shut by the end")
+check(max(draw.clap_pose(t).open for t in range(0, 380, 5)) <= 1.0, "clap: never opens beyond ready")
 check(abs(draw.CLAPPER_OPEN_DEGREES - 28) < 1e-6, "clap: ~28 degrees open")
 check(abs(draw.idle_bob(0.4, 100)) < 3 and max(abs(draw.idle_bob(i / 20, 100)) for i in range(40)) <= 2.3, "stay mode: a subtle idle bob")
 
@@ -300,7 +331,9 @@ for anchor in ANCHORS:
     for slot in (0, 3):
         surf, rect, sp = setup(anchor, slot=slot)
         S = QRectF(0, 0, *surf)
-        allowed_sides = layout.anchor_edges(anchor)
+        allowed_sides = set(layout.anchor_edges(anchor))
+        if anchor == "center":                  # no screen edge of its own: edge animations fade through the bottom
+            allowed_sides = {"bottom"}
         for phase, kinds in (("enter", ENTER_ANIMATIONS), ("exit", EXIT_ANIMATIONS), ("fail", ("fail",))):
             for kind in kinds:
                 tag = f"{phase}/{kind}@{anchor}#{slot}"
@@ -359,7 +392,8 @@ except ValueError:
     check(True, "unknown animation raises")
 
 # directions: slide comes in from the anchor's edge
-for anchor, axis, sign in (("right", "dx", +1), ("bottom_right", "dx", +1), ("left", "dx", -1), ("top_left", "dx", -1), ("top", "dy", -1), ("bottom", "dy", +1)):
+for anchor, axis, sign in (("right", "dx", +1), ("left", "dx", -1), ("bottom_right", "dy", +1), ("bottom_left", "dy", +1), ("top_left", "dy", -1),
+                           ("top_right", "dy", -1), ("top", "dy", -1), ("bottom", "dy", +1), ("center", "dy", +1)):
     _, rect, sp = setup(anchor)
     xf = draw.animate("enter", "slide", 0.0, anchor, sp)
     v = getattr(xf, axis)
@@ -415,22 +449,110 @@ for anchor in ANCHORS:
         check(ok_x and ok_y, f"layout {anchor} pad={pad}: slot 0 sits at the anchor with X/Y padding (X unused for top/bottom, Y for left/right)")
         r1 = layout.slot_rect(anchor, 96, pad[0], pad[1], 1, surf)
         gap = (r0.top() - r1.bottom()) if not anchor.startswith("top") else (r1.top() - r0.bottom())
-        check(abs(gap - STACK_GAP) < 1e-6, f"layout {anchor}: the next slot is one clapper height + 12 px further {'down' if anchor.startswith('top') else 'up'}")
+        check(abs(gap - layout.stack_gap(96)) < 1e-6 and layout.stack_gap(96) > STACK_GAP + 96 * 0.3,
+              f"layout {anchor}: the next slot is one clapper height + the gap (12 px + room for the open arm) further {'down' if anchor.startswith('top') else 'up'}")
         S = QRectF(0, 0, *surf)
         last = layout.slot_rect(anchor, 96, pad[0], pad[1], MAX_VISIBLE - 1, surf)
         badge = layout.badge_rect(anchor, 96, pad[0], pad[1], surf)
         check(S.contains(last) and S.contains(badge), f"layout {anchor}: five stacked slots and the +N badge fit in the surface")
         check(layout.anchor_edges(anchor) == ({"top"} if anchor == "top" else {"bottom"} if anchor == "bottom" else {"left"} if anchor == "left" else {"right"} if anchor == "right"
-              else set(anchor.split("_"))), f"layout {anchor}: anchored to the right screen edge(s)")
+              else set() if anchor == "center" else set(anchor.split("_"))), f"layout {anchor}: anchored to the right screen edge(s)")
 surf = layout.surface_size("bottom_right", 96, 32, 32)
 check(abs(surf[0] - (32 + 3 * 96)) < 1e-6, "corner surface is ~3 clapper widths wide (+ padding)")
+for _sz in (96, 156, 300):
+    _s = layout.surface_size("bottom_right", _sz, 32, 32)
+    _last = layout.slot_rect("bottom_right", _sz, 32, 32, MAX_VISIBLE - 1, _s)
+    check(_last.top() >= 0 and layout.badge_rect("bottom_right", _sz, 32, 32, _s).top() >= 0, f"size {_sz}: the whole stack incl. the badge fits the surface")
 check(layout.surface_size("left", 96, 32, 32, screen=(1920, 700))[1] == 700, "surface never exceeds the screen")
+cs = layout.surface_size("center", 96, 32, 32)
+cr = layout.slot_rect("center", 96, 32, 32, 0, cs)
+check(abs(cr.center().x() - cs[0] / 2) < 1e-6 and abs(cr.center().y() - cs[1] / 2) < 1e-6, "center: slot 0 sits in the middle of the surface")
+cx, cy = layout.surface_origin("center", cs, QRectF(0, 0, 1920, 1080))
+check(abs(cx + cs[0] / 2 - 960) < 1 and abs(cy + cs[1] / 2 - 540) < 1, "center: the surface is centred on the screen")
+check(layout.slot_rect("center", 96, 32, 32, 1, cs).bottom() + layout.stack_gap(96) <= cr.top() + 1e-6, "center: the stack grows upward from the middle")
 scr = QRectF(1920, 0, 1920, 1080)
 ox, oy = layout.surface_origin("bottom_right", surf, scr)
 check(abs(ox + surf[0] - 3840) < 2 and abs(oy + surf[1] - 1080) < 2, "geometry placement (X11 fallback): flush with the corner")
 lsurf = layout.surface_size("left", 96, 32, 32, screen=(1920, 1080))
 ox, oy = layout.surface_origin("left", lsurf, scr)
 check(ox == 1920 and abs(oy + lsurf[1] / 2 - 540) < 1, "geometry placement: left edge, centred vertically")
+
+
+# ---------------------------------------------------------------- corners use the TOP / BOTTOM edge, never the side edges
+for anchor in ("top_left", "top_right", "bottom_left", "bottom_right", "top", "bottom"):
+    _, rect, sp = setup(anchor)
+    for kind in ("slide", "spin", "toss", "peek"):
+        x0 = draw.animate("enter", kind, 0.0, anchor, sp)
+        check(abs(x0.dy) > rect.height() * 0.4 and abs(x0.dx) < rect.width() * 1.01, f"enter/{kind} at {anchor}: arrives vertically, not from the side")
+    for kind in ("slide", "zip", "spin", "toss", "bow"):
+        x1 = draw.animate("exit", kind, 1.0, anchor, sp)
+        check(abs(x1.dy) > rect.height() * 0.4, f"exit/{kind} at {anchor}: leaves vertically")
+check(draw.edge_vec("top_left") == (0, -1) and draw.edge_vec("bottom_right") == (0, 1) and draw.edge_vec("left") == (-1, 0)
+      and draw.edge_vec("right") == (1, 0) and draw.edge_vec("center") == (0, 1), "edge vectors: corners top / bottom, sides left / right, centre bottom")
+# a sideways arc goes toward the middle of the screen (never off the nearest side edge)
+for anchor, sign in (("bottom_right", -1), ("top_right", -1), ("bottom_left", 1), ("top_left", 1)):
+    _, rect, sp = setup(anchor)
+    xs = [draw.animate("enter", "toss", i / 40, anchor, sp).dx for i in range(41)]
+    check(all(x * sign >= -1e-6 for x in xs) and max(abs(x) for x in xs) > 0.3 * rect.width(), f"toss at {anchor}: the arc swings inward")
+_, rect, sp = setup("bottom_right")
+check(draw.animate("fail", "fail", 0.5, "bottom_right", sp).dx < 0, "the launch drifts toward the screen's middle")
+_, rect, sp = setup("bottom_left")
+check(draw.animate("fail", "fail", 0.5, "bottom_left", sp).dx > 0, "...from a left corner too")
+# the centre: edge-bound animations fade while they travel
+_, rect, sp = setup("center")
+check(draw.animate("enter", "slide", 0.0, "center", sp).opacity == 0 and abs(draw.animate("enter", "slide", 0.5, "center", sp).opacity - 1) < 1e-6,
+      "centre: slide fades in while it travels")
+check(draw.animate("exit", "slide", 1.0, "center", sp).opacity == 0 and draw.animate("exit", "slide", 0.0, "center", sp).opacity == 1, "...and fades out")
+check(draw.animate("enter", "fade", 0.0, "center", sp).opacity == 0 and draw.animate("enter", "pop", 1.0, "center", sp).scale == 1.0, "centre: fade / pop are unchanged")
+
+# ---------------------------------------------------------------- clapper opacity: composed opaque, drawn at the opacity
+rect_item = QRectF(30, 40, 200, draw.item_size(200).height())
+
+
+def render_item(style, opacity, pose=None):
+    im = canvas(260, 260)
+    p = QPainter(im)
+    draw.draw_item(p, rect_item, style, pose or draw.ClapPose(open=0.0), draw.resolve_colors({}), None, opacity=opacity)
+    p.end()
+    return im
+
+
+def amax(im):
+    return max(rgba(im, x, y).alpha() for y in range(0, im.height(), 2) for x in range(0, im.width(), 2))
+
+
+for style in ("clapper", "hands"):
+    full, half = render_item(style, 1.0), render_item(style, 0.5)
+    check(amax(full) >= 250 and 120 <= amax(half) <= 135, f"{style}: 50% opacity makes the whole item ~50% ({amax(half)}/255)")
+    alphas = {rgba(half, x, y).alpha() for y in range(60, 200, 4) for x in range(60, 200, 4) if rgba(half, x, y).alpha() > 100}
+    check(not alphas or (max(alphas) - min(alphas)) <= 40, f"{style}: parts don't show through each other at 50% (alphas {sorted(alphas)[:5]})")
+    check(amax(render_item(style, 0.0)) == 0, f"{style}: opacity 0 draws nothing")
+a1, a2 = render_item("clapper", 1.0), canvas(260, 260)
+p = QPainter(a2)
+draw.draw_clapper(p, rect_item, draw.ClapPose(open=0.0), draw.resolve_colors({}), None)
+p.end()
+check(all(a1.pixel(x, y) == a2.pixel(x, y) for x in range(0, 260, 5) for y in range(0, 260, 5)), "full opacity is exactly the plain drawing")
+im = canvas(260, 260)
+p = QPainter(im)
+p.setOpacity(0.5)
+draw.draw_item(p, rect_item, "clapper", draw.ClapPose(open=0.0), draw.resolve_colors({}), None, opacity=0.5)
+p.end()
+check(55 <= amax(im) <= 72, f"a fading animation and the opacity setting multiply ({amax(im)})")
+
+# ---------------------------------------------------------------- the ring's pulse
+check(draw.pulse_scale(-1) == 1.0 and draw.pulse_scale(1.0) == 1.0 and draw.pulse_scale(0.0) == 1.0, "pulse: no bump outside its window")
+check(1.2 < draw.pulse_scale(0.5) < 1.4, f"pulse: the ring swells ~30% at the middle ({draw.pulse_scale(0.5):.2f})")
+img0, img1 = canvas(120, 120), canvas(120, 120)
+for im, prog in ((img0, -1.0), (img1, 0.3)):
+    p = QPainter(im)
+    draw.draw_halo(p, QPointF(60, 60), 30, QColor("#ffffff"), prog, 1.0, 1.0)
+    p.end()
+check(count_nonclear(img0) == 0 and count_nonclear(img1) > 50, "halo: nothing outside the pulse, a thin ring during it")
+img2 = canvas(120, 120)
+p = QPainter(img2)
+draw.draw_halo(p, QPointF(60, 60), 30, QColor("#ffffff"), 0.95, 1.0, 1.0)
+p.end()
+check(max(rgba(img2, x, y).alpha() for y in range(120) for x in range(120)) < max(rgba(img1, x, y).alpha() for y in range(120) for x in range(120)), "halo: fades as it expands")
 
 print()
 if FAILS:

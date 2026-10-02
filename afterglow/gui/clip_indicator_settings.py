@@ -104,6 +104,7 @@ class ClipIndicatorGroup(CustomGroupBox):
     def __init__(self, settings, parent=None):
         super().__init__("Clip Indicator", parent)
         ci = settings.clip_indicator
+        self._appearance = config_module.load_readonly().appearance
         root = self.make_layout(QVBoxLayout)
 
         self.enabled_check = CustomCheckBox("Show a clapper on screen when a clip is captured")
@@ -150,6 +151,7 @@ class ClipIndicatorGroup(CustomGroupBox):
 
         self.enter_combo = _combo(_animation_items(ENTER_ANIMATIONS), ci.enter_animation)
         form.addRow("Enter animation:", self.enter_combo)
+        self._auto_faded: "dict[str, str]" = {}      # combo -> the animation it had before the centre switched it to fade
         self.exit_combo = _combo(_animation_items(EXIT_ANIMATIONS), ci.exit_animation)
         form.addRow("Exit animation:", self.exit_combo)
 
@@ -166,6 +168,37 @@ class ClipIndicatorGroup(CustomGroupBox):
         self.opacity_spin.setSuffix(" %")
         self.opacity_spin.setValue(int(round(ci.circle_opacity * 100)))
         form.addRow("Circle opacity:", self.opacity_spin)
+
+        self.clapper_opacity_spin = CustomSpinBox()
+        self.clapper_opacity_spin.setRange(5, 100)
+        self.clapper_opacity_spin.setSuffix(" %")
+        self.clapper_opacity_spin.setValue(int(round(ci.clapper_opacity * 100)))
+        self.clapper_opacity_spin.setToolTip("How see-through the clapper (or the hands) is")
+        form.addRow("Clapper opacity:", self.clapper_opacity_spin)
+
+        self.pulse_check = CustomCheckBox("Pulse the ring each time a stage completes")
+        self.pulse_check.setChecked(bool(ci.ring_pulse))
+        form.addRow("", self.pulse_check)
+
+        sound_row = QWidget()
+        sl = QHBoxLayout(sound_row)
+        sl.setContentsMargins(0, 0, 0, 0)
+        self.clap_sound_edit = CustomLineEdit(ci.clap_sound or "")
+        self.clap_sound_edit.setPlaceholderText("(the clip's usual sound)")
+        self.clap_sound_browse = CustomButton("Browse...")
+        self.clap_sound_browse.clicked.connect(self._browse_clap_sound)
+        self.clap_sound_clear = CustomButton("✕")
+        self.clap_sound_clear.setToolTip("Clear")
+        self.clap_sound_clear.clicked.connect(lambda: self.clap_sound_edit.setText(""))
+        self.clap_sound_play = CustomButton("Play")
+        self.clap_sound_play.clicked.connect(self._play_clap_sound)
+        for w in (self.clap_sound_edit,):
+            sl.addWidget(w, stretch=1)
+        for w in (self.clap_sound_browse, self.clap_sound_clear, self.clap_sound_play):
+            sl.addWidget(w)
+        self.clap_sound_edit.setToolTip("Played when OBS has saved the clip; replaces the clip's usual sound only "
+                                        "while the indicator is enabled. A clip type's own clap sound wins over this one.")
+        form.addRow("Clap sound:", sound_row)
 
         self.screen_combo = _combo(list(SCREEN_LABELS.items()), ci.screen)
         form.addRow("Screen:", self.screen_combo)
@@ -184,17 +217,21 @@ class ClipIndicatorGroup(CustomGroupBox):
         for sig in (self.style_combo.currentIndexChanged, self.anchor_picker.changed, self.pad_x_spin.valueChanged,
                     self.pad_y_spin.valueChanged, self.size_spin.valueChanged, self.enter_combo.currentIndexChanged,
                     self.exit_combo.currentIndexChanged, self.processing_combo.currentIndexChanged,
-                    self.circle_swatch.changed, self.overlay_swatch.changed, self.opacity_spin.valueChanged):
+                    self.circle_swatch.changed, self.overlay_swatch.changed, self.opacity_spin.valueChanged,
+                    self.clapper_opacity_spin.valueChanged, self.pulse_check.toggled):
             sig.connect(self._refresh)
         self.enter_combo.itemHovered.connect(lambda i: self.preview.set_overrides(enter=self.enter_combo.itemData(i)))
         self.exit_combo.itemHovered.connect(lambda i: self.preview.set_overrides(exit=self.exit_combo.itemData(i)))
         self.enter_combo.popupHidden.connect(self.preview.clear_overrides)
         self.exit_combo.popupHidden.connect(self.preview.clear_overrides)
         self.anchor_picker.changed.connect(self._sync_padding_enabled)
+        self.anchor_picker.changed.connect(self._sync_centre_animations)
+        self.clap_sound_edit.textChanged.connect(lambda *_: self.changed.emit())
         self.enabled_check.toggled.connect(self._sync_enabled)
         self.enabled_check.toggled.connect(lambda *_: self.changed.emit())
         self._sync_padding_enabled()
         self._sync_enabled()
+        self._sync_centre_animations()
         self._refresh()
 
     # ------------------------------------------------------------ helpers
@@ -211,10 +248,26 @@ class ClipIndicatorGroup(CustomGroupBox):
         row.addStretch(1)
         return w
 
+    def _sync_centre_animations(self, *_a) -> None:
+        """The centre has no screen edge to slide from, so choosing it from the slide defaults switches
+        enter / exit to fade; moving away from the centre restores what was there (unless it was
+        changed by hand in between)."""
+        centre = self.anchor_picker.anchor() == "center"
+        for key, combo in (("enter", self.enter_combo), ("exit", self.exit_combo)):
+            cur = combo.currentData()
+            if centre:
+                if cur == "slide" and key not in self._auto_faded:
+                    self._auto_faded[key] = cur
+                    combo.setCurrentIndex(max(0, combo.findData("fade")))
+            elif key in self._auto_faded:
+                before = self._auto_faded.pop(key)
+                if cur == "fade":
+                    combo.setCurrentIndex(max(0, combo.findData(before)))
+
     def _sync_padding_enabled(self, *_a) -> None:
         a = self.anchor_picker.anchor()
-        self.pad_x_spin.setEnabled(a not in ("top", "bottom"))     # centred horizontally
-        self.pad_y_spin.setEnabled(a not in ("left", "right"))     # centred vertically
+        self.pad_x_spin.setEnabled(a not in ("top", "bottom", "center"))     # centred horizontally
+        self.pad_y_spin.setEnabled(a not in ("left", "right", "center"))     # centred vertically
         self.pad_x_spin.setToolTip("" if self.pad_x_spin.isEnabled() else "Unused: the clapper is centred horizontally here.")
         self.pad_y_spin.setToolTip("" if self.pad_y_spin.isEnabled() else "Unused: the clapper is centred vertically here.")
 
@@ -222,7 +275,8 @@ class ClipIndicatorGroup(CustomGroupBox):
         on = self.enabled_check.isChecked()
         for w in (self.style_combo, self.anchor_picker, self.size_spin, self.enter_combo, self.exit_combo,
                   self.processing_combo, self.circle_swatch, self.overlay_swatch, self.opacity_spin,
-                  self.screen_combo, self.test_btn):
+                  self.clapper_opacity_spin, self.pulse_check, self.clap_sound_edit, self.clap_sound_browse,
+                  self.clap_sound_clear, self.clap_sound_play, self.screen_combo, self.test_btn):
             w.setEnabled(on)
         if on:
             self._sync_padding_enabled()
@@ -234,13 +288,22 @@ class ClipIndicatorGroup(CustomGroupBox):
         self.preview.set_style(self.style_dict())
         self.changed.emit()
 
+    def _browse_clap_sound(self) -> None:
+        path, _ = get_open_file_name(self, "Choose Clap Sound", self.clap_sound_edit.text(), SOUND_FILTER)
+        if path:
+            self.clap_sound_edit.setText(path)
+
+    def _play_clap_sound(self) -> None:
+        from ..clips import play_sound
+        play_sound(self.clap_sound_edit.text().strip())
+
     # ------------------------------------------------------------ data
 
     def style_dict(self) -> dict:
         """The settings as they are in the widgets right now, in the shape of a `start` event's style."""
         return {
             "style": self.style_combo.currentData(),
-            "colors": {}, "icon": "",
+            "colors": draw.afterglow_defaults(self._appearance), "icon": "",
             "anchor": self.anchor_picker.anchor(),
             "padding_x": self.pad_x_spin.value(), "padding_y": self.pad_y_spin.value(),
             "size": self.size_spin.value(),
@@ -248,6 +311,8 @@ class ClipIndicatorGroup(CustomGroupBox):
             "mode": self.processing_combo.currentData(),
             "circle_color": self.circle_swatch.color(), "overlay_circle_color": self.overlay_swatch.color(),
             "circle_opacity": self.opacity_spin.value() / 100.0,
+            "opacity": self.clapper_opacity_spin.value() / 100.0,
+            "pulse": self.pulse_check.isChecked(),
             "screen": self.screen_combo.currentData(), "screen_hint": None,
         }
 
@@ -262,6 +327,9 @@ class ClipIndicatorGroup(CustomGroupBox):
         ci.processing = d["mode"]
         ci.circle_color, ci.overlay_circle_color = d["circle_color"], d["overlay_circle_color"]
         ci.circle_opacity = d["circle_opacity"]
+        ci.clapper_opacity = d["opacity"]
+        ci.ring_pulse = d["pulse"]
+        ci.clap_sound = self.clap_sound_edit.text().strip()
         ci.screen = d["screen"]
 
     # ------------------------------------------------------------ the Test button
@@ -272,6 +340,7 @@ class ClipIndicatorGroup(CustomGroupBox):
         """start -> clap -> processing -> overlay -> overlay_done through the real helper (on its own
         thread: looking up the focused screen runs a compositor tool)."""
         style = self.style_dict()
+        sound = self.clap_sound_edit.text().strip()
         cid = indicator_client.new_id()
         send = indicator_client.send_raw
         steps = self.TEST_STEPS
@@ -287,6 +356,12 @@ class ClipIndicatorGroup(CustomGroupBox):
             for delay, event in steps:
                 time.sleep(delay)
                 send({"id": cid, "event": event})
+                if event == "clap" and sound:
+                    try:
+                        from ..clips import play_sound
+                        play_sound(sound)
+                    except Exception:  # noqa: BLE001 -- the test is visual first
+                        pass
         threading.Thread(target=run, name="afterglow-indicator-test", daemon=True).start()
         self.test_status.setText("Sent to the indicator.")
 
@@ -310,6 +385,7 @@ class ClipIndicatorDialog(QDialog):
             pal.setColor(role, text)
         self.setPalette(pal)
         self._style_provider = style_provider
+        self._defaults = draw.afterglow_defaults(appearance)
         self._colors: dict[str, str] = {k: v for k, v in (colors or {}).items() if QColor(str(v)).isValid()}
 
         layout = QVBoxLayout(self)
@@ -327,7 +403,7 @@ class ClipIndicatorDialog(QDialog):
             form = QFormLayout()
             layout.addLayout(form)
             for key in keys:
-                sw = ColorSwatch(self._colors.get(key) or draw.DEFAULT_COLORS[key], draw.COLOR_LABELS[key])
+                sw = ColorSwatch(self._colors.get(key) or self._defaults[key], draw.COLOR_LABELS[key])
                 sw.changed.connect(lambda c, k=key: self._set_color(k, c))
                 reset = CustomButton("Default")
                 reset.clicked.connect(lambda _=False, k=key: self._reset_color(k))
@@ -397,7 +473,7 @@ class ClipIndicatorDialog(QDialog):
 
     def _reset_color(self, key: str) -> None:
         self._colors.pop(key, None)
-        self.swatches[key].set_color(draw.DEFAULT_COLORS[key])
+        self.swatches[key].set_color(self._defaults[key])
         self._refresh_preview()
 
     def _refresh_preview(self, *_a) -> None:
@@ -407,7 +483,7 @@ class ClipIndicatorDialog(QDialog):
                 base = dict(self._style_provider() or {})
             except Exception:  # noqa: BLE001
                 base = {}
-        base["colors"] = dict(self._colors)
+        base["colors"] = {**self._defaults, **self._colors}
         base["icon"] = self.icon_edit.text().strip()
         base["screen_hint"] = None
         self.preview.set_style(base)

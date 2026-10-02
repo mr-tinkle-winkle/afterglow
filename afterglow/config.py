@@ -67,17 +67,20 @@ class ClipIndicatorSettings:
     animation name falls back to the default rather than breaking the indicator."""
     enabled: bool = True
     style: str = "clapper"                    # "clapper" | "hands"
-    # one of top_left top top_right left right bottom_left bottom bottom_right
+    # one of top_left top top_right left center right bottom_left bottom bottom_right
     anchor: str = "bottom_right"
-    padding_x: int = 32                       # px from the screen edge (unused for top / bottom: centred)
-    padding_y: int = 32                       # px from the screen edge (unused for left / right: centred)
-    size: int = 96                            # px, the clapper's width
+    padding_x: int = 32                       # px from the screen edge (unused for top / bottom / center: centred)
+    padding_y: int = 32                       # px from the screen edge (unused for left / right / center: centred)
+    size: int = 156                           # px, the clapper's width
     enter_animation: str = "slide"            # slide drop pop swing spin toss flip peek fade
     exit_animation: str = "slide"             # slide zip fall shrink spin toss flip fade bow
     processing: str = "circle"                # "circle": exit then a loading circle; "stay": clapper stays
     circle_color: str = "#9a9a9a"             # while the clip is processed
     overlay_circle_color: str = "#9b5cff"     # while the input overlay is rendered
     circle_opacity: float = 0.55
+    clapper_opacity: float = 1.0              # the clapper's own opacity (0.05 - 1)
+    ring_pulse: bool = True                   # the ring pulses as each stage completes
+    clap_sound: str = ""                      # JUST the clapper's noise ("" = the clip's usual sound)
     screen: str = "focused"                   # "focused": the screen holding the focused window | "primary"
 
 

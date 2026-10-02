@@ -288,7 +288,8 @@ def _resolve_keyframe_sound(keyframe: str, clip_cfg: "ClipConfig", settings) -> 
         # The clip indicator's clap IS this moment (OBS confirming the save): with the
         # indicator on, a clap sound set on the clip type wins, else the same chain as always
         # -- "the global clip sound". Played once, here; the indicator never plays sound itself.
-        clap = clip_cfg.indicator_clap_sound if getattr(getattr(settings, "clip_indicator", None), "enabled", False) else ""
+        ci = getattr(settings, "clip_indicator", None)
+        clap = (clip_cfg.indicator_clap_sound or getattr(ci, "clap_sound", "")) if getattr(ci, "enabled", False) else ""
         return (
             clap
             or clip_cfg.sound_path
