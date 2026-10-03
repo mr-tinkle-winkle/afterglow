@@ -97,6 +97,7 @@ class SaveDialog(_Dialog):
     def __init__(self, project: Project, target_text: str, parent=None, library_clip: bool = False):
         super().__init__("Export", parent)
         self.replace_radio = self.separate_radio = None
+        self.upload_after = False          # "Export & Upload": the quick YouTube dialog follows the render
         if library_clip:
             from ..custom_radio_button import CustomRadioButton
             from PySide6.QtWidgets import QButtonGroup
@@ -145,13 +146,23 @@ class SaveDialog(_Dialog):
         cancel.clicked.connect(self.reject)
         ok = CustomButton("Export")
         ok.clicked.connect(self.accept)
-        for b_ in (cancel, ok):
+        buttons = [cancel, ok]
+        if library_clip:
+            # render, then upload the export (the replaced clip, or the new separate one)
+            up = CustomButton("Export & Upload")
+            up.setToolTip("Export, then open the YouTube upload dialog for the exported clip")
+            up.clicked.connect(self._export_and_upload)
+            buttons.append(up)
+        for b_ in buttons:
             b_.setMinimumWidth(90)
             b_.setMinimumHeight(30)
-        row.addWidget(cancel)
-        row.addWidget(ok)
+            row.addWidget(b_)
         self.lay.addLayout(row)
         self.setMinimumWidth(480)
+
+    def _export_and_upload(self) -> None:
+        self.upload_after = True
+        self.accept()
 
     @property
     def separately(self) -> bool:
@@ -541,6 +552,7 @@ class AdvancedEditorPage(QWidget):
             return
         opts = dlg.options()
         separately = dlg.separately
+        upload_after = dlg.upload_after
         work = Project.from_dict(copy.deepcopy(p.to_dict()))
         cancel = threading.Event()
         bridge = _Bridge()
@@ -602,6 +614,12 @@ class AdvancedEditorPage(QWidget):
             self._flash("Exported -- the clip now has your edit (Undo Edits restores the original)")
         else:
             self._flash(f"Exported {os.path.basename(str(result.get('ok')))}")
+        if upload_after and mode == "library":
+            exported = result.get("ok")
+            vid = getattr(exported, "id", None) or self.current_video_id
+            if vid is not None:
+                from ..upload_dialog import start_upload
+                start_upload([library.get_video(vid)], self.window())
 
     # ================================================================ misc
     def clean_up(self) -> None:

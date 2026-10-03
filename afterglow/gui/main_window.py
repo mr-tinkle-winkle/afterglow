@@ -34,6 +34,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
+    QApplication,
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
     QButtonGroup, QStackedWidget, QSizePolicy,
 )
@@ -48,6 +49,18 @@ from .scaling import compute_scale
 from .theme import Theme
 from .scale_reveal import crossfade_to_index
 from .page_outline import paint_page_outline
+
+
+def _notify(text: str) -> None:
+    """A one-line desktop notification (notify-send), printed as well."""
+    print(text)
+    import shutil, subprocess
+    if shutil.which("notify-send"):
+        try:
+            subprocess.Popen(["notify-send", "-a", "afterglow", "-i", "afterglow", "afterglow", text],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except OSError:
+            pass
 
 # Indices into self.stack -- fixed at construction time (see __init__).
 _SETTINGS_INDEX = 0
@@ -212,6 +225,23 @@ class MainWindow(QMainWindow):
 
         self.library_nav_btn.setChecked(True)
         self.stack.setCurrentIndex(_LIBRARY_INDEX)
+        self._setup_youtube()
+
+    # ------------------------------------------------------------ YouTube
+
+    def _setup_youtube(self) -> None:
+        """"Also update it on YouTube?" after renaming / re-filtering an uploaded clip, and the
+        upload queue's client (the uploads themselves run in the afterglow-youtube process --
+        see youtube/host.py for why; a running one is picked up here without starting it)."""
+        from .youtube_sync import YouTubeSync
+        from .upload_queue import upload_queue
+        self._youtube_sync = YouTubeSync(self)
+        upload_queue().job_finished.connect(self._on_upload_job_finished)
+
+    def _on_upload_job_finished(self, job) -> None:
+        if job.state == "done" and job.error and self.isVisible():
+            self.library_page.show_status_message(job.error)
+            QTimer.singleShot(8000, self.library_page.clear_status_message)
 
     def _show_preview_overlay(self, video, neighbor_provider) -> None:
         # Replaces whichever overlay might already be open rather than
@@ -244,6 +274,10 @@ class MainWindow(QMainWindow):
         if self._preview_overlay is not None:
             self._preview_overlay.close_overlay(immediate=True)
         self.editor_page.shutdown()
+        from .upload_queue import upload_queue
+        if upload_queue().busy():
+            # they live in the afterglow-youtube process, which finishes them on its own
+            _notify("afterglow keeps uploading to YouTube in the background; the uploads finish without this window.")
         super().closeEvent(event)
 
     def resizeEvent(self, event) -> None:

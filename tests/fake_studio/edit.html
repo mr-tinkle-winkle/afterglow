@@ -1,0 +1,53 @@
+<!doctype html>
+<!-- Stand-in for YouTube Studio's video details page (edit) and its "Delete forever" path, with the
+     selectors from studio_steps.json.  window.__fake records what happened. -->
+<html><head><meta charset="utf-8"><title>Fake Studio edit</title>
+<style>
+  ytcp-video-metadata-editor, ytcp-video-title, ytcp-video-description, ytcp-video-details-section,
+  ytcp-confirmation-dialog, tp-yt-paper-dialog, tp-yt-paper-listbox { display: block; }
+  ytcp-button, ytcp-icon-button, tp-yt-paper-item, ytcp-checkbox-lit { display: inline-block; padding: 8px 14px;
+    margin: 4px; border: 1px solid #888; cursor: pointer; }
+  [hidden] { display: none !important; }
+  #textbox { border: 1px solid #aaa; min-height: 24px; padding: 4px; white-space: pre-wrap; }
+</style></head><body>
+<ytcp-video-details-section>
+  <ytcp-button id="save" disabled>Save</ytcp-button>
+  <ytcp-icon-button id="overflow-menu-button" aria-label="Options">⋮</ytcp-icon-button>
+  <tp-yt-paper-listbox id="menu" hidden>
+    <tp-yt-paper-item>Download</tp-yt-paper-item>
+    <tp-yt-paper-item id="del">Delete forever</tp-yt-paper-item>
+  </tp-yt-paper-listbox>
+  <ytcp-video-metadata-editor>
+    <ytcp-video-title><div id="textbox" contenteditable="true">Old title</div></ytcp-video-title>
+    <ytcp-video-description><div id="textbox" contenteditable="true">Old description</div></ytcp-video-description>
+  </ytcp-video-metadata-editor>
+</ytcp-video-details-section>
+<ytcp-confirmation-dialog hidden id="confirm">
+  <tp-yt-paper-dialog>
+    <ytcp-checkbox-lit id="confirm-checkbox" role="checkbox" aria-checked="false">I understand</ytcp-checkbox-lit>
+    <ytcp-button id="confirm-button" disabled>Delete forever</ytcp-button>
+  </tp-yt-paper-dialog>
+</ytcp-confirmation-dialog>
+<script>
+const $ = s => document.querySelector(s);
+window.__fake = {vid: new URLSearchParams(location.search).get("vid"), saved: null, deleted: false};
+for (const tb of document.querySelectorAll("#textbox"))
+  tb.addEventListener("input", () => $("#save").removeAttribute("disabled"));
+$("#save").addEventListener("click", () => {
+  if ($("#save").hasAttribute("disabled")) return;
+  window.__fake.saved = {title: $("ytcp-video-title #textbox").innerText,
+                         description: $("ytcp-video-description #textbox").innerText};
+  setTimeout(() => $("#save").setAttribute("disabled", ""), 300);
+});
+$("#overflow-menu-button").addEventListener("click", () => { $("#menu").hidden = false; });
+$("#del").addEventListener("click", () => { $("#menu").hidden = true; $("#confirm").hidden = false; });
+$("#confirm-checkbox").addEventListener("click", () => {
+  $("#confirm-checkbox").setAttribute("aria-checked", "true");
+  $("#confirm-button").removeAttribute("disabled");
+});
+$("#confirm-button").addEventListener("click", () => {
+  if ($("#confirm-button").hasAttribute("disabled")) return;
+  window.__fake.deleted = true;
+  setTimeout(() => { $("#confirm").hidden = true; }, 300);
+});
+</script></body></html>

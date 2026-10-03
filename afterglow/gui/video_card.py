@@ -299,6 +299,7 @@ class VideoCard(QWidget):
     edit_requested = Signal(int)      # video_id
     deleted = Signal(int)             # video_id
     upload_requested = Signal(int)    # video_id
+    upload_many_requested = Signal(list)   # [video_id, ...] -- one quick dialog for the whole selection
     tags_changed = Signal()           # tag added/removed -- parent should refresh filter list
     renamed = Signal()                # title changed -- parent should refresh (search may no longer match)
     filter_left_clicked = Signal(str)   # tag_name, from clicking an icon on the card itself
@@ -310,10 +311,13 @@ class VideoCard(QWidget):
 
     def __init__(self, video: "library.Video", parent=None, highlight_enabled: bool = True,
                  font_scale: float = 1.0, get_selected_ids=None, ensure_selected=None,
-                 neighbor_provider=None):
+                 neighbor_provider=None, uploaded_view: bool = False):
         super().__init__(parent)
         self.video_id = video.id
         self._video = video
+        # In the Uploaded tab a card is the YouTube copy: YouTube's thumbnail, double-click plays the
+        # embed, and the menu / buttons act on YouTube (see uploaded_actions.py).
+        self.uploaded_view = uploaded_view
         self._preview_pending = False
         self._title_edit = None
         self._highlight_enabled = highlight_enabled
@@ -430,6 +434,11 @@ class VideoCard(QWidget):
         self.thumb_label.setAlignment(Qt.AlignCenter)
         self.thumb_label.setPixmap(self._load_pixmap(video))
         video_box_layout.addWidget(self.thumb_label)
+        # upload badge: floats over the thumbnail (outside the layout, so every card stays the same size)
+        self.upload_badge = QLabel(self.thumb_label)
+        self.upload_badge.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        self.upload_badge.hide()
+        self.refresh_upload_badge()
         thumb_row.addWidget(self.video_box)
 
         if show_filters and display_settings.show_filter_icons and \
@@ -923,8 +932,44 @@ class VideoCard(QWidget):
         painter.end()
         return pixmap
 
+    def refresh_upload_badge(self, job=None, lookup: bool = True) -> None:
+        from .uploaded_actions import badge_for
+        if job is None and lookup:
+            try:
+                from . import upload_queue as uq
+                q = uq.upload_queue()
+                job = q.job_for_video(self.video_id, "delete") if q else None
+                if job is None or job.finished:
+                    job = q.job_for_video(self.video_id, "edit") if q else None
+                if job is None or job.finished:
+                    job = q.job_for_video(self.video_id, "upload") if q else None
+            except Exception:  # noqa: BLE001
+                job = None
+        text, kind = badge_for(self._video, self.uploaded_view, job)
+        if not text:
+            self.upload_badge.hide()
+            return
+        bg = {"error": "rgba(170, 30, 40, 220)", "busy": "rgba(200, 0, 40, 200)"}.get(kind, "rgba(0, 0, 0, 170)")
+        self.upload_badge.setStyleSheet(
+            f"QLabel {{ background-color: {bg}; color: white; border-radius: 9px; padding: 3px 10px;"
+            " font-size: 12px; font-weight: bold; }")
+        self.upload_badge.setText(text)
+        self.upload_badge.adjustSize()
+        m = 10
+        self.upload_badge.move(m, THUMB_SIZE.height() - self.upload_badge.height() - m)
+        self.upload_badge.show()
+        self.upload_badge.raise_()
+
+    def _thumbnail_path(self, video: "library.Video"):
+        cached = video.thumb_cache_path
+        if cached and (self.uploaded_view or video.local_deleted) and Path(cached).exists():
+            return Path(cached)
+        if video.local_deleted:
+            return None
+        return thumbnails.get_thumbnail(video.id, Path(video.path))
+
     def _load_pixmap(self, video: "library.Video") -> QPixmap:
-        thumb_path = thumbnails.get_thumbnail(video.id, Path(video.path))
+        thumb_path = self._thumbnail_path(video)
         radius = self._appearance.rounded_corner_radius if self._appearance.rounded_corners_enabled else 0
         # Decode + smooth-scale + corner-round used to be redone for every
         # card on EVERY refresh (~40% of a whole Library rebuild, measured)
@@ -997,7 +1042,8 @@ class VideoCard(QWidget):
             # video_box (the whole thumbnail area, in this card's own coordinates), not
             # thumb_label.geometry() (which is relative to video_box)
             on_thumbnail = self.video_box.geometry().contains(event.pos())
-            if no_modifiers and on_thumbnail:
+            # the previewer plays the local file: not for the Uploaded tab (double-click plays YouTube's)
+            if no_modifiers and on_thumbnail and not self.uploaded_view and self._video.has_local_file:
                 self._preview_pending = True
                 QTimer.singleShot(250, self._open_preview_if_still_pending)
             event.accept()
@@ -1019,9 +1065,16 @@ class VideoCard(QWidget):
 
     def mouseDoubleClickEvent(self, event) -> None:
         self._preview_pending = False  # cancel the pending single-click preview -- see mousePressEvent
+        if self.uploaded_view:
+            from .upload_queue import upload_queue
+            upload_queue().play(self.video_id)
+            return
         self.edit_requested.emit(self.video_id)
 
     def _show_context_menu(self, pos) -> None:
+        if self.uploaded_view:
+            self._show_uploaded_context_menu(pos)
+            return
         if self._ensure_selected:
             self._ensure_selected(self.video_id)
         target_ids = set(self._get_selected_ids()) if self._get_selected_ids else set()
@@ -1048,7 +1101,21 @@ class VideoCard(QWidget):
         target_videos = [library.get_video(vid) for vid in target_ids]
         all_favorited = all(v.favorite for v in target_videos)
         favorite_action = menu.addAction("Unfavorite" if all_favorited else "Favorite")
-        upload_action = menu.addAction(f"Upload{count_suffix}")
+        not_uploaded = [v for v in target_videos if not v.is_uploaded]
+        show_upload_action = None
+        upload_action = None
+        from . import upload_queue as uq
+        running = [v for v in target_videos if v.upload_state in ("queued", "uploading", "processing")]
+        if running and not multi:
+            show_upload_action = menu.addAction("Show Upload")
+        elif not_uploaded:
+            failed = any(v.upload_state == "failed" for v in not_uploaded)
+            n_up = len(not_uploaded)
+            upload_action = menu.addAction(("Retry Upload" if failed and n_up == 1 else "Upload")
+                                           + (f" ({n_up})" if multi else ""))
+        copy_link_action = None
+        if not multi and target_videos[0].is_uploaded:
+            copy_link_action = menu.addAction("Copy YouTube Link")
 
         filters_menu = self._build_filters_menu(menu, target_ids, target_videos)
         menu.addMenu(filters_menu)
@@ -1092,13 +1159,71 @@ class VideoCard(QWidget):
             self._rename()
         elif chosen == favorite_action:
             self._bulk_set_favorite(target_ids, not all_favorited)
-        elif chosen == upload_action:
-            for vid in target_ids:
-                self.upload_requested.emit(vid)
+        elif upload_action is not None and chosen == upload_action:
+            ids = [v.id for v in not_uploaded]
+            self.upload_many_requested.emit(ids)
+        elif copy_link_action is not None and chosen == copy_link_action:
+            from .uploaded_actions import copy_links
+            copy_links(target_videos)
+        elif show_upload_action is not None and chosen == show_upload_action:
+            job = uq.upload_queue().job_for_video(self.video_id)
+            if job is not None:
+                uq.upload_queue().show_job(job)
         elif chosen == copy_action:
             self._bulk_copy_to_clipboard(target_ids)
         elif chosen == delete_action:
             self._bulk_delete(target_ids)
+
+    def _show_uploaded_context_menu(self, pos) -> None:
+        """The Uploaded tab's menu: the YouTube copy's actions (see uploaded_actions.py)."""
+        from . import uploaded_actions as ua
+        if self._ensure_selected:
+            self._ensure_selected(self.video_id)
+        target_ids = set(self._get_selected_ids()) if self._get_selected_ids else set()
+        if self.video_id not in target_ids:
+            target_ids = {self.video_id}
+        multi = len(target_ids) > 1
+        suffix = f" ({len(target_ids)})" if multi else ""
+        videos = [library.get_video(v) for v in target_ids]
+        menu = _NonClosingMenu(self)
+        menu.setStyleSheet(_menu_stylesheet(self._appearance))
+        play_a = open_a = studio_a = rename_a = None
+        if not multi:
+            play_a = menu.addAction("Play")
+            open_a = menu.addAction("Open on YouTube")
+            studio_a = menu.addAction("Edit in Studio")
+            rename_a = menu.addAction("Rename")
+        copy_a = menu.addAction("Copy Link" + ("s" + suffix if multi else ""))
+        all_fav = all(v.favorite for v in videos)
+        fav_a = menu.addAction("Unfavorite" if all_fav else "Favorite")
+        menu.addMenu(self._build_filters_menu(menu, target_ids, videos))
+        menu.addSeparator()
+        del_a = menu.addAction("Delete from YouTube" + suffix)
+        rm_a = menu.addAction("Remove from afterglow" + suffix)
+        self.context_menu_opened.emit()
+        chosen = menu.exec(self.mapToGlobal(pos))
+        self.context_menu_closed.emit()
+        if chosen is None:
+            return
+        if chosen == play_a:
+            from .upload_queue import upload_queue
+            upload_queue().play(videos[0].id)
+        elif chosen == open_a:
+            ua.open_on_youtube(videos[0])
+        elif chosen == studio_a:
+            ua.edit_in_studio(videos[0], self)
+        elif chosen == rename_a:
+            self._rename()
+        elif chosen == copy_a:
+            ua.copy_links(videos)
+        elif chosen == fav_a:
+            self._bulk_set_favorite(target_ids, not all_fav)
+        elif chosen == del_a:
+            if ua.delete_from_youtube(videos, self):
+                self.tags_changed.emit()
+        elif chosen == rm_a:
+            if ua.remove_from_afterglow(videos, self):
+                self.deleted.emit(self.video_id)
 
     def _build_action_buttons_row(self) -> QWidget:
         """Edit/Copy/Filters/Delete, in that order, as real buttons on
@@ -1128,6 +1253,15 @@ class VideoCard(QWidget):
             ("filters_icon.png", "Filters", self._open_filters_menu_for_self),
             ("delete_icon.png", "Delete", lambda: self._bulk_delete({self.video_id})),
         ]
+        if self.uploaded_view:
+            from . import uploaded_actions as ua
+            actions = [
+                ("edit_icon.png", "Edit in Studio", lambda: ua.edit_in_studio(library.get_video(self.video_id), self)),
+                ("copy_icon.png", "Copy link", lambda: ua.copy_links([library.get_video(self.video_id)])),
+                ("filters_icon.png", "Filters", self._open_filters_menu_for_self),
+                ("delete_icon.png", "Delete from YouTube",
+                 lambda: ua.delete_from_youtube([library.get_video(self.video_id)], self)),
+            ]
         for icon_name, tooltip, handler in actions:
             btn = CustomButton()
             btn.setToolTip(tooltip)
@@ -1311,11 +1445,18 @@ class VideoCard(QWidget):
                 f"Delete {len(target_ids)} videos? This removes the files from disk "
                 "and can't be undone."
             )
+        on_youtube = [vid for vid in target_ids if library.get_video(vid).is_uploaded]
+        if on_youtube:
+            message += (" It stays on YouTube and in Uploaded." if len(target_ids) == 1 else
+                        f" ({len(on_youtube)} of them stay on YouTube and in Uploaded.)")
         if not ask_confirm(self, "Delete Video" if len(target_ids) == 1 else "Delete Videos",
                            message, "Delete", danger=True):
             return
         for vid in target_ids:
-            library.delete_video(vid)
+            if vid in on_youtube:
+                library.delete_local_copy(vid)        # keep the YouTube record
+            else:
+                library.delete_video(vid)
         # One emit regardless of how many were deleted -- the connected
         # slot (_VideoGridTab.refresh, via a lambda that ignores its
         # argument) does a single full refresh either way.

@@ -22,6 +22,8 @@ CONFIG_FILE = CONFIG_DIR / "config.toml"
 
 DEFAULT_CLIPS_DIR = Path.home() / "Videos" / "Clips"
 DEFAULT_SOUNDS_DIR = CONFIG_DIR / "sounds"
+# Non-config state that should survive (the YouTube web profile: cookies / sign-in).
+DATA_DIR = Path(os.environ.get("XDG_DATA_HOME") or (Path.home() / ".local" / "share")) / "afterglow"
 
 
 @dataclass
@@ -40,13 +42,26 @@ class OBSSettings:
 
 @dataclass
 class YouTubeSettings:
-    # Filled in once we build the OAuth flow. Kept here now so the schema
-    # is stable and we don't need a migration later.
-    client_secret_path: str = ""       # path to the OAuth client_secret.json from Google Cloud
-    token_path: str = str(CONFIG_DIR / "youtube_token.json")
-    default_privacy: str = "unlisted"  # "unlisted" | "public" | "private"
-    default_category_id: str = "20"    # YouTube category id, 20 = "Gaming"
-    linked_account_email: str = ""     # informational, shown in Settings UI
+    """Settings > YouTube.  Uploads go through YouTube Studio in an embedded web view (no API: an
+    unaudited API project can only upload private videos -- see afterglow/youtube/__init__.py), so
+    there is no OAuth here; the sign-in lives in the web profile under DATA_DIR/youtube-profile."""
+    default_privacy: str = "unlisted"           # "unlisted" | "public" | "private"
+    # Editable, with placeholders (see youtube/template.py); the default carries the filters as
+    # hashtags, the capture date / time, the length, the file size and the clip type.
+    description_template: str = "{filters}\n\n{clip_type} -- captured {date} {time}\nLength {length} · {size}"
+    # Everything is filled in and Save is pressed automatically; with this on the Studio window
+    # is shown at the last step and the final click is the user's.
+    stop_for_review: bool = False
+    # After YouTube reports the upload complete AND processed (and the video answers publicly),
+    # the local file goes to the system trash -- never erased, never on a failure.
+    delete_local_after_upload: bool = True
+    show_upload_circle: bool = True             # the clip indicator's red circle while uploading
+    upload_circle_color: str = "#ff0033"        # YouTube red, distinct from the fail shake's red
+    upload_done_sound: str = ""
+    upload_error_sound: str = ""
+    # Pause between automated Studio steps (ms) -- the automation clicks at a human pace.
+    step_pause_ms: int = 700
+    account_name: str = ""                      # the signed-in channel, shown in Settings (informational)
 
 
 @dataclass
@@ -377,7 +392,9 @@ def _load_uncached() -> AppSettings:
         raw = tomllib.load(f)
 
     obs = OBSSettings(**raw.get("obs", {}))
-    youtube = YouTubeSettings(**raw.get("youtube", {}))
+    # Only known keys: the pre-Studio OAuth fields (client_secret_path, token_path, ...) are gone.
+    _yt_known = set(YouTubeSettings.__dataclass_fields__)
+    youtube = YouTubeSettings(**{k: v for k, v in raw.get("youtube", {}).items() if k in _yt_known})
     filter_display = FilterDisplaySettings(**raw.get("filter_display", {}))
     # Only known keys: an older / newer build's config.toml must never stop the app (or the
     # daemon) from starting because of a field this build doesn't have.

@@ -2,9 +2,8 @@
 The Settings page (page 1 of 3 in the eventual app). Covers only what's
 needed for the clipping functionality right now, per the current build
 order: OBS connection, clips directory, default sound, and the clip
-options list (name/length/sound/hotkey each). YouTube settings are
-deliberately not shown yet -- those fields already exist in config.py's
-schema but the UI for them comes with the Uploaded Library page later.
+options list (name/length/sound/hotkey each), and the YouTube tab
+(gui/youtube_settings.py: sign-in, upload defaults, the description template).
 
 Save strategy: explicit "Save" button rather than autosave-on-every-
 keystroke. Clip config rows are diffed against the DB on save (added /
@@ -143,6 +142,10 @@ class SettingsPage(QWidget):
 
         self.input_overlay_page = InputOverlaySettingsPage(self._settings)
         _add_settings_tab("Input Overlay", self.input_overlay_page)
+
+        from .youtube_settings import YouTubeSettingsPage
+        self.youtube_page = YouTubeSettingsPage(self._settings)
+        _add_settings_tab("YouTube", self.youtube_page)
 
         advanced_page = QWidget()
         advanced_layout = QVBoxLayout(advanced_page)
@@ -877,13 +880,16 @@ class SettingsPage(QWidget):
                 "overlay_visible_default": cfg.overlay_visible_default, "overlay_offset_ms": cfg.overlay_offset_ms,
                 "overlay_placements": cfg.overlay_placements},
                 indicator={"indicator_colors": cfg.indicator_colors, "indicator_icon_path": cfg.indicator_icon_path,
-                           "indicator_clap_sound": cfg.indicator_clap_sound})
+                           "indicator_clap_sound": cfg.indicator_clap_sound},
+                youtube_playlist=cfg.youtube_playlist)
 
     def _add_row(self, clip_config_id: int | None = None, name: str = "New Clip",
                  length_seconds: int = 30, sound_path: str | None = None,
-                 hotkey: str | None = None, overlay: dict | None = None, indicator: dict | None = None) -> None:
+                 hotkey: str | None = None, overlay: dict | None = None, indicator: dict | None = None,
+                 youtube_playlist: str = "") -> None:
         row = ClipConfigRow(clip_config_id, name, length_seconds, sound_path, hotkey, overlay=overlay,
-                            indicator=indicator, indicator_style_provider=self.indicator_group.style_dict)
+                            indicator=indicator, indicator_style_provider=self.indicator_group.style_dict,
+                            youtube_playlist=youtube_playlist)
         row.delete_requested.connect(lambda: self._remove_row(row))
         # insert before the trailing stretch
         self.rows_layout.insertWidget(self.rows_layout.count() - 1, row)
@@ -989,8 +995,13 @@ class SettingsPage(QWidget):
         a.card_text_outline_color = self.card_text_outline_color_edit.text().strip()
         a.card_text_outline_width = self.card_text_outline_width_spin.value()
 
+        problem = self.youtube_page.validate()
+        if problem:
+            show_message(self, "Invalid Setting", problem)
+            return
         self.input_overlay_page.save_into(self._settings)
         self.indicator_group.save_into(self._settings)
+        self.youtube_page.save_into(self._settings)
         # flipped from the previewer since this page loaded its copy: keep the latest
         self._settings.preview_input_overlay = config_module.load().preview_input_overlay
         config_module.save(self._settings)

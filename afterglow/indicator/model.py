@@ -21,6 +21,10 @@ Per-capture states
   fail        launched into the air, falls off the screen
   gone        finished; removed from the stack
 
+Uploads (YouTube, sent by the GUI) are a separate kind of item: ``upload_start`` puts a red circle
+straight into circle_in (no clapper), ``upload_progress`` keeps it alive, ``upload_done`` fades it
+out with the pulse, ``upload_fail`` gives it the circle_fail shake.
+
 Events (the JSON protocol): start, clap, processing, done, overlay, overlay_done,
 overlay_fail, fail -- see HANDOFF.md for which pipeline moment sends which.  They are
 remembered as flags, so an event that arrives early (OBS can confirm in under 300 ms, i.e.
@@ -31,7 +35,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from . import (ANCHORS, DEFAULT_ANCHOR, ENTER_ANIMATIONS, EXIT_ANIMATIONS, MAX_VISIBLE, PROCESSING_MODES,
-               SCREEN_MODES, STYLES, WATCHDOG, HANDS_FRONT, HANDS_LOOKS, DEFAULT_HANDS_LOOK)
+               SCREEN_MODES, STYLES, WATCHDOG, HANDS_FRONT, HANDS_LOOKS, DEFAULT_HANDS_LOOK, DEFAULT_UPLOAD_COLOR)
 from . import draw
 
 CIRCLE_FADE_IN = 0.200
@@ -73,6 +77,8 @@ class Style:
     throttle: bool = False                   # processing throttle is on: the processing element toggles its bypass
     screen: str = "focused"
     screen_hint: "dict | None" = None        # {"x": .., "y": ..} = centre of the focused window
+    kind: str = "capture"                    # "capture" (the clapper) | "upload" (the red YouTube circle)
+    upload_color: str = DEFAULT_UPLOAD_COLOR
 
     @classmethod
     def from_dict(cls, d: "dict | None") -> "Style":
@@ -100,6 +106,8 @@ class Style:
         s.screen = d.get("screen") if d.get("screen") in SCREEN_MODES else "focused"
         hint = d.get("screen_hint")
         s.screen_hint = dict(hint) if isinstance(hint, dict) else None
+        s.kind = "upload" if d.get("kind") == "upload" else "capture"
+        s.upload_color = str(d.get("upload_color") or DEFAULT_UPLOAD_COLOR)
         return s
 
 
@@ -161,7 +169,7 @@ class Indicator:
         return draw.duration_ms("exit", self.style.exit) / 1000.0
 
 
-TERMINAL_FLAGS = ("done", "overlay_done", "overlay_fail", "fail")
+TERMINAL_FLAGS = ("done", "overlay_done", "overlay_fail", "fail", "upload_fail")
 
 
 class Model:
@@ -202,10 +210,12 @@ class Model:
 
     def event(self, id: str, name: str, now: float, style: "Style | dict | None" = None,
               screen_key: str = "") -> None:
-        if name == "start":
+        if name in ("start", "upload_start"):
             if id in self._inds or id in self._rolled:
                 return
             st = style if isinstance(style, Style) else Style.from_dict(style)
+            if name == "upload_start":
+                st.kind = "upload"
             ind = Indicator(id, st, screen_key, now)
             self._inds[id] = ind
             stack = self._stacks.setdefault((screen_key, st.anchor), [])
@@ -215,9 +225,13 @@ class Model:
         ind = self._inds.get(id)
         if ind is None:
             return
-        if name not in ("clap", "processing", "done", "overlay", "overlay_done", "overlay_fail", "fail"):
+        if name not in ("clap", "processing", "done", "overlay", "overlay_done", "overlay_fail", "fail",
+                        "upload_progress", "upload_done", "upload_fail"):
             return
         ind.last_event = now
+        if name == "upload_progress":
+            return                                   # a heartbeat: just alive
+        name = {"upload_done": "done"}.get(name, name)
         ind.flags.setdefault("clap" if name == "processing" else name, now)
         if ind.state == "queued" and name in TERMINAL_FLAGS:
             self._remove(ind, now)       # never shown, nothing left to show
@@ -306,6 +320,9 @@ class Model:
                 return True
         elif s in ("circle_in", "circle", "cross", "overlay"):
             alpha_now = self._circle_alpha(ind, now)
+            if "upload_fail" in f:                       # an upload circle shakes and fades (no clapper to launch)
+                self._go(ind, "circle_fail", max(ind.t0, f["upload_fail"]))
+                return True
             if "fail" in f:                              # the circle is replaced by the clapper popping back in
                 ind.circle_alpha_start = alpha_now
                 self._go(ind, "popin", max(ind.t0, f["fail"]))
@@ -377,7 +394,11 @@ class Model:
             if ind.state == "queued":
                 if shown >= self.max_visible:
                     continue
-                self._go(ind, "enter", now)
+                if ind.style.kind == "upload":
+                    ind.mix = 0.0
+                    self._go(ind, "circle_in", now)      # no clapper: the red circle fades straight in
+                else:
+                    self._go(ind, "enter", now)
                 ind.slot_from = ind.slot_to = float(shown)       # a new one enters straight into its slot
                 ind.slot_t0 = now
             else:

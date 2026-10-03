@@ -111,6 +111,8 @@ class ClipConfig:
     indicator_colors: dict = field(default_factory=dict)
     indicator_icon_path: str = ""
     indicator_clap_sound: str = ""
+    # YouTube upload: the playlist (by name, as Studio lists it) uploads of this type go into.
+    youtube_playlist: str = ""
 
 
 def _json_or(text, default):
@@ -138,6 +140,8 @@ def _row_to_clip_config(row) -> ClipConfig:
             indicator_icon_path=row["indicator_icon_path"] or "",
             indicator_clap_sound=row["indicator_clap_sound"] or "",
         )
+    if "youtube_playlist" in keys:
+        extra["youtube_playlist"] = row["youtube_playlist"] or ""
     return ClipConfig(
         id=row["id"], name=row["name"], length_seconds=row["length_seconds"],
         sound_path=row["sound_path"], hotkey=row["hotkey"], sort_order=row["sort_order"],
@@ -178,7 +182,8 @@ def update_clip_config(clip_config_id: int, **fields) -> ClipConfig:
     allowed = {"name", "length_seconds", "sound_path", "hotkey", "sort_order",
                "overlay_enabled", "overlay_pieces", "overlay_visible_default",
                "overlay_offset_ms", "overlay_placements",
-               "indicator_colors", "indicator_icon_path", "indicator_clap_sound"}
+               "indicator_colors", "indicator_icon_path", "indicator_clap_sound",
+               "youtube_playlist"}
     bad = set(fields) - allowed
     if bad:
         raise ClipError(f"Unknown fields: {bad}")

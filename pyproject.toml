@@ -19,6 +19,7 @@ afterglow = "afterglow.gui.main:main"
 afterglow-daemon = "afterglow.daemon:main"
 afterglow-cli = "afterglow.cli:main"
 afterglow-indicator = "afterglow.indicator.__main__:main"
+afterglow-youtube = "afterglow.youtube.host:main"
 
 [build-system]
 requires = ["setuptools>=61"]
@@ -34,4 +35,4 @@ include = ["afterglow*"]
 # flake.nix's postInstall, not by the Python package.
 [tool.setuptools.package-data]
 afterglow = ["gui/resources/*.png", "gui/resources/fonts/*.ttf", "gui/resources/fonts/*.md", "gui/resources/fonts/licenses/*",
-             "indicator/resources/*.json.gz"]
+             "indicator/resources/*.json.gz", "youtube/*.json", "youtube/*.js"]

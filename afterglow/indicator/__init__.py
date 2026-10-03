@@ -19,7 +19,14 @@ the daemon (headless) can import `afterglow.indicator` for the constants only.
 from __future__ import annotations
 
 # --- protocol (JSON lines over the helper's socket) -------------------------------
-EVENTS = ("start", "clap", "processing", "done", "overlay", "overlay_done", "overlay_fail", "fail")
+EVENTS = ("start", "clap", "processing", "done", "overlay", "overlay_done", "overlay_fail", "fail",
+          # YouTube upload (sent by the GUI): a red circle from start to finish, no clapper.
+          # upload_progress is a heartbeat (every UPLOAD_HEARTBEAT s) so the watchdog never winds a
+          # long upload down; clicking the circle asks the GUI to show that upload's Studio window.
+          "upload_start", "upload_progress", "upload_done", "upload_fail")
+UPLOAD_EVENTS = ("upload_start", "upload_progress", "upload_done", "upload_fail")
+UPLOAD_HEARTBEAT = 30.0
+DEFAULT_UPLOAD_COLOR = "#ff0033"      # YouTube red; distinct from draw.FAIL_RED so the fail shake still reads
 
 # --- positions ------------------------------------------------------------------
 ANCHORS = ("top_left", "top", "top_right", "left", "right", "bottom_left", "bottom", "bottom_right", "center")

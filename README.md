@@ -16,8 +16,8 @@ Build order, in progress:
    drag handles, live scrub, Local Save / Save & Upload — done.** The
    audio graph editor (per-segment volume/mute/trim/reposition) is still
    next.
-3. YouTube OAuth/upload — after that (Save & Upload currently shows a
-   "not implemented yet" message, same as the Library's Upload action).
+3. **YouTube upload — built** (through YouTube Studio, not the API; see "YouTube upload" below).
+   Tested against a local stand-in for Studio; not yet run against the real YouTube Studio.
 
 ## Clip indicator ("the clapper")
 
@@ -55,18 +55,48 @@ The indicator runs as its own small process (`afterglow-indicator`), started on 
 or the GUI. On Wayland it is a layer-shell overlay (the flake builds the small shim this needs); on X11 it is
 an always-on-top, click-through window. Design and status: `HANDOFF.md`.
 
-## Planned: YouTube unlisted library behavior
+## YouTube upload
 
-The Uploaded tab's local cache and playback behave as follows once
-upload is implemented:
+Uploads go through YouTube Studio running inside afterglow, not the YouTube Data API: videos uploaded
+through an API project that hasn't passed Google's audit are locked to private for good, which rules
+out unlisted uploads.
 
-- Each uploaded video's thumbnail, title, and filters are cached
-  locally and shown directly in the uploaded-library grid, so browsing
-  the uploaded library does not require an API call per video.
-- Double-clicking an uploaded video calls it and embeds playback
-  in-app, falling back to the default system YouTube viewer if
-  in-app embedding isn't available. Playback itself is not served
-  from the local cache -- only the thumbnail/title/filter metadata is.
+- **Sign in once** under Settings > YouTube (Google's own sign-in page, in a window afterglow opens; it
+  closes by itself once Studio opens and shows the channel name). Whichever channel Studio has selected
+  is used.
+- **Upload** from the Library (right-click > Upload; a multi-selection gets one dialog listing every
+  clip), the video previewer's Upload button, or the Advanced Editor's Export > "Export & Upload".
+  The quick dialog has everything filled in and editable: title (the clip's title), description (from an
+  editable template -- by default the filters as hashtags, the clip type, the capture date / time, the
+  length and the file size), playlist (from the clip type: Settings > Clipping > Clip Options >
+  "YouTube playlist"), visibility (unlisted by default).
+- afterglow then works Studio's upload page by itself in a hidden window -- picks the file, fills every
+  field, answers "not made for kids", sets the visibility, waits for the upload to complete, presses
+  Save -- at a human pace. "Stop for review before saving" leaves the last click to you.
+- While it uploads and YouTube processes the video, the clip indicator shows a **red loading circle**
+  (with a small play glyph). Clicking it shows that upload's Studio window. When it's done the circle
+  pulses out and the upload-done sound plays.
+- Once YouTube reports the upload complete and the video really plays (checked through YouTube's public
+  oEmbed endpoint), the clip moves to the **Uploaded** tab and, by default, the local file goes to the
+  **system trash** (recoverable; restoring it to its old place makes the clip local again). With "Delete
+  the local file after uploading" off, the clip shows in both Local and Uploaded.
+- **If something fails** (signed out, Studio changed, network), the circle shakes, the error sound
+  plays and the Studio window opens where it stopped: finish by hand and press "I finished it here", or
+  Retry / Cancel. The local file is never touched on a failure.
+- **Uploaded tab:** each card shows YouTube's thumbnail (cached locally, so browsing makes no requests)
+  and the visibility. Double-click plays it in-app through YouTube's embed player (Open on YouTube is
+  the fallback). Right-click: Play, Open on YouTube, Edit in Studio, Rename, Copy Link, Favorite,
+  Filters, Delete from YouTube (confirmed first, then done in Studio), Remove from afterglow (YouTube
+  untouched).
+- Renaming an uploaded clip or changing its filters asks "Also update it on YouTube?"; yes updates the
+  title and the description (rebuilt from the template, so the hashtags follow the filters).
+- **Upload in browser instead** (in the quick dialog): Studio's upload page opens in your browser, the
+  file's folder opens, title and description are one click from the clipboard, and pasting the finished
+  video's link registers it like any other upload.
+
+The YouTube windows run in their own small process, `afterglow-youtube`, started on demand: uploads
+carry on after the main window is closed, and the main window never loads the web engine (see
+`HANDOFF.md`, "YouTube upload -- BUILT", for why that matters).
 
 ## This delivery: the trim UI
 

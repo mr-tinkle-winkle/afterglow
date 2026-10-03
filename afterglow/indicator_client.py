@@ -34,7 +34,7 @@ import time
 from pathlib import Path
 
 from . import config as config_module
-from .indicator import EVENTS, OVERLAY_TIMEOUT
+from .indicator import EVENTS, OVERLAY_TIMEOUT, UPLOAD_EVENTS
 
 logger = logging.getLogger("afterglow.indicator_client")
 
@@ -247,6 +247,20 @@ def _resolve_start(cid: str, clip_config_id) -> "dict | None":
     return {"id": cid, "event": "start", "style": build_style(settings, clip_cfg, hint)}
 
 
+def _resolve_upload_start(cid: str) -> "dict | None":
+    settings = config_module.load()
+    if not settings.clip_indicator.enabled or not getattr(settings.youtube, "show_upload_circle", True):
+        return None
+    hint = None
+    if settings.clip_indicator.screen == "focused":
+        from .indicator.focus import focused_window_center
+        hint = focused_window_center()
+    style = build_style(settings, None, hint)
+    style["kind"] = "upload"
+    style["upload_color"] = getattr(settings.youtube, "upload_circle_color", "") or "#ff0033"
+    return {"id": cid, "event": "upload_start", "style": style}
+
+
 def _run() -> None:
     assert _queue is not None
     while True:
@@ -258,6 +272,9 @@ def _run() -> None:
             if kind == "start":
                 _, cid, clip_config_id = item
                 msg = _resolve_start(cid, clip_config_id)
+            elif kind == "upload_start":
+                _, cid = item
+                msg = _resolve_upload_start(cid)
             elif kind == "raw":
                 msg = item[1]
             else:
@@ -303,10 +320,25 @@ def begin(clip_config_id=None, settings=None) -> "str | None":
         return None
 
 
+def begin_upload(settings=None) -> "str | None":
+    """A YouTube upload started (GUI): the red circle appears.  None when the indicator or the
+    upload circle is off.  Follow with emit(cid, "upload_progress" | "upload_done" | "upload_fail")."""
+    try:
+        s = settings or config_module.load_readonly()
+        if not enabled(s) or not getattr(s.youtube, "show_upload_circle", True):
+            return None
+        cid = "upload-" + new_id()
+        _put(("upload_start", cid))
+        return cid
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def emit(cid: "str | None", event: str) -> None:
     """Send ``clap`` / ``done`` / ``overlay`` / ``overlay_done`` / ``overlay_fail`` / ``fail`` for a
-    capture.  Never raises, never blocks."""
-    if not cid or event not in EVENTS or event == "start":
+    capture (or ``upload_progress`` / ``upload_done`` / ``upload_fail`` for an upload).  Never
+    raises, never blocks."""
+    if not cid or event not in EVENTS or event in ("start", "upload_start"):
         return
     _put(("raw", {"id": cid, "event": event}))
 

@@ -81,6 +81,16 @@ class IndicatorHelper(QObject):
     def toggle_bypass(self) -> None:
         self.set_bypass(not self.bypass)
 
+    def on_element_click(self, cid=None) -> None:
+        """A click on a clickable element: an upload circle asks the GUI to show that upload's Studio
+        window; a processing element toggles the throttle bypass."""
+        ind = self.model._inds.get(cid) if cid else None
+        if ind is not None and getattr(ind.style, "kind", "capture") == "upload":
+            from ..youtube import gui_socket
+            gui_socket.send({"event": "show_upload", "id": cid})
+            return
+        self.toggle_bypass()
+
     def set_bypass(self, on: bool) -> None:
         self.bypass = bool(on)
         throttle.set_bypass(self.bypass)
@@ -155,9 +165,11 @@ class IndicatorHelper(QObject):
         if event not in EVENTS or not isinstance(cid, str) or not cid:
             logger.warning("ignoring a message with an unknown event or no id: %r", msg)
             return
-        if event == "start":
+        if event in ("start", "upload_start"):
             style = Style.from_dict(msg.get("style"))
-            self.model.event(cid, "start", now, style, screen_key=self._screen_name(style))
+            if event == "upload_start":
+                style.kind = "upload"
+            self.model.event(cid, event, now, style, screen_key=self._screen_name(style))
         else:
             self.model.event(cid, event, now)
         self._log(msg)
@@ -207,7 +219,7 @@ class IndicatorHelper(QObject):
                     if st is None:
                         continue
                     surf = IndicatorSurface(self.model, key, key[1], st.size, st.padding_x, st.padding_y,
-                                            self._screen_obj(key[0]), self.clock, self.layer, on_click=self.toggle_bypass)
+                                            self._screen_obj(key[0]), self.clock, self.layer, on_click=self.on_element_click)
                     surf.present()
                     self.surfaces[key] = surf
         for key in list(self.surfaces):

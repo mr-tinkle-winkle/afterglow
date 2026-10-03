@@ -1,0 +1,111 @@
+{
+  "_comment": [
+    "Every YouTube Studio selector, status text and step afterglow's Studio driver (studio.py) uses.",
+    "A Studio redesign is a fix to THIS file only.  Each selector entry is a list of CSS selectors",
+    "tried in order (the first VISIBLE match wins; shadow roots are searched too).  Text patterns are",
+    "case-insensitive regular expressions.  Studio's UI language changes the status texts: add the",
+    "translations to the pattern lists.  Steps run top to bottom; 'optional' steps that time out are",
+    "skipped, any other step that times out stops the run and shows the Studio window where it",
+    "stopped, so the upload can be finished by hand.",
+    "Step kinds: open, wait, click, real_click_file, read_link, set_text, playlist, radio, next,",
+    "wait_status, review, wait_gone, oauth_check, account_name."
+  ],
+  "version": 1,
+  "upload_url": "https://www.youtube.com/upload",
+  "studio_url": "https://studio.youtube.com/",
+  "edit_url": "https://studio.youtube.com/video/{video_id}/edit",
+  "signin_hosts": ["accounts.google.com", "accounts.youtube.com"],
+  "studio_hosts": ["studio.youtube.com"],
+
+  "selectors": {
+    "select_files_button": ["#select-files-button", "ytcp-uploads-file-picker #select-files-button", "ytcp-uploads-file-picker ytcp-button"],
+    "file_input": ["ytcp-uploads-file-picker input[type=file]", "input[type=file][name=Filedata]", "input[type=file]"],
+    "details_title": ["ytcp-uploads-dialog ytcp-video-title #textbox", "ytcp-uploads-dialog #title-textarea #textbox", "#title-textarea #textbox", "ytcp-video-title #textbox"],
+    "details_description": ["ytcp-uploads-dialog ytcp-video-description #textbox", "ytcp-uploads-dialog #description-textarea #textbox", "#description-textarea #textbox", "ytcp-video-description #textbox"],
+    "video_link": ["ytcp-uploads-dialog .video-url-fadeable a[href]", "ytcp-uploads-dialog a.ytcp-video-info[href]", ".video-url-fadeable a[href]", "a.ytcp-video-info[href]", "ytcp-video-info a[href*='youtu']"],
+    "playlist_trigger": ["ytcp-uploads-dialog ytcp-video-metadata-playlists ytcp-dropdown-trigger", "ytcp-video-metadata-playlists ytcp-dropdown-trigger", "ytcp-video-metadata-playlists ytcp-text-dropdown-trigger", "#basics ytcp-video-metadata-playlists [role=button]"],
+    "playlist_dialog": ["ytcp-playlist-dialog tp-yt-paper-dialog", "ytcp-playlist-dialog #dialog", "ytcp-playlist-dialog"],
+    "playlist_item": ["ytcp-playlist-dialog #items ytcp-ytcp-checkbox-lit", "ytcp-playlist-dialog #items li", "ytcp-playlist-dialog ytcp-checkbox-group ytcp-ytcp-checkbox-lit", "ytcp-playlist-dialog [role=checkbox]", "ytcp-playlist-dialog li"],
+    "playlist_item_label": [".checkbox-label", "span.label", "#label", "label"],
+    "playlist_item_checkbox": ["[role=checkbox]", "#checkbox", "ytcp-checkbox-lit"],
+    "playlist_done": ["ytcp-playlist-dialog .done-button", "ytcp-playlist-dialog ytcp-button.done-button", "ytcp-playlist-dialog #done-button", "ytcp-playlist-dialog ytcp-button[label=Done]"],
+    "not_made_for_kids": ["tp-yt-paper-radio-button[name=VIDEO_MADE_FOR_KIDS_NOT_MFK]", "[name=VIDEO_MADE_FOR_KIDS_NOT_MFK]", "#audience [name=VIDEO_MADE_FOR_KIDS_NOT_MFK]"],
+    "next_button": ["ytcp-uploads-dialog #next-button", "#next-button"],
+    "privacy_radio": ["ytcp-uploads-dialog tp-yt-paper-radio-button[name={PRIVACY}]", "#privacy-radios tp-yt-paper-radio-button[name={PRIVACY}]", "tp-yt-paper-radio-button[name={PRIVACY}]", "[name={PRIVACY}][role=radio]"],
+    "privacy_radios": ["ytcp-uploads-dialog #privacy-radios", "#privacy-radios", "ytcp-video-visibility-select"],
+    "save_button": ["ytcp-uploads-dialog #done-button", "#done-button"],
+    "upload_dialog": ["ytcp-uploads-dialog tp-yt-paper-dialog", "ytcp-uploads-dialog #dialog"],
+    "status_text": ["ytcp-uploads-dialog ytcp-video-upload-progress .progress-label", "ytcp-uploads-dialog .progress-label", "ytcp-video-upload-progress .progress-label", "ytcp-uploads-dialog ytcp-video-upload-progress", ".progress-label"],
+    "error_text": ["ytcp-uploads-dialog .error-short", "ytcp-uploads-dialog .error-area", "ytcp-uploads-dialog #error-message"],
+    "after_save_dialog": ["ytcp-video-share-dialog tp-yt-paper-dialog", "ytcp-uploads-still-processing-dialog tp-yt-paper-dialog", "ytcp-prechecks-warning-dialog tp-yt-paper-dialog", "ytcp-video-share-dialog", "ytcp-uploads-still-processing-dialog"],
+    "after_save_link": ["ytcp-video-share-dialog a[href*='youtu']", "ytcp-uploads-still-processing-dialog a[href*='youtu']", "ytcp-video-share-dialog #share-url"],
+    "after_save_close": ["ytcp-video-share-dialog #close-button", "ytcp-uploads-still-processing-dialog #close-button", "ytcp-prechecks-warning-dialog #primary-action-button", "ytcp-video-share-dialog ytcp-button#close-button", "ytcp-uploads-still-processing-dialog ytcp-button"],
+    "edit_title": ["ytcp-video-metadata-editor ytcp-video-title #textbox", "#title-textarea #textbox", "ytcp-video-title #textbox"],
+    "edit_description": ["ytcp-video-metadata-editor ytcp-video-description #textbox", "#description-textarea #textbox", "ytcp-video-description #textbox"],
+    "edit_save": ["ytcp-video-details-section #save", "#save", "ytcp-button#save"],
+    "edit_save_disabled": ["#save[disabled]", "ytcp-button#save[disabled]", "#save[aria-disabled=true]"],
+    "edit_overflow": ["ytcp-video-details-section #overflow-menu-button", "#overflow-menu-button", "ytcp-video-details-section ytcp-icon-button[aria-label=Options]", "ytcp-icon-button#overflow-menu-button"],
+    "menu_item": ["tp-yt-paper-listbox tp-yt-paper-item", "ytcp-text-menu tp-yt-paper-item", "tp-yt-paper-item", "[role=menuitem]", "[role=option]"],
+    "confirm_dialog": ["ytcp-confirmation-dialog tp-yt-paper-dialog", "ytcp-confirmation-dialog"],
+    "confirm_checkbox": ["ytcp-confirmation-dialog #confirm-checkbox", "ytcp-confirmation-dialog ytcp-checkbox-lit", "ytcp-confirmation-dialog [role=checkbox]"],
+    "confirm_button": ["ytcp-confirmation-dialog #confirm-button", "ytcp-confirmation-dialog ytcp-button#confirm-button"],
+    "account_name": ["ytcp-navigation-drawer #entity-name", "#entity-name", "ytcp-navigation-drawer #channel-title", "#channel-title"],
+    "studio_ready": ["ytcp-app", "ytcp-navigation-drawer", "#select-files-button", "ytcp-uploads-file-picker"]
+  },
+
+  "status": {
+    "progress_percent": "(\\d{1,3})\\s*%",
+    "uploading": ["^\\s*uploading", "\\d{1,3}\\s*%\\s*(uploaded|done)"],
+    "uploaded": ["upload complete", "uploaded", "processing", "checks complete", "checking", "processing will begin"],
+    "processed": ["checks complete", "processing (up to )?hd", "processing hd", "processing (up to )?\\d+p", "processing complete", "no issues found", "sd processing complete"],
+    "error": ["upload (failed|limit)", "daily upload limit", "limit reached", "processing abandoned", "couldn.t (upload|process)", "network error", "upload error", "error"]
+  },
+
+  "playlist_none_texts": ["", "select"],
+  "delete_menu_texts": ["delete forever", "delete"],
+
+  "flows": {
+    "upload": [
+      {"id": "open",        "kind": "open",            "url": "upload_url", "timeout": 45000},
+      {"id": "file_picker", "kind": "wait",            "sel": "select_files_button", "timeout": 45000},
+      {"id": "choose_file", "kind": "real_click_file", "sel": "select_files_button", "then": "details_title", "timeout": 60000},
+      {"id": "link",        "kind": "read_link",       "sel": "video_link", "timeout": 60000, "optional": true},
+      {"id": "title",       "kind": "set_text",        "sel": "details_title", "value": "title", "timeout": 20000},
+      {"id": "description", "kind": "set_text",        "sel": "details_description", "value": "description", "timeout": 20000},
+      {"id": "playlist",    "kind": "playlist",        "timeout": 20000},
+      {"id": "kids",        "kind": "radio",           "sel": "not_made_for_kids", "timeout": 20000},
+      {"id": "next_1",      "kind": "next",            "sel": "next_button", "timeout": 20000},
+      {"id": "next_2",      "kind": "next",            "sel": "next_button", "timeout": 20000},
+      {"id": "next_3",      "kind": "next",            "sel": "next_button", "timeout": 20000},
+      {"id": "privacy",     "kind": "radio",           "sel": "privacy_radio", "privacy": true, "timeout": 20000},
+      {"id": "link_again",  "kind": "read_link",       "sel": "video_link", "timeout": 5000, "optional": true},
+      {"id": "uploaded",    "kind": "wait_status",     "until": "uploaded", "timeout": 21600000},
+      {"id": "review",      "kind": "review",          "sel": "save_button"},
+      {"id": "save",        "kind": "click",           "sel": "save_button", "timeout": 20000},
+      {"id": "saved",       "kind": "wait_gone",       "sel": "upload_dialog", "timeout": 60000, "optional": true},
+      {"id": "share_link",  "kind": "read_link",       "sel": "after_save_link", "timeout": 8000, "optional": true},
+      {"id": "close_share", "kind": "click",           "sel": "after_save_close", "timeout": 8000, "optional": true}
+    ],
+    "edit": [
+      {"id": "open",        "kind": "open",     "url": "edit_url", "timeout": 45000},
+      {"id": "title",       "kind": "set_text", "sel": "edit_title", "value": "title", "timeout": 30000},
+      {"id": "description", "kind": "set_text", "sel": "edit_description", "value": "description", "timeout": 20000},
+      {"id": "save",        "kind": "click",    "sel": "edit_save", "timeout": 20000},
+      {"id": "saved",       "kind": "wait",     "sel": "edit_save_disabled", "timeout": 30000, "optional": true}
+    ],
+    "delete": [
+      {"id": "open",        "kind": "open",     "url": "edit_url", "timeout": 45000},
+      {"id": "menu",        "kind": "click",    "sel": "edit_overflow", "timeout": 30000},
+      {"id": "delete_item", "kind": "menu",     "sel": "menu_item", "texts": "delete_menu_texts", "timeout": 10000},
+      {"id": "dialog",      "kind": "wait",     "sel": "confirm_dialog", "timeout": 15000},
+      {"id": "understand",  "kind": "click",    "sel": "confirm_checkbox", "timeout": 10000},
+      {"id": "confirm",     "kind": "click",    "sel": "confirm_button", "timeout": 10000},
+      {"id": "gone",        "kind": "wait_gone","sel": "confirm_dialog", "timeout": 30000, "optional": true}
+    ],
+    "account": [
+      {"id": "open",        "kind": "open",         "url": "studio_url", "timeout": 45000},
+      {"id": "ready",       "kind": "wait",         "sel": "studio_ready", "timeout": 30000},
+      {"id": "name",        "kind": "account_name", "sel": "account_name", "timeout": 15000, "optional": true}
+    ]
+  }
+}

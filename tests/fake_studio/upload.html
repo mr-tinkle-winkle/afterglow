@@ -1,0 +1,146 @@
+<!doctype html>
+<!-- A stand-in for YouTube Studio's upload dialog: same element names / ids / attributes as the
+     selectors in afterglow/youtube/studio_steps.json, behaving the same way (file picker behind a
+     button, contenteditable title / description prefilled from the file name, a playlist dialog,
+     made-for-kids radios, three Next pages, visibility radios, a progress label that walks
+     through "Uploading N%" -> "Upload complete" -> "Checks complete", Save, then a share dialog).
+     Query: ?fail=<step> makes that control never appear; ?slow=1 slows the upload; ?error=1 makes
+     the upload report an error. window.__fake holds what was entered, for the tests. -->
+<html><head><meta charset="utf-8"><title>Fake Studio</title>
+<style>
+  body { font-family: sans-serif; margin: 0; }
+  ytcp-app, ytcp-uploads-dialog, ytcp-uploads-file-picker, tp-yt-paper-dialog, ytcp-video-title,
+  ytcp-video-description, ytcp-video-metadata-playlists, ytcp-playlist-dialog, ytcp-video-upload-progress,
+  ytcp-video-share-dialog, ytcp-navigation-drawer, ytcp-video-info, #privacy-radios, #audience { display: block; }
+  ytcp-button, ytcp-dropdown-trigger, tp-yt-paper-radio-button, ytcp-ytcp-checkbox-lit { display: inline-block;
+    padding: 8px 14px; margin: 4px; border: 1px solid #888; cursor: pointer; min-width: 60px; }
+  [hidden] { display: none !important; }
+  #textbox { border: 1px solid #aaa; min-height: 24px; padding: 4px; white-space: pre-wrap; }
+  tp-yt-paper-radio-button[checked] { background: #cde; }
+  ytcp-ytcp-checkbox-lit[checked] { background: #cde; }
+</style></head>
+<body>
+<ytcp-app>
+  <ytcp-navigation-drawer><span id="entity-name">Fake Channel</span></ytcp-navigation-drawer>
+  <ytcp-uploads-file-picker id="picker">
+    <ytcp-button id="select-files-button">Select files</ytcp-button>
+    <input type="file" name="Filedata" style="display:none">
+  </ytcp-uploads-file-picker>
+
+  <ytcp-uploads-dialog hidden id="uploads">
+    <tp-yt-paper-dialog id="dialog">
+      <div id="page-1">
+        <ytcp-video-title><div id="textbox" contenteditable="true"></div></ytcp-video-title>
+        <ytcp-video-description><div id="textbox" contenteditable="true"></div></ytcp-video-description>
+        <ytcp-video-metadata-playlists><ytcp-dropdown-trigger>Select</ytcp-dropdown-trigger></ytcp-video-metadata-playlists>
+        <div id="audience">
+          <tp-yt-paper-radio-button name="VIDEO_MADE_FOR_KIDS_MFK">Yes, it's made for kids</tp-yt-paper-radio-button>
+          <tp-yt-paper-radio-button name="VIDEO_MADE_FOR_KIDS_NOT_MFK">No, it's not made for kids</tp-yt-paper-radio-button>
+        </div>
+      </div>
+      <div id="page-4" hidden>
+        <div id="privacy-radios">
+          <tp-yt-paper-radio-button name="PRIVATE">Private</tp-yt-paper-radio-button>
+          <tp-yt-paper-radio-button name="UNLISTED">Unlisted</tp-yt-paper-radio-button>
+          <tp-yt-paper-radio-button name="PUBLIC">Public</tp-yt-paper-radio-button>
+        </div>
+      </div>
+      <ytcp-video-info><span class="video-url-fadeable"></span></ytcp-video-info>
+      <ytcp-video-upload-progress><span class="progress-label">Uploading 0%</span></ytcp-video-upload-progress>
+      <ytcp-button id="next-button">Next</ytcp-button>
+      <ytcp-button id="done-button" hidden>Save</ytcp-button>
+    </tp-yt-paper-dialog>
+  </ytcp-uploads-dialog>
+
+  <ytcp-playlist-dialog hidden id="pl">
+    <tp-yt-paper-dialog>
+      <ul id="items">
+        <li><ytcp-ytcp-checkbox-lit role="checkbox" aria-checked="false"></ytcp-ytcp-checkbox-lit><span class="checkbox-label">Highlights</span></li>
+        <li><ytcp-ytcp-checkbox-lit role="checkbox" aria-checked="false"></ytcp-ytcp-checkbox-lit><span class="checkbox-label">Valorant Clips</span></li>
+      </ul>
+      <ytcp-button class="done-button">Done</ytcp-button>
+    </tp-yt-paper-dialog>
+  </ytcp-playlist-dialog>
+
+  <ytcp-video-share-dialog hidden id="share">
+    <tp-yt-paper-dialog>
+      Video saved <a id="share-url" href=""></a>
+      <ytcp-button id="close-button">Close</ytcp-button>
+    </tp-yt-paper-dialog>
+  </ytcp-video-share-dialog>
+</ytcp-app>
+<script>
+const params = new URLSearchParams(location.search);
+const failAt = params.get("fail") || "";
+const VID = params.get("vid") || "FAKEvid1234";
+window.__fake = {file: null, title: null, description: null, playlists: [], kids: null, privacy: null,
+                 saved: false, closed: false, page: 1};
+const $ = s => document.querySelector(s);
+const picker = $("#picker"), input = picker.querySelector("input");
+if (failAt === "picker") $("#select-files-button").hidden = true;
+$("#select-files-button").addEventListener("click", () => input.click());
+let pct = 0, uploadTimer = null;
+input.addEventListener("change", () => {
+  const f = input.files[0];
+  window.__fake.file = f ? f.name : null;
+  picker.hidden = true;
+  $("#uploads").hidden = false;
+  const title = document.querySelector("ytcp-video-title #textbox");
+  title.textContent = f ? f.name.replace(/\.[^.]+$/, "") : "";
+  setTimeout(() => {
+    const a = document.createElement("a");
+    a.className = "ytcp-video-info"; a.href = "https://youtu.be/" + VID; a.textContent = "https://youtu.be/" + VID;
+    document.querySelector(".video-url-fadeable").appendChild(a);
+  }, 600);
+  const step = params.get("slow") ? 4 : 25;
+  uploadTimer = setInterval(() => {
+    const label = document.querySelector(".progress-label");
+    if (params.get("error") && pct >= 50) { label.textContent = "Upload failed: network error"; return; }
+    pct = Math.min(100, pct + step);
+    if (pct < 100) label.textContent = `Uploading ${pct}% ... 1 minute left`;
+    else if (label.textContent.startsWith("Uploading")) label.textContent = "Upload complete ... Processing will begin shortly";
+    else { label.textContent = "Checks complete. No issues found."; clearInterval(uploadTimer); }
+  }, 400);
+});
+for (const r of document.querySelectorAll("tp-yt-paper-radio-button")) {
+  r.addEventListener("click", () => {
+    for (const o of r.parentElement.querySelectorAll("tp-yt-paper-radio-button")) o.removeAttribute("checked");
+    r.setAttribute("checked", "");
+    if (r.getAttribute("name").startsWith("VIDEO_MADE")) window.__fake.kids = r.getAttribute("name");
+    else window.__fake.privacy = r.getAttribute("name");
+  });
+}
+if (failAt === "privacy") document.querySelector("#privacy-radios").remove();
+document.querySelector("ytcp-dropdown-trigger").addEventListener("click", () => { $("#pl").hidden = false; });
+for (const li of document.querySelectorAll("#items li")) {
+  li.querySelector("ytcp-ytcp-checkbox-lit").addEventListener("click", ev => {
+    const box = ev.currentTarget;
+    const on = box.getAttribute("aria-checked") !== "true";
+    box.setAttribute("aria-checked", on ? "true" : "false");
+    if (on) box.setAttribute("checked", ""); else box.removeAttribute("checked");
+  });
+}
+document.querySelector("#pl .done-button").addEventListener("click", () => {
+  window.__fake.playlists = Array.from(document.querySelectorAll("#items li"))
+    .filter(li => li.querySelector("ytcp-ytcp-checkbox-lit").getAttribute("aria-checked") === "true")
+    .map(li => li.querySelector(".checkbox-label").textContent);
+  $("#pl").hidden = true;
+});
+$("#next-button").addEventListener("click", () => {
+  window.__fake.page += 1;
+  if (window.__fake.page >= 4) {
+    $("#page-1").hidden = true; $("#page-4").hidden = false;
+    $("#next-button").hidden = true; $("#done-button").hidden = false;
+  }
+});
+$("#done-button").addEventListener("click", () => {
+  window.__fake.title = document.querySelector("ytcp-video-title #textbox").innerText;
+  window.__fake.description = document.querySelector("ytcp-video-description #textbox").innerText;
+  window.__fake.saved = true;
+  $("#uploads").hidden = true;
+  const s = $("#share"); s.hidden = false;
+  const a = $("#share-url"); a.href = "https://youtu.be/" + VID; a.textContent = a.href;
+});
+$("#close-button").addEventListener("click", () => { $("#share").hidden = true; window.__fake.closed = true; });
+</script>
+</body></html>

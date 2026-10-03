@@ -145,6 +145,11 @@
             # Advanced Editor preview audio (QAudioSink). Without it the
             # preview still plays, just silently.
             pkgs.qt6.qtmultimedia
+            # YouTube upload: YouTube Studio runs in an embedded web view
+            # (afterglow/youtube/). PySide6's QtWebEngine bindings come from
+            # the same nixpkgs pyside6; this puts the engine (resources,
+            # locales, QtWebEngineProcess) in the closure for wrapQtApp.
+            pkgs.qt6.qtwebengine
           ];
 
           propagatedBuildInputs = with python.pkgs; [
@@ -207,12 +212,13 @@
           # gracefully (those rules just never match, logged once) rather
           # than crashing, but needed for that feature to actually work.
           postFixup = ''
-            for prog in afterglow afterglow-daemon afterglow-cli afterglow-indicator; do
+            for prog in afterglow afterglow-daemon afterglow-cli afterglow-indicator afterglow-youtube; do
               wrapQtApp "$out/bin/$prog"
               wrapProgram "$out/bin/$prog" \
                 --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.ffmpeg pkgs.pipewire pkgs.pulseaudio pkgs.kdotool ]} \
                 --prefix LD_LIBRARY_PATH : ${pkgs.lib.makeLibraryPath [ pkgs.mpv-unwrapped ]} \
-                --set-default AFTERGLOW_LAYERSHELL_LIB ${layerShell}/lib/libafterglow_layershell.so
+                --set-default AFTERGLOW_LAYERSHELL_LIB ${layerShell}/lib/libafterglow_layershell.so \
+                --set-default QTWEBENGINEPROCESS_PATH ${pkgs.qt6.qtwebengine}/libexec/QtWebEngineProcess
             done
           '';
 
@@ -262,6 +268,7 @@
               pkgs.qt6.qtbase
               pkgs.qt6.qtwayland
               pkgs.qt6.qtmultimedia
+              pkgs.qt6.qtwebengine
               pkgs.mpv-unwrapped
               pkgs.kdotool
             ];
@@ -272,6 +279,7 @@
             shellHook = ''
               export QT_PLUGIN_PATH="${pkgs.qt6.qtbase}/lib/qt-6/plugins:${pkgs.qt6.qtwayland}/lib/qt-6/plugins:${pkgs.qt6.qtmultimedia}/lib/qt-6/plugins''${QT_PLUGIN_PATH:+:$QT_PLUGIN_PATH}"
               export LD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath [ pkgs.mpv-unwrapped ]}''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+              export QTWEBENGINEPROCESS_PATH="${pkgs.qt6.qtwebengine}/libexec/QtWebEngineProcess"
               echo "afterglow dev shell (via flake). Try: python -m afterglow.cli settings show"
             '';
           };

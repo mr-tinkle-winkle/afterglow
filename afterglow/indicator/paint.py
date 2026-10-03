@@ -42,7 +42,11 @@ class StackPainter:
         """Where the processing element of a capture is (the loading circle, or the item itself in
         "stay" mode) when it can be clicked to toggle the throttle bypass, else None."""
         from .model import PROCESSING_STATES
-        if not getattr(style, "throttle", False) or fr.state not in PROCESSING_STATES:
+        upload = getattr(style, "kind", "capture") == "upload"
+        if upload:
+            if fr.state not in ("circle_in", "circle") or fr.circle_alpha < 0.3:
+                return None                     # an upload circle is clickable while it runs: shows its Studio window
+        elif not getattr(style, "throttle", False) or fr.state not in PROCESSING_STATES:
             return None
         rect = layout.slot_rect(self.anchor, self.size, self.pad_x, self.pad_y, fr.slot, self.surface)
         if fr.state == "stay":
@@ -59,14 +63,37 @@ class StackPainter:
         return QRectF(c.x() + fr.circle_dx - dia / 2, c.y() - dia / 2, dia, dia)
 
     def click_rects(self, model, key, now: float) -> "list[QRectF]":
+        return [r for r, _id in self.click_targets(model, key, now)]
+
+    def click_targets(self, model, key, now: float) -> "list[tuple[QRectF, str]]":
+        """(rect, capture id) of every clickable element."""
         out = []
         for fr in model.frames(key, now):
             ind = model._inds.get(fr.id)
             if ind is not None:
                 r = self.element_rect(ind.style, fr)
                 if r is not None:
-                    out.append(r)
+                    out.append((r, fr.id))
         return out
+
+    @staticmethod
+    def paint_play_glyph(p: QPainter, centre: QPointF, dia: float, opacity: float, alpha: float) -> None:
+        """A small white play triangle inside an upload circle: it reads as "YouTube", not "clip"."""
+        a = max(0.0, min(1.0, alpha)) * max(0.35, min(1.0, opacity + 0.25))
+        if a <= 0.01:
+            return
+        s = dia * 0.22
+        path = QPainterPath()
+        path.moveTo(centre.x() - s * 0.42, centre.y() - s * 0.5)
+        path.lineTo(centre.x() + s * 0.58, centre.y())
+        path.lineTo(centre.x() - s * 0.42, centre.y() + s * 0.5)
+        path.closeSubpath()
+        p.save()
+        p.setOpacity(p.opacity() * a)
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(255, 255, 255))
+        p.drawPath(path)
+        p.restore()
 
     def paint_throttle_label(self, p: QPainter, r: QRectF) -> None:
         """"THROTTLING = OFF" just above a processing element."""
@@ -126,6 +153,11 @@ class StackPainter:
             if not purple.isValid():
                 purple = QColor(draw.DEFAULT_OVERLAY_CIRCLE_COLOR)
             col = draw.mix(gray, purple, fr.circle_mix)
+            is_upload = getattr(style, "kind", "capture") == "upload"
+            if is_upload:
+                col = QColor(getattr(style, "upload_color", "") or "#ff0033")
+                if not col.isValid():
+                    col = QColor("#ff0033")
             if fr.circle_red > 0:
                 col = draw.mix(col, QColor(draw.FAIL_RED), fr.circle_red)
             c = rect.center()
@@ -134,7 +166,9 @@ class StackPainter:
             draw.draw_circle(p, centre, dia * draw.pulse_scale(fr.circle_pulse),
                              fr.circle_angle, col, style.circle_opacity, fr.circle_alpha)
             draw.draw_halo(p, centre, dia, col, fr.circle_pulse, style.circle_opacity, fr.circle_alpha)
-        if self.bypass:
+            if is_upload:
+                self.paint_play_glyph(p, centre, dia, style.circle_opacity, fr.circle_alpha)
+        if self.bypass and getattr(style, "kind", "capture") != "upload":
             r = self.element_rect(style, fr)
             if r is not None:
                 self.paint_throttle_label(p, r)

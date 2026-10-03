@@ -5,8 +5,8 @@ thumbnail grid of matching videos.
 
 Local and Uploaded share almost all of their behavior (same search/filter/
 grid mechanics), differing only in which videos they show (local_only vs
-uploaded_only) and that Uploaded has no real content yet since YouTube
-upload isn't implemented -- so both are built from one reusable
+uploaded_only; Uploaded cards act on the YouTube copy -- see
+uploaded_actions.py) -- so both are built from one reusable
 _VideoGridTab, parameterized by that filter, rather than duplicating the
 grid/search/filter wiring twice.
 """
@@ -376,7 +376,7 @@ class _VideoGridTab(QWidget):
         self.scroll.setWidget(self.grid_container)
         outer.addWidget(self.scroll, stretch=1)
 
-        self.empty_label = QLabel("No clips yet.")
+        self.empty_label = QLabel("Nothing uploaded yet -- right-click a clip in Local and choose Upload." if uploaded_only else "No clips yet.")
         self.empty_label.setAlignment(Qt.AlignCenter)
         outer.addWidget(self.empty_label)
 
@@ -784,7 +784,8 @@ class _VideoGridTab(QWidget):
                 mtime = None
             rows.append((v.id, v.path, mtime, v.title, v.description, v.duration_sec, v.created_at,
                          v.has_edit, v.backup_path, v.youtube_video_id, v.youtube_privacy,
-                         tuple(v.tags), v.favorite, v.clip_config_id))
+                         tuple(v.tags), v.favorite, v.clip_config_id, v.upload_state, v.upload_error,
+                         v.thumb_cache_path, v.local_deleted, v.youtube_title))
         return (
             tuple(rows),
             tuple(sorted(library.tag_icons().items())),
@@ -854,6 +855,7 @@ class _VideoGridTab(QWidget):
             get_selected_ids=lambda: self._selected_ids,
             ensure_selected=self._ensure_selected_for_context_menu,
             neighbor_provider=self.neighbors,
+            uploaded_view=self._uploaded_only,
         )
         card.edit_requested.connect(self.edit_requested.emit)
         card.preview_requested.connect(self.preview_requested.emit)
@@ -863,6 +865,7 @@ class _VideoGridTab(QWidget):
         card.context_menu_opened.connect(self._on_context_menu_opened)
         card.context_menu_closed.connect(self._on_context_menu_closed)
         card.upload_requested.connect(self._handle_upload_request)
+        card.upload_many_requested.connect(self._handle_upload_many)
         card.filter_left_clicked.connect(self._on_icon_left_clicked)
         card.filter_right_clicked.connect(self._on_icon_right_clicked)
         card.clicked.connect(self._on_card_clicked)
@@ -982,11 +985,28 @@ class _VideoGridTab(QWidget):
             self._relayout(columns)
 
     def _handle_upload_request(self, video_id: int) -> None:
-        show_message(
-            self, "Not Implemented Yet",
-            "YouTube upload is coming in the next build phase (OAuth setup "
-            "isn't wired up yet).",
-        )
+        self._handle_upload_many([video_id])
+
+    def _handle_upload_many(self, video_ids: list) -> None:
+        """Library right-click "Upload" (one clip or the whole multi-selection): ONE quick dialog,
+        then the uploads run one after another in the background (gui/upload_queue.py)."""
+        from .upload_dialog import start_upload
+        videos = []
+        for vid in video_ids:
+            try:
+                videos.append(library.get_video(vid))
+            except library.LibraryError:
+                pass
+        if start_upload(videos, self.window()):
+            self.refresh()
+
+    def refresh_upload_badges(self) -> None:
+        """Live upload progress on the cards (the queue's changed signal) -- no grid rebuild."""
+        for card in self._cards:
+            try:
+                card.refresh_upload_badge()
+            except RuntimeError:
+                pass
 
 
 class LibraryPage(QWidget):
@@ -1201,6 +1221,18 @@ class LibraryPage(QWidget):
         self._refresh_debounce.setSingleShot(True)
         self._refresh_debounce.setInterval(400)
         self._refresh_debounce.timeout.connect(self.refresh)
+
+        # Upload progress on the cards: the queue's changed signal updates the badges in place.
+        from .upload_queue import upload_queue
+        self._badge_timer = QTimer(self)
+        self._badge_timer.setSingleShot(True)
+        self._badge_timer.setInterval(150)
+        self._badge_timer.timeout.connect(self._refresh_badges)
+        upload_queue().changed.connect(self._badge_timer.start)
+
+    def _refresh_badges(self) -> None:
+        self.local_tab.refresh_upload_badges()
+        self.uploaded_tab.refresh_upload_badges()
 
     # ------------------------------------------------------------ page switching
 

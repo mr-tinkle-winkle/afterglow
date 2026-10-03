@@ -68,13 +68,61 @@ class Video:
     youtube_privacy: str | None
     tags: list[str]
     favorite: bool = False
+    # YouTube upload (see afterglow/youtube/ and db.py's column comments)
+    upload_state: str | None = None
+    upload_error: str | None = None
+    youtube_pending_id: str | None = None
+    uploaded_at: str | None = None
+    youtube_title: str | None = None
+    youtube_description: str | None = None
+    youtube_playlist: str | None = None
+    thumb_cache_path: str | None = None
+    file_size_bytes: int | None = None
+    local_deleted: bool = False
 
     @property
     def path_obj(self) -> Path:
         return Path(self.path)
 
+    @property
+    def is_uploaded(self) -> bool:
+        """On YouTube and finished (shown in the Uploaded tab)."""
+        return bool(self.youtube_video_id) and (self.upload_state in (None, "done"))
+
+    @property
+    def has_local_file(self) -> bool:
+        """The clip's file is still in the library (shown in the Local tab)."""
+        return not self.local_deleted
+
+    @property
+    def youtube_url(self) -> str | None:
+        return f"https://youtu.be/{self.youtube_video_id}" if self.youtube_video_id else None
+
+
+# Called with (video_id, kind) after a user-visible metadata change -- kind is "title" or "tags".
+# The GUI registers one (gui/youtube_sync.py) to offer pushing the change to an uploaded clip's
+# YouTube copy; nothing registers in the daemon / CLI, so their changes never prompt.
+metadata_listeners: "list" = []
+
+
+def _notify_metadata(video_id: int, kind: str) -> None:
+    for fn in list(metadata_listeners):
+        try:
+            fn(video_id, kind)
+        except Exception:  # noqa: BLE001 -- a listener must never break a library write
+            import logging
+            logging.getLogger("afterglow").exception("metadata listener failed")
+
+
+_UPLOAD_FIELDS = ("upload_state", "upload_error", "youtube_pending_id", "uploaded_at", "youtube_title",
+                  "youtube_description", "youtube_playlist", "thumb_cache_path", "file_size_bytes")
+
 
 def _row_to_video(row: sqlite3.Row, tags: list[str]) -> Video:
+    keys = row.keys()
+    extra = {k: row[k] for k in _UPLOAD_FIELDS if k in keys}
+    if "local_deleted" in keys:
+        extra["local_deleted"] = bool(row["local_deleted"])
     return Video(
         id=row["id"], filename=row["filename"], path=row["path"],
         title=row["title"], description=row["description"],
@@ -82,7 +130,7 @@ def _row_to_video(row: sqlite3.Row, tags: list[str]) -> Video:
         clip_config_id=row["clip_config_id"], has_edit=bool(row["has_edit"]),
         backup_path=row["backup_path"], youtube_video_id=row["youtube_video_id"],
         youtube_privacy=row["youtube_privacy"], tags=tags,
-        favorite=bool(row["favorite"]),
+        favorite=bool(row["favorite"]), **extra,
     )
 
 
@@ -121,6 +169,7 @@ def add_video(path: Path, title: str, description: str = "",
     # what the filesystem itself still remembers.
     now = created_at or datetime.now(timezone.utc).isoformat()
     with db.get_conn() as conn:
+        _free_path_of_uploaded_record(conn, path)
         cur = conn.execute(
             """INSERT INTO videos (filename, path, title, description, duration_sec,
                                     created_at, clip_config_id, has_edit)
@@ -130,6 +179,16 @@ def add_video(path: Path, title: str, description: str = "",
         video_id = cur.lastrowid
         row = conn.execute("SELECT * FROM videos WHERE id = ?", (video_id,)).fetchone()
         return _row_to_video(row, [])
+
+
+def _free_path_of_uploaded_record(conn: sqlite3.Connection, path: Path) -> None:
+    """An uploaded clip whose local file went to the trash keeps its row (the Uploaded tab) and its
+    old path.  A NEW file later created at that same path (same title, or restored and re-captured)
+    must not collide with it (videos.path is UNIQUE), so the old row's path is renamed to a
+    tombstone that can never exist on disk."""
+    row = conn.execute("SELECT id FROM videos WHERE path = ? AND local_deleted = 1", (str(path),)).fetchone()
+    if row is not None:
+        conn.execute("UPDATE videos SET path = ? WHERE id = ?", (f"{path}#uploaded-{row['id']}", row["id"]))
 
 
 # ---------------------------------------------------------------- read/list
@@ -226,10 +285,12 @@ def list_videos(tag_filter: list[str] | None = None, uploaded_only: bool = False
 
         if favorite_only:
             conditions.append("v.favorite = 1")
+        # Uploaded = finished on YouTube.  Local = the file is still here -- an uploaded clip whose
+        # file was kept shows in BOTH (with "Delete the local file after uploading" off).
         if uploaded_only:
-            conditions.append("v.youtube_video_id IS NOT NULL")
+            conditions.append("v.youtube_video_id IS NOT NULL AND COALESCE(v.upload_state, 'done') = 'done'")
         if local_only:
-            conditions.append("v.youtube_video_id IS NULL")
+            conditions.append("COALESCE(v.local_deleted, 0) = 0")
         if search:
             conditions.append("(v.title LIKE ? COLLATE NOCASE OR v.description LIKE ? COLLATE NOCASE)")
             like_term = f"%{search}%"
@@ -303,6 +364,10 @@ def write_library_manifest() -> None:
                     "favorite": v.favorite,
                     "has_edit": v.has_edit,
                     "tags": v.tags,
+                    "youtube_video_id": v.youtube_video_id,
+                    "youtube_privacy": v.youtube_privacy,
+                    "uploaded_at": v.uploaded_at,
+                    "local_deleted": v.local_deleted,
                 }
                 for v in videos
             ],
@@ -470,6 +535,8 @@ def rename_video(video_id: int, title: str | None = None, description: str | Non
     # has actually exited/committed, so this has to happen after it,
     # not inside it.
     write_library_manifest()
+    if title is not None and title != row["title"]:
+        _notify_metadata(video_id, "title")
     if new_path_str != row["path"]:
         # Keep an Advanced Editor project for this clip pointing at the
         # renamed file (its unrendered edits read from the live file).
@@ -486,7 +553,7 @@ def delete_video(video_id: int, delete_file: bool = True) -> None:
     with db.get_conn() as conn:
         conn.execute("DELETE FROM videos WHERE id = ?", (video_id,))
     write_library_manifest()
-    if delete_file:
+    if delete_file and not video.local_deleted:
         p = Path(video.path)
         if p.exists():
             p.unlink()
@@ -539,7 +606,8 @@ def prune_missing_videos() -> list[int]:
     PRUNE_SAFETY_MIN_ABSOLUTE = 5
 
     with db.get_conn() as conn:
-        rows = conn.execute("SELECT id, path FROM videos").fetchall()
+        # An uploaded clip whose file went to the trash on purpose is not "missing".
+        rows = conn.execute("SELECT id, path FROM videos WHERE COALESCE(local_deleted, 0) = 0").fetchall()
         missing = [row["id"] for row in rows if not Path(row["path"]).exists()]
         if not missing:
             return []
@@ -680,6 +748,10 @@ def scan_and_ingest_new_videos() -> list[Video]:
 
     with db.get_conn() as conn:
         known_paths = {row["path"] for row in conn.execute("SELECT path FROM videos")}
+        # An uploaded clip's file restored from the trash to where it was: it is local again.
+        for row in conn.execute("SELECT id, path FROM videos WHERE local_deleted = 1").fetchall():
+            if Path(row["path"]).exists():
+                conn.execute("UPDATE videos SET local_deleted = 0 WHERE id = ?", (row["id"],))
 
     newly_added = []
     for entry in sorted(clips_dir.iterdir()):
@@ -785,19 +857,25 @@ def add_tag_to_video(video_id: int, tag_name: str) -> None:
     with db.get_conn() as conn:
         conn.execute("INSERT OR IGNORE INTO tags (name) VALUES (?)", (tag_name,))
         tag_id = conn.execute("SELECT id FROM tags WHERE name = ?", (tag_name,)).fetchone()["id"]
-        conn.execute("INSERT OR IGNORE INTO video_tags (video_id, tag_id) VALUES (?, ?)",
-                     (video_id, tag_id))
+        cur = conn.execute("INSERT OR IGNORE INTO video_tags (video_id, tag_id) VALUES (?, ?)",
+                           (video_id, tag_id))
+        changed = cur.rowcount > 0
     write_library_manifest()
+    if changed:
+        _notify_metadata(video_id, "tags")
 
 
 def remove_tag_from_video(video_id: int, tag_name: str) -> None:
     with db.get_conn() as conn:
-        conn.execute(
+        cur = conn.execute(
             """DELETE FROM video_tags WHERE video_id = ? AND tag_id =
                (SELECT id FROM tags WHERE name = ?)""",
             (video_id, tag_name),
         )
+        changed = cur.rowcount > 0
     write_library_manifest()
+    if changed:
+        _notify_metadata(video_id, "tags")
 
 
 # ---------------------------------------------------------------- editor integration
@@ -935,6 +1013,160 @@ def clear_edit_backup(video_id: int) -> Video:
     with db.get_conn() as conn:
         conn.execute("UPDATE videos SET backup_path = NULL WHERE id = ?", (video_id,))
     return get_video(video_id)
+
+
+# ---------------------------------------------------------------- YouTube upload records
+#
+# The upload itself runs in the GUI (afterglow/youtube/queue.py drives YouTube Studio in a web
+# view); these only keep the library's record of it.  Lifecycle of one clip:
+#   queued -> uploading (youtube_pending_id known) -> processing -> done (youtube_video_id set)
+#   or failed at any point (the local file is never touched on a failure).
+
+def _set_fields(video_id: int, **fields) -> Video:
+    if fields:
+        with db.get_conn() as conn:
+            set_clause = ", ".join(f"{k} = ?" for k in fields)
+            conn.execute(f"UPDATE videos SET {set_clause} WHERE id = ?", (*fields.values(), video_id))
+    return get_video(video_id)
+
+
+def mark_upload_queued(video_id: int, title: str, description: str, playlist: str, privacy: str) -> Video:
+    size = None
+    try:
+        size = Path(get_video(video_id).path).stat().st_size
+    except OSError:
+        pass
+    return _set_fields(video_id, upload_state="queued", upload_error=None, youtube_pending_id=None,
+                       youtube_title=title, youtube_description=description, youtube_playlist=playlist,
+                       youtube_privacy=privacy, file_size_bytes=size)
+
+
+def mark_upload_state(video_id: int, state: str, error: str | None = None,
+                      pending_id: str | None = None) -> Video:
+    fields: dict = {"upload_state": state}
+    if error is not None or state != "failed":
+        fields["upload_error"] = error
+    if pending_id:
+        fields["youtube_pending_id"] = pending_id
+    return _set_fields(video_id, **fields)
+
+
+def mark_upload_done(video_id: int, youtube_id: str, thumb_cache_path: str | None = None) -> Video:
+    result = _set_fields(video_id, upload_state="done", upload_error=None, youtube_video_id=youtube_id,
+                         youtube_pending_id=None, uploaded_at=datetime.now(timezone.utc).isoformat(),
+                         thumb_cache_path=thumb_cache_path)
+    write_library_manifest()
+    return result
+
+
+def cancel_upload_record(video_id: int) -> Video:
+    """A queued / failed upload the user dropped: back to a plain local clip."""
+    v = get_video(video_id)
+    if v.youtube_video_id:
+        return _set_fields(video_id, upload_state="done", upload_error=None, youtube_pending_id=None)
+    return _set_fields(video_id, upload_state=None, upload_error=None, youtube_pending_id=None)
+
+
+def set_thumb_cache_path(video_id: int, path: str | None) -> Video:
+    return _set_fields(video_id, thumb_cache_path=path)
+
+
+def set_youtube_metadata(video_id: int, title: str | None = None, description: str | None = None) -> Video:
+    fields = {}
+    if title is not None:
+        fields["youtube_title"] = title
+    if description is not None:
+        fields["youtube_description"] = description
+    return _set_fields(video_id, **fields)
+
+
+def register_youtube_link(video_id: int, youtube_id: str, privacy: str = "unlisted",
+                          title: str | None = None, description: str | None = None) -> Video:
+    """The manual fallback: the user finished an upload in their own browser and pasted the link."""
+    v = get_video(video_id)
+    size = v.file_size_bytes
+    if size is None:
+        try:
+            size = Path(v.path).stat().st_size
+        except OSError:
+            size = None
+    _set_fields(video_id, youtube_privacy=privacy, file_size_bytes=size,
+                youtube_title=title if title is not None else (v.youtube_title or v.title),
+                youtube_description=description if description is not None else (v.youtube_description or ""))
+    return mark_upload_done(video_id, youtube_id)
+
+
+def delete_local_copy(video_id: int) -> Video:
+    """Library "Delete" on a clip that is ALSO on YouTube: the local file goes (erased, like any
+    Delete), the Uploaded record stays."""
+    v = get_video(video_id)
+    p = Path(v.path)
+    if p.exists():
+        p.unlink()
+    overlay_support.delete_sidecar(p)
+    if v.backup_path:
+        b = Path(v.backup_path)
+        if b.exists():
+            b.unlink()
+        overlay_support.clear_backup_sidecar(b)
+        _set_fields(video_id, backup_path=None)
+    _discard_advanced_project(v)
+    return mark_local_deleted(video_id)
+
+
+def mark_local_deleted(video_id: int) -> Video:
+    result = _set_fields(video_id, local_deleted=1)
+    write_library_manifest()
+    return result
+
+
+def trash_local_file(video_id: int) -> Video:
+    """Move an uploaded clip's local file (plus its input-overlay sidecar and edit backup) to the
+    system trash and mark the record local-deleted.  Never erases anything: the trash is
+    recoverable, and a file restored to its old place makes the clip local again (see
+    scan_and_ingest_new_videos)."""
+    from .youtube import trash  # lazy: keeps library import-light
+    v = get_video(video_id)
+    if v.local_deleted:
+        return v
+    p = Path(v.path)
+    if p.exists():
+        trash.trash(p)
+    side = overlay_support.sidecar_dir(p)
+    if side.exists():
+        trash.trash(side)
+    if v.backup_path:
+        b = Path(v.backup_path)
+        if b.exists():
+            trash.trash(b)
+        bside = overlay_support.backup_sidecar_dir(b)
+        if bside.exists():
+            trash.trash(bside)
+        _set_fields(video_id, backup_path=None)
+    _discard_advanced_project(v)
+    return mark_local_deleted(video_id)
+
+
+def forget_youtube(video_id: int) -> "Video | None":
+    """Drop afterglow's record of a clip's YouTube copy ("Remove from afterglow", or after "Delete
+    from YouTube").  A clip that still has its local file stays in Local as an ordinary clip; one
+    whose file is gone has nothing left, so its row is deleted.  Returns the remaining Video or None."""
+    v = get_video(video_id)
+    if v.local_deleted:
+        delete_video(video_id, delete_file=False)
+        return None
+    result = _set_fields(video_id, youtube_video_id=None, youtube_privacy=None, upload_state=None,
+                         upload_error=None, youtube_pending_id=None, uploaded_at=None, youtube_title=None,
+                         youtube_description=None, youtube_playlist=None, thumb_cache_path=None)
+    write_library_manifest()
+    return result
+
+
+def list_upload_states(states: "tuple[str, ...]" = ("queued", "uploading", "processing", "failed")) -> list[Video]:
+    placeholders = ",".join("?" for _ in states)
+    with db.get_conn() as conn:
+        rows = conn.execute(f"SELECT * FROM videos WHERE upload_state IN ({placeholders})", states).fetchall()
+        return [_row_to_video(r, _tags_for_video(conn, r["id"])) for r in rows]
 
 
 @dataclass

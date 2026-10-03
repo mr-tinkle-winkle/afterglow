@@ -30,7 +30,6 @@ def main() -> None:
     surface_format.setSwapInterval(1)
     surface_format.setProfile(QSurfaceFormat.CompatibilityProfile)
     QSurfaceFormat.setDefaultFormat(surface_format)
-
     app = QApplication(sys.argv)
 
     # QApplication.setWindowIcon() only covers the title bar. The tray,

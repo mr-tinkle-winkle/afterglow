@@ -49,7 +49,7 @@ class _ClickCatcher(QWidget):
 
     def mousePressEvent(self, event) -> None:
         if event.button() == Qt.LeftButton:
-            self.on_click()
+            self.on_click(event.globalPosition().toPoint())
         event.accept()
 
 
@@ -90,10 +90,14 @@ class IndicatorSurface(QWidget):
         return self._painter
 
     def update_clicks(self, now: float) -> None:
-        self.set_click_rects(self._painter.click_rects(self.model, self.key, now) if self.on_click else [])
+        targets = self._painter.click_targets(self.model, self.key, now) if self.on_click else []
+        self._click_ids = [i for _r, i in targets]
+        self.set_click_rects([r for r, _i in targets])
 
     def set_click_rects(self, rects) -> None:
         self._click_rects = [QRectF(r) for r in rects]
+        if len(getattr(self, "_click_ids", [])) != len(self._click_rects):
+            self._click_ids = [None] * len(self._click_rects)
         key = tuple(tuple(int(v) for v in (r.left(), r.top(), r.width(), r.height())) for r in self._click_rects)
         if key == self._region_key:
             return
@@ -126,7 +130,7 @@ class IndicatorSurface(QWidget):
                 self._catcher.hide()
             return
         if self._catcher is None:
-            self._catcher = _ClickCatcher(self._clicked)
+            self._catcher = _ClickCatcher(self._catcher_clicked)
         box = QRectF(self._click_rects[0])
         for r in self._click_rects[1:]:
             box = box.united(r)
@@ -135,13 +139,31 @@ class IndicatorSurface(QWidget):
         self._catcher.show()
         self._catcher.raise_()
 
-    def _clicked(self) -> None:
+    def _clicked(self, cid=None) -> None:
         if self.on_click:
-            self.on_click()
+            self.on_click(cid)
+
+    def _target_at(self, pos) -> "tuple[bool, str | None]":
+        for r, cid in zip(self._click_rects, getattr(self, "_click_ids", [None] * len(self._click_rects))):
+            if r.contains(pos):
+                return True, cid
+        return False, None
+
+    def _catcher_clicked(self, global_pos=None) -> None:
+        if global_pos is None:
+            self._clicked(self._click_ids[0] if getattr(self, "_click_ids", None) else None)
+            return
+        hit, cid = self._target_at(self.mapFromGlobal(global_pos).toPointF())
+        if hit or not self._click_rects:
+            self._clicked(cid)
+        else:
+            self._clicked(self._click_ids[0] if self._click_ids else None)
 
     def mousePressEvent(self, event) -> None:
-        if event.button() == Qt.LeftButton and any(r.contains(event.position()) for r in self._click_rects):
-            self._clicked()
+        if event.button() == Qt.LeftButton:
+            hit, cid = self._target_at(event.position())
+            if hit:
+                self._clicked(cid)
         event.accept()
 
     def hideEvent(self, event) -> None:

@@ -34,7 +34,7 @@ class ClipConfigRow(ThemedFrame):
 
     def __init__(self, clip_config_id: int | None, name: str, length_seconds: int,
                  sound_path: str | None, hotkey: str | None, parent=None, overlay: dict | None = None,
-                 indicator: dict | None = None, indicator_style_provider=None):
+                 indicator: dict | None = None, indicator_style_provider=None, youtube_playlist: str = ""):
         super().__init__(parent)
         ov = overlay or {}
         ind = indicator or {}
@@ -141,6 +141,14 @@ class ClipConfigRow(ThemedFrame):
         indicator_row.addWidget(self.indicator_label, stretch=1)
         form.addRow("Indicator:", indicator_row)
         self._refresh_indicator_label()
+
+        # YouTube: the playlist uploads of this clip type go into (by name, as Studio lists it)
+        self.playlist_edit = CustomLineEdit(youtube_playlist or "")
+        self.playlist_edit.setPlaceholderText("(no playlist)")
+        self.playlist_edit.setToolTip("YouTube playlist for uploads of this clip option -- the playlist's "
+                                      "name exactly as YouTube Studio lists it. Changeable per upload.")
+        self.playlist_edit.textChanged.connect(self._on_any_change)
+        form.addRow("YouTube playlist:", self.playlist_edit)
 
         outer.addWidget(self.body)
         self._update_summary()
@@ -272,4 +280,5 @@ class ClipConfigRow(ThemedFrame):
             "overlay_enabled": self.overlay_check.isChecked(),
             **self._overlay,
             **self._indicator,
+            "youtube_playlist": self.playlist_edit.text().strip(),
         }

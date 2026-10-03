@@ -30,7 +30,8 @@ CREATE TABLE IF NOT EXISTS clip_configs (
     overlay_placements      TEXT NOT NULL DEFAULT '{}',      -- JSON {piece: {x,y,w,rotation,visible}} per-piece overrides
     indicator_colors        TEXT NOT NULL DEFAULT '{}',      -- clip indicator: JSON {part: "#rrggbb"} ({} = defaults)
     indicator_icon_path     TEXT NOT NULL DEFAULT '',        -- clip indicator: custom icon image ('' = none)
-    indicator_clap_sound    TEXT NOT NULL DEFAULT ''         -- clip indicator: clap sound ('' = the clip type's / global clip sound)
+    indicator_clap_sound    TEXT NOT NULL DEFAULT '',        -- clip indicator: clap sound ('' = the clip type's / global clip sound)
+    youtube_playlist        TEXT NOT NULL DEFAULT ''         -- YouTube playlist name uploads of this type go into ('' = none)
 );
 
 CREATE TABLE IF NOT EXISTS videos (
@@ -47,6 +48,18 @@ CREATE TABLE IF NOT EXISTS videos (
     youtube_video_id TEXT,                  -- NULL until uploaded
     youtube_privacy TEXT,                   -- 'unlisted' | 'public' | 'private', NULL if not uploaded
     favorite        INTEGER NOT NULL DEFAULT 0,   -- 1 if starred as a favorite clip
+    -- YouTube upload (see afterglow/youtube/). youtube_video_id is set only once the upload is
+    -- done; while it runs the id lives in youtube_pending_id.
+    upload_state    TEXT,                   -- NULL | queued | uploading | processing | done | failed
+    upload_error    TEXT,                   -- last failure, shown on the card / in the queue
+    youtube_pending_id TEXT,                -- the id Studio showed while the upload runs
+    uploaded_at     TEXT,                   -- ISO timestamp the upload finished
+    youtube_title   TEXT,                   -- what was sent to YouTube (may differ from title)
+    youtube_description TEXT,
+    youtube_playlist TEXT,
+    thumb_cache_path TEXT,                  -- cached i.ytimg.com thumbnail (the Uploaded tab's card art)
+    file_size_bytes INTEGER,                -- remembered for the description template after the file is gone
+    local_deleted   INTEGER NOT NULL DEFAULT 0,   -- 1 = the local file was moved to the trash after uploading
     FOREIGN KEY (clip_config_id) REFERENCES clip_configs(id) ON DELETE SET NULL
 );
 
@@ -114,11 +127,26 @@ def _migrate_columns(conn: sqlite3.Connection) -> None:
         ("indicator_colors", "TEXT NOT NULL DEFAULT '{}'"),
         ("indicator_icon_path", "TEXT NOT NULL DEFAULT ''"),
         ("indicator_clap_sound", "TEXT NOT NULL DEFAULT ''"),
+        ("youtube_playlist", "TEXT NOT NULL DEFAULT ''"),
     ):
         if not _has_column(conn, "clip_configs", col):
             conn.execute(f"ALTER TABLE clip_configs ADD COLUMN {col} {ddl}")
     if not _has_column(conn, "tags", "outline_color"):
         conn.execute("ALTER TABLE tags ADD COLUMN outline_color TEXT")
+    for col, ddl in (
+        ("upload_state", "TEXT"),
+        ("upload_error", "TEXT"),
+        ("youtube_pending_id", "TEXT"),
+        ("uploaded_at", "TEXT"),
+        ("youtube_title", "TEXT"),
+        ("youtube_description", "TEXT"),
+        ("youtube_playlist", "TEXT"),
+        ("thumb_cache_path", "TEXT"),
+        ("file_size_bytes", "INTEGER"),
+        ("local_deleted", "INTEGER NOT NULL DEFAULT 0"),
+    ):
+        if not _has_column(conn, "videos", col):
+            conn.execute(f"ALTER TABLE videos ADD COLUMN {col} {ddl}")
 
 
 def init_db() -> None:

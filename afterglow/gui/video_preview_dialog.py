@@ -622,6 +622,11 @@ class VideoPreviewContent(QWidget):
         self.save_trim_btn.setToolTip("Trim this clip to the selected range (keeps a backup for Undo).")
         self.save_trim_btn.clicked.connect(self._save_trim)
         trim_row.addWidget(self.save_trim_btn)
+        # YouTube: the quick upload dialog for this clip (or its link once it is on YouTube).
+        self.upload_btn = CustomButton("Upload")
+        self.upload_btn.setToolTip("Upload this clip to YouTube (unlisted by default)")
+        self.upload_btn.clicked.connect(self._upload)
+        trim_row.addWidget(self.upload_btn)
         # Bottom-right entry point to the full track editor for this clip.
         self.advanced_edit_btn = CustomButton("Advanced Editor")
         self.advanced_edit_btn.setToolTip("Open this clip in the Advanced Editor (tracks, text, transitions...)")
@@ -948,6 +953,40 @@ class VideoPreviewContent(QWidget):
     def _update_trim_buttons(self) -> None:
         video = getattr(self, "_video", None)
         self.undo_edits_btn.setEnabled(bool(video and video.has_edit and video.backup_path))
+        self._update_upload_button()
+
+    def _update_upload_button(self) -> None:
+        video = getattr(self, "_video", None)
+        if not hasattr(self, "upload_btn") or video is None:
+            return
+        if video.is_uploaded:
+            self.upload_btn.setText("Copy YouTube Link")
+            self.upload_btn.setToolTip(video.youtube_url or "")
+        elif video.upload_state in ("queued", "uploading", "processing"):
+            self.upload_btn.setText("Show Upload")
+            self.upload_btn.setToolTip("This clip is being uploaded to YouTube")
+        else:
+            self.upload_btn.setText("Retry Upload" if video.upload_state == "failed" else "Upload")
+            self.upload_btn.setToolTip("Upload this clip to YouTube (unlisted by default)")
+
+    def _upload(self) -> None:
+        video = library.get_video(self._video.id)
+        self._video = video
+        if video.is_uploaded:
+            from .uploaded_actions import copy_links
+            copy_links([video])
+            return
+        from .upload_queue import upload_queue
+        if video.upload_state in ("queued", "uploading", "processing"):
+            job = upload_queue().job_for_video(video.id)
+            if job is not None:
+                upload_queue().show_job(job)
+                return
+        self.video_widget.pause()
+        from .upload_dialog import start_upload
+        start_upload([video], self.window())
+        self._video = library.get_video(video.id)
+        self._update_upload_button()
 
     def _save_trim(self) -> None:
         start, end = self.trim_timeline.start, self.trim_timeline.end

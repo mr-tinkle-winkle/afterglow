@@ -4,8 +4,9 @@
 OBS-triggered clip capture, a local clip library (PySide6 GUI), quick
 trimming in the video previewer (embedded mpv), a track-based Advanced
 Editor (the Editor page; afterglow/nle engine + afterglow/gui/
-advanced_editor UI), and YouTube upload (unlisted-library metadata
-cached locally, upload flow itself not yet implemented). Settings and
+advanced_editor UI), and YouTube upload (BUILT through embedded YouTube Studio, tested
+against a local stand-in for Studio, not yet against the real one -- see "YouTube upload --
+BUILT" directly below). Settings and
 Library pages are solid and confirmed working across multiple machines.
 The keyboard/mouse/controller **input overlay** (captured from Puppetry
 with each clip) is BUILT -- see "Input overlay (Puppetry integration) --
@@ -17,12 +18,229 @@ unverified on real hardware) -- see "Clip indicator ("the clapper") -- BUILT".
 then `DISPLAY=:99 QT_QPA_PLATFORM=xcb python3 tests/<suite>.py` (the
 previewer suites need GL for mpv); the `tests/test_nle_*.py` engine
 suites run with `QT_QPA_PLATFORM=offscreen`. Every suite prints PASS/FAIL
-lines and exits non-zero on failure. All 36 suites pass at handoff (incl. the overlay suites listed
+lines and exits non-zero on failure. All 41 suites pass at handoff (the four `test_youtube_*`
+suites are new: `core` runs anywhere; `studio`, `queue` and `entry_points` need Xvfb + QtWebEngine,
+and `QTWEBENGINE_DISABLE_SANDBOX=1` when run as root -- they set it themselves; `entry_points` starts
+a real `afterglow-youtube` host process); earlier 36 (incl. the overlay suites listed
 under the Input overlay status, the five clip-indicator suites (`test_indicator_*`, `test_clip_indicator_ui`)
 `test_card_filters_popup`, `test_message_dialog` and `test_themed_dialogs`; `test_overlay_mpv`
 and the previewer / advanced-editor suites need libmpv + Xvfb (with `libxcb-cursor0` for the xcb platform;
 they hang or fail under offscreen); `test_nle_render`'s preview-
 speed check is timing-based, run it on its own, not alongside other suites).
+
+## YouTube upload -- BUILT (status first; the original spec and decisions follow, kept as the reference)
+
+### Status (newest session)
+Everything in the plan below is implemented and tested against a local fake Studio
+(`tests/fake_studio/`, same element names / ids / attributes as the selectors) in a real
+QtWebEngine page. **Never run against the real YouTube Studio or Google sign-in** -- see
+"Unverified" below; that is the next step and is expected to need selector fixes in
+`afterglow/youtube/studio_steps.json` (only that file, by design).
+
+**Process split (a decision made while building, not in the original plan).** All web views --
+the hidden Studio window and the upload queue, the sign-in window, the embed player, Studio edit
+windows -- run in a separate process, `afterglow-youtube` (`afterglow/youtube/host.py`), started on
+demand by the GUI. Reason, found by testing, not assumed: with PySide6 (6.11 here), a Python
+*application-wide* event filter crashes the process (segfault) as soon as QtWebEngine's internal Qt
+Quick items get events -- PySide wraps the unknown item on the fly, wrapping sets a dynamic
+property, the property-change event goes through the same filter, the half-built wrapper is
+re-entered (gdb: `getWrapperForQObject -> QObject::doSetProperty -> sendThroughApplicationEventFilters
+-> getWrapperForQObject`). Reproduced with a filter that only `return False`s. The GUI has two such
+filters (`wheel_guard`, `app_chrome`), so a web view in the GUI process would crash on every machine.
+Side benefit: uploads keep running after the main window closes (the "GUI must stay alive" open point
+below is moot). The GUI never imports QtWebEngine (asserted in `test_youtube_entry_points`).
+
+Where things live:
+- `afterglow/youtube/` (no widgets): `template.py` (description placeholders), `trash.py`
+  (`gio trash`, else the freedesktop spec with `.trashinfo`), `studio_steps.json` + `steps.py` (every
+  selector / status text / step; `AFTERGLOW_STUDIO_STEPS` overrides the file), `studio_js.js` (DOM
+  helpers injected into an isolated JS world; shadow-root aware), `studio.py` (`FlowRunner`: the
+  generator-based step machine; `StudioPage.chooseFiles` answers the file picker), `profile.py`
+  (persistent profile under `$XDG_DATA_HOME/afterglow/youtube-profile`, Firefox UA for
+  accounts.google.com only: header + `navigator` + client hints blanked), `remote.py` (oEmbed check +
+  i.ytimg thumbnail), `gui_socket.py` (the host's socket path + a plain sender for the indicator),
+  `host.py` (the process; JSON-lines protocol in its docstring).
+- `afterglow/gui/`: `upload_queue.py` (the queue; runs in the host), `youtube_client.py`
+  (`RemoteUploadQueue`, same API, in the GUI; `upload_queue.upload_queue()` returns it unless a real
+  queue was installed with `set_upload_queue`), `studio_window.py`, `upload_dialog.py` (quick dialog +
+  browser fallback + `start_upload()` entry point), `youtube_settings.py`, `youtube_signin.py`,
+  `youtube_player.py`, `youtube_sync.py` ("Also update it on YouTube?"), `uploaded_actions.py`.
+- Hidden-but-working window: `Qt.WA_DontShowOnScreen` + `show()`. Qt and Chromium treat it as
+  visible (`document.visibilityState == "visible"`, no background throttling), nothing is mapped, and
+  the one real click Chromium needs before opening a file picker is delivered with `QTest.mouseClick`
+  on `view.focusProxy()` (verified: a JS `.click()` would not carry user activation).
+- DB (`db.py` migration): `videos` gained `upload_state`, `upload_error`, `youtube_pending_id`,
+  `uploaded_at`, `youtube_title`, `youtube_description`, `youtube_playlist`, `thumb_cache_path`,
+  `file_size_bytes`, `local_deleted`; `clip_configs` gained `youtube_playlist`. Local = `local_deleted
+  = 0`; Uploaded = `youtube_video_id` set and state done. A trashed upload is never pruned as missing;
+  a new file at its old path tombstones the old row's path (`#uploaded-<id>`); a file restored from the
+  trash to its old place makes the clip local again. Library Delete on a clip that is also on YouTube
+  erases only the local copy (`delete_local_copy`). `library.metadata_listeners` carry title / tag
+  changes to the GUI's sync prompt (debounced, never while a menu is open, one question per batch).
+- Clip indicator: new events `upload_start` (style `kind: "upload"`; straight into the circle, no
+  clapper), `upload_progress` (30 s heartbeat, so the 12-minute watchdog never ends a long upload but
+  still cleans up if the uploader dies), `upload_done`, `upload_fail` (the existing circle shake).
+  Red `#ff0033` + a small white play glyph; clickable while running regardless of the throttle setting;
+  surfaces now map each click rect to its capture id (`click_targets`), the helper sends
+  `{"event": "show_upload", "id": ...}` to the host socket for upload circles and still toggles the
+  throttle bypass for processing circles. No THROTTLING = OFF label over upload circles.
+- Config (`YouTubeSettings`): the OAuth fields are gone (old keys are ignored on load). New:
+  `description_template`, `stop_for_review`, `delete_local_after_upload`, `show_upload_circle`,
+  `upload_circle_color`, `upload_done_sound`, `upload_error_sound`, `step_pause_ms` (700),
+  `account_name`.
+- Flake: `qt6.qtwebengine` in buildInputs and the dev shell, `QTWEBENGINEPROCESS_PATH` set in the
+  wrapper, new `afterglow-youtube` console script wrapped like the others. **Not built here.**
+  nixpkgs' `pyside6` adds `qt6.qtwebengine` on Linux (its default.nix: "qtwebengine fails under
+  darwin"), so `PySide6.QtWebEngineWidgets` should import; confirm with `python -c "from PySide6
+  import QtWebEngineWidgets"` in `nix develop`.
+
+Decisions made while building (the "Open points" below, answered):
+- Verification before deleting: Studio's status must reach "uploaded" before Save is pressed; after
+  Save the video must answer YouTube's public oEmbed (up to 20 min, polled every 15 s, off the GUI
+  thread) before the record is marked done and the file trashed. A video that doesn't answer in time
+  is still recorded as uploaded, but the local file is KEPT (a note is shown). Private uploads can't
+  be checked from outside: they rely on Studio's "processed" status text, else the file is kept.
+- The Uploaded card's thumbnail is the local frame until YouTube's own exists, then YouTube's.
+- A failed job holds the queue (the page is the upload) until the banner is answered.
+- Uploads a crash interrupted come back as `failed` (retryable) when the host next starts.
+- "Edit in Studio" opens its own window, so it never disturbs a running upload.
+- The upload badge floats over the thumbnail (not in the layout), so every card stays the same size.
+- Advanced Editor "Export & Upload" exists for library clips only (an imported file's export isn't
+  a library clip).
+
+Unverified (needs the real thing):
+1. Every selector and status text in `studio_steps.json` against current Studio (English UI assumed;
+   other UI languages need their status texts added to the `status` lists). The delete flow (details
+   page overflow menu -> "Delete forever" -> confirm checkbox) is the least certain.
+2. Whether Google accepts the embedded sign-in with the Firefox-UA fix; if not, the quick dialog's
+   "Upload in browser instead" is the working path.
+3. The Nix build (QtWebEngine in nixpkgs' PySide6, `QTWEBENGINEPROCESS_PATH`), Chromium's sandbox
+   and GPU on a real Plasma Wayland session, and the red circle's click on a real layer-shell surface.
+4. The YouTube embed player (needs network; here only the page it loads was checked).
+
+
+### The constraint that decided the design
+YouTube locks every video uploaded through `videos.insert` from an API project that has not
+passed Google's compliance audit to **private**, permanently ("All videos uploaded via the
+videos.insert endpoint from unverified API projects created after 28 July 2020 will be restricted
+to private viewing mode. To lift this restriction, each API project must undergo an audit" --
+developers.google.com/youtube/v3/docs/videos/insert). Locked videos cannot be switched to
+unlisted later; they have to be re-uploaded. Unlisted uploads -- the whole point -- are therefore
+impossible through the API without an audit.
+
+**Decision: no YouTube API at all.** Uploads happen in **YouTube Studio embedded in afterglow**
+(QtWebEngine), signed in once from Settings. afterglow drives Studio's own upload page (picks
+the file, fills every field, presses Save), reads the new video's link off the page, and keeps
+its own local record. The unused OAuth fields in `config.YouTubeSettings`
+(`client_secret_path`, `token_path`) can go.
+
+### Decisions (asked and answered)
+- **Sign-in:** once, in Settings ("YouTube" group: Sign in / Sign out / signed-in account shown).
+  One account; whichever channel Studio has selected is used.
+- **Entry points:** Library right-click "Upload" (exists, incl. multi-select: `VideoCard.upload_requested`
+  -> `LibraryPage._handle_upload_request`, currently a "not implemented" message), a new "Upload"
+  button in the video previewer, and "Export & Upload" in the Advanced Editor (render, then upload
+  the export).
+- **Quick dialog, everything prefilled, all editable:** title (= the clip's afterglow title),
+  description (from an editable template, below), visibility (default unlisted), playlist (from the
+  clip type, below). Batch (multi-select): ONE dialog listing every clip, each row's title /
+  description editable, then the uploads run one after another (a queue).
+- **Description template** (Settings, editable; placeholders): `{title}` `{clip_type}` `{date}` `{time}`
+  (the ORIGINAL capture date / time) `{length}` `{size}` (file size) `{filters}` (the clip's filters as
+  `#hashtags`, sanitised: no spaces / punctuation) `{filters_plain}`. Default -- must include the
+  filters as hashtags, the capture date, the length, the file size and the clip type:
+
+      {filters}
+
+      {clip_type} -- captured {date} {time}
+      Length {length} · {size}
+
+- **Studio autofill: everything, by default.** File, title, description, playlist, "No, it's not made
+  for kids" (Studio requires an answer), visibility, then **Save** pressed automatically. Setting:
+  "Stop for review before saving" (off by default) leaves the last click to the user. Every step
+  fails safe: if a step can't find its control, the window is shown and the user finishes by hand.
+- **Playlists:** per clip type (new `clip_configs.youtube_playlist` column, set in the clip type's
+  options), shown and changeable in the quick dialog.
+- **Window:** a dialog. Once the upload has started it **hides and keeps uploading in the
+  background**. While it uploads / YouTube processes it, the **clip indicator shows its loading
+  circle in red** (Settings toggle, on by default). **Clicking the red circle pops the Studio window
+  back out** for that upload.
+- **After upload:** the clip is added to the **Uploaded** tab (thumbnail, title, filters cached
+  locally, per the README's planned behaviour), and **the local file is deleted by default**
+  (Setting "Delete the local file after uploading", default on). With it off the clip shows in BOTH
+  Local and Uploaded. Deletion happens only after Studio reports the upload complete AND processed,
+  and moves the file to the **system trash** (recoverable), never erases it. Never on a failure.
+- **On finish:** the red circle pulses and fades (as the processing circle does), and an
+  **upload-done sound** plays (configurable; plus an upload-error sound, mirroring the capture
+  keyframe sounds).
+- **On failure** (sign-in expired, Studio changed, network): the red circle does the existing
+  fail shake and the Studio window reopens where it stopped so it can be finished by hand; the local
+  file is never deleted.
+- **Uploaded tab right-click:** Copy link, Open on YouTube, Edit in Studio (that video's Studio edit
+  page in the dialog), Delete from YouTube (confirm in afterglow first, then automated in Studio),
+  Remove from afterglow (local record only; YouTube untouched).
+- **Renaming / changing filters of an uploaded clip** in afterglow: **ask** "Also update it on
+  YouTube?"; yes = update title / description (re-expanded from the template, so the hashtags follow
+  the filters) through Studio's edit page, hidden.
+- **Double-click in Uploaded:** in-app playback through the YouTube embed player
+  (`https://www.youtube.com/embed/<id>`) in a web view, falling back to the system browser (README
+  "Planned: YouTube unlisted library behavior").
+
+### Plan (build order)
+1. **Web engine + profile.** `QtWebEngineWidgets` (PySide6 has it; the flake needs
+   `qt6.qtwebengine` and a pyside6 built with it -- verify, it is a large dependency). One persistent
+   `QWebEngineProfile("afterglow-youtube")`, storage under the data dir, persistent cookies. Google
+   sign-in in embedded engines is refused ("This browser or app may not be secure") unless the
+   sign-in page sees a normal browser: qutebrowser (same engine) fixes it by sending a Firefox
+   user agent for `accounts.google.com` only -- do the same (a `QWebEngineUrlRequestInterceptor`
+   setting `User-Agent` for that host, plus matching `navigator.userAgent` there). If sign-in is
+   still refused: the **fallback** below.
+2. **Settings > "YouTube" group.** Sign in (opens the web view at Studio; done when Studio loads
+   signed in), Sign out (clears the profile), account / channel shown; the template editor with a
+   live preview; default visibility; "Stop for review before saving"; "Delete the local file after
+   uploading"; "Show the red upload circle"; upload-done / upload-error sounds. Per clip type: playlist.
+3. **Studio driver** (`afterglow/youtube/studio.py`, no Qt widgets in the logic): a step machine over a
+   `QWebEnginePage` subclass. File: override `QWebEnginePage.chooseFiles` to answer Studio's file
+   picker with the clip's path (no OS dialog). Chromium only opens a picker on real user activation,
+   so press Studio's "Select files" with a synthesized mouse event on the view, not a JS `click()`
+   (verify which works). Text fields are contenteditable: focus + `document.execCommand("insertText")`
+   so Studio sees real input events. Then playlist, made-for-kids, Next x3, visibility radio, Save.
+   **All selectors / step definitions in one data file** (`studio_steps.json`), so a Studio redesign
+   is a one-file fix; every step has a timeout and reports which selector failed.
+4. **Reading back:** the video's link appears in the upload dialog (`https://youtu.be/<id>`) as soon as
+   the upload starts -- poll it with `runJavaScript`. Progress / "upload complete" / "processing" /
+   "checks complete" from the dialog's status text (same data file). Confirm the video plays with the
+   public oEmbed endpoint (works for unlisted, not private) before deleting anything.
+5. **Library / DB.** `videos` already has `youtube_video_id`, `youtube_privacy`. Add `upload_state`
+   (queued / uploading / processing / done / failed), `uploaded_at`, `youtube_title`,
+   `youtube_description`, `youtube_playlist`, `thumb_cache_path`, `local_deleted`. Local = the file
+   still exists (`local_deleted` false) -- today Local is "not uploaded", which has to change for
+   "shows in both". Thumbnail cached from `https://i.ytimg.com/vi/<id>/hqdefault.jpg` (public for
+   unlisted). Trash = the freedesktop trash spec (`gio trash`, or a small implementation); the input
+   overlay sidecar and edit backup go with the clip.
+6. **Quick dialog + queue** (`afterglow/gui/upload_dialog.py`): single and batch forms; the queue runs
+   one upload at a time in one hidden Studio window.
+7. **Red circle.** New indicator events from the GUI: `upload_start` / `upload_done` / `upload_fail`
+   (a capture id per upload; red ring colour = a YouTube red distinct from `FAIL_RED`, so the fail
+   shake still reads), its own stack slot. Clicking it (the helper already supports clickable
+   elements, see the throttle bypass) must reach the **GUI** process, where the Studio window lives:
+   a small GUI-side socket (`afterglow-gui.sock`, `{"event": "show_upload", "id": ...}`). The throttle
+   bypass click stays on the processing circle only.
+8. **Uploaded tab actions**, rename / filter push (Studio edit page, hidden), Delete from YouTube
+   (Studio's video menu -> Delete forever), embed playback.
+9. **Fallback** (embedded sign-in refused or Studio unusable): open Studio's upload page in the
+   system browser, reveal the file in the file manager, copy the title / description to the
+   clipboard, and a dialog to paste the finished video's link to register it.
+10. **Entry points:** previewer button; Editor "Export & Upload".
+
+### Open points (as planned -- all answered, see "Decisions made while building" above)
+- **The GUI must stay alive while an upload runs** (the upload lives in its web page). Closing the
+  main window mid-upload: proposed -- keep running hidden until the queue is done, then quit, with a
+  one-line notice. Not asked yet.
+- Automating Studio's UI is user-initiated, on the user's own account, but YouTube's Terms restrict
+  automated access to the service; keep the automation to what a user would click, at human pace.
+- Tests: a local fake "Studio" HTML page with the same selectors drives the step machine in CI
+  (QtWebEngine headless may need Xvfb / software GL); real Studio only on real hardware.
 
 ## Input overlay (Puppetry integration) -- BUILT (this is the design + status)
 
@@ -1234,7 +1452,25 @@ plain QSS rule is unavoidable.
 Seven consecutive batches of Library/Settings/appearance
 features/bug fixes, given together each time. Newest first.
 
-### This session (newest -- no native/KDE dialogs or widgets left)
+### This session (newest -- YouTube upload built)
+Asked: build the YouTube upload from the "YouTube upload -- PLANNED" spec. Built in full (see
+"YouTube upload -- BUILT" at the top for the status, file map, decisions and what is unverified).
+Changelog:
+- New `afterglow/youtube/` package and GUI modules (upload queue, Studio window, quick dialog,
+  browser fallback, Settings > YouTube tab, sign-in window, embed player, sync prompt, Uploaded-tab
+  actions); new `afterglow-youtube` host process; DB migration; clip-type playlist field; Library
+  cards gain the Uploaded view (YouTube thumbnail, visibility badge, double-click plays, own menu
+  and buttons) and a live upload badge; previewer Upload button; Advanced Editor "Export & Upload";
+  red upload circle in the clip indicator.
+- Found while testing: (1) the job key crossing a Qt signal overflowed a 32-bit int, so verification
+  results were silently dropped -- keys are small counters now, the signal is object-typed;
+  (2) PySide6 + any Python app-wide event filter + QtWebEngine = segfault -> the process split;
+  (3) the host must not write to a new connection before it speaks (a fire-and-forget sender that
+  already closed aborts the socket with its message unread) -> clients send `hello` to subscribe;
+  (4) sign-in host matching needed host:port handling.
+- 4 new test suites (~170 checks) on top of the 37 existing ones, all passing.
+
+### Previous session (no native/KDE dialogs or widgets left)
 Asked: "the delete prompt on videos is still in the old kde style --
 generally just go through and try to find ANY vanilla kde things and
 replace them". Then the clapper spec (section above the MAJOR EPIC).
@@ -5844,6 +6080,14 @@ widget-level testing note above):
   toggles tag-on-video, the other toggles include/exclude-from-search).
 
 ## Next up
+**Run YouTube upload against the real YouTube Studio** (it is built and tested only against the local
+stand-in; see "YouTube upload -- BUILT", "Unverified"). Order: build the flake and confirm
+`PySide6.QtWebEngineWidgets` imports; Settings > YouTube > Sign in (if Google refuses, note it -- the
+browser fallback still works); upload one short clip with "Stop for review before saving" ON and watch
+each step; then with it off. Any selector that misses shows up as the failing step's name in the
+Studio window's banner; the fix goes in `afterglow/youtube/studio_steps.json` only. Then try Edit
+(rename an uploaded clip) and Delete from YouTube on a throwaway upload.
+
 **Verify the clip indicator (the clapper) on a real KDE Plasma Wayland desktop** -- it is built and
 tested offscreen (see "Clip indicator -- BUILT" near the top, including its "Unverified on real
 hardware" list). First build the flake (the layer-shell shim has never been compiled against a real
