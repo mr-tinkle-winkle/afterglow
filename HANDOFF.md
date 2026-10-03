@@ -324,7 +324,47 @@ alignment offset (a few frames at most; `offset_ms` corrects it).
 
 ## Clip indicator ("the clapper") -- BUILT (status first, then the original spec)
 
-### Hands redrawn from traced 3D frames (newest)
+### Clapper tilt + processing throttle (newest)
+- **Clapper tilt.** The clapper is always drawn turned `CLAPPER_TILT_DEGREES` (7) clockwise about its
+  centre, whatever the enter / exit animation (the tilt is part of the item: `draw._draw_clapper_tilted`,
+  used by `draw_item` in both the opaque and the layered path). On the clap, once the stick has shut,
+  a damped bounce adds up to ~5 deg more clockwise, rebounds slightly past the resting tilt and settles
+  in ~0.6 s (`draw.clapper_tilt(clap_ms)`). The Hands style is not tilted.
+- **Processing throttle** (`afterglow/throttle.py`, `AppSettings.processing_throttle`, Settings >
+  Clipping > "Processing Throttle"): off (default) / light / medium / heavy / auto. Targets: this
+  process's `ffmpeg` / `ffprobe` / `puppetry-overlay` children and everything under them (found by a
+  /proc walk every 0.5 s, so the vendored `input_overlay.py` stays untouched); nothing else is touched.
+  Mechanism: a 100 ms duty cycle with SIGSTOP / SIGCONT (light 70 %, medium 45 %, heavy 20 % run time)
+  plus idle IO priority (`ioprio_set`), both reversible at any time; `nice` is deliberately not used
+  (an unprivileged process can't lower it again, so the bypass could not undo it). Auto: pressure =
+  max(CPU busy % of everything else -- our throttled work subtracted --, GPU busy %), smoothed; full
+  speed below 30 %, linearly down to 15 % duty at 85 %. GPU busy from AMD sysfs `gpu_busy_percent` or
+  `nvidia-smi` (≤ 1/s, auto mode with work only); Intel / unknown -> CPU only. A game's FPS itself is not
+  read (no portable source), the load is the stand-in. `throttle.ensure_running()` starts the controller
+  thread in the daemon at startup and in any process that runs `trigger_clip`; it re-reads the setting
+  every sample, so changing it applies without a restart. `resume_all` runs on stop / atexit.
+- **Click to bypass.** With a throttle mode on, the start event carries `style["throttle"] = True`
+  (`indicator_client.build_style`, `Style.throttle`). While a capture is processing
+  (`model.PROCESSING_STATES`: the loading circle, or the item in "stay" mode) that element is clickable:
+  `StackPainter.click_rects` -> `IndicatorSurface.set_click_rects`. Wayland: the layer surface's input
+  region becomes just those rects (`QWindow.setMask`; the input-transparent flag is dropped while there
+  are rects and restored after). X11: a small invisible always-on-top `_ClickCatcher` window over them
+  (a mask there would clip the drawing). A click toggles `IndicatorHelper.bypass`, mirrored to
+  `throttle.bypass_path()` (`$XDG_RUNTIME_DIR/afterglow-throttle-bypass`), which every throttler obeys;
+  "THROTTLING = OFF" (yellow, outlined) is drawn just above each processing element while it is on
+  (`StackPainter.paint_throttle_label`). The bypass is temporary: a second click ends it, and so does the
+  helper's last capture going away; the helper clears a stale file at start.
+- Tests: new `tests/test_throttle.py` (targets incl. grandchildren and a non-target, measured CPU ticks:
+  heavy ≈ 20 %, medium ≈ 45 %, bypass back to 100 %, nothing left paused after stop, auto reads the
+  load, clickable only while processing and only with throttling on, a click elsewhere ignored, toggle on
+  / off, the label's pixels, the bypass ending with the last capture, the start-event flag, the Settings
+  control saved); `test_indicator_draw` (tilt at rest, bounce peak / rebound / settle, drawn tilted,
+  enter animations all land untransformed).
+- Unverified on real hardware: that KWin delivers clicks inside the layer surface's input region set
+  through `QWindow.setMask` (the Qt Wayland plugin maps it to `wl_surface.set_input_region`) and none
+  outside it; the X11 click window; the auto thresholds against a real game.
+
+### Hands redrawn from traced 3D frames
 - **What changed.** The Hands style is no longer the articulated vector gloves: it is drawn from 2D vector
   frames traced from a 3D model of the clap (`afterglow/indicator/hands2d.py`, data in
   `afterglow/indicator/resources/hands_frames.json.gz`, ~0.9 MB, made by `tools/hands_bake/` -- see its

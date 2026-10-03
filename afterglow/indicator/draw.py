@@ -155,6 +155,21 @@ CLAP_SHUT_MS = 80.0        # the clap itself: the top stick snaps shut / the han
 CLAP_REBOUND_MS = 140.0    # a small bounce back after the impact
 CLAP_TOTAL_MS = 380.0      # until the impact has settled (the "processing" step starts here)
 CLAPPER_OPEN_DEGREES = 28.0
+CLAPPER_TILT_DEGREES = 7.0      # the clapper always sits tilted this far clockwise, whatever its animation
+CLAPPER_BOUNCE_DEGREES = 9.0    # the clap knocks it further clockwise (peak ~5 deg), then it rebounds
+CLAPPER_BOUNCE_MS = 190.0       # period of that wobble
+CLAPPER_BOUNCE_DECAY_MS = 110.0
+
+
+def clapper_tilt(clap_ms: float) -> float:
+    """Degrees clockwise for the clapper: the resting tilt, plus a damped bounce once the stick has
+    shut (``clap_ms`` = ms since the clap, -1 outside it): it swings further clockwise, then rebounds
+    a touch past the resting tilt and settles."""
+    if clap_ms < CLAP_SHUT_MS:
+        return CLAPPER_TILT_DEGREES
+    since = clap_ms - CLAP_SHUT_MS
+    return CLAPPER_TILT_DEGREES + CLAPPER_BOUNCE_DEGREES * math.sin(math.pi * since / CLAPPER_BOUNCE_MS) * math.exp(
+        -since / CLAPPER_BOUNCE_DECAY_MS)
 
 
 @dataclass
@@ -938,6 +953,23 @@ def clap_total_ms(style: str) -> float:
     return HANDS_CLAP_TOTAL_MS if style == "hands" else CLAP_TOTAL_MS
 
 
+def _draw_clapper_tilted(p: QPainter, rect: QRectF, pose: ClapPose, colors: "dict[str, QColor]",
+                         icon: "QImage | None") -> "QRectF | None":
+    """The clapper turned clockwise about its centre (``clapper_tilt``).  Returns the icon's rect
+    in the painter's untilted space (its bounding box after the tilt)."""
+    c = rect.center()
+    p.save()
+    p.translate(c)
+    p.rotate(clapper_tilt(pose.clap_ms))
+    p.translate(-c)
+    got = draw_clapper(p, rect, pose, colors, icon)
+    tr = p.transform()
+    p.restore()
+    if got is None:
+        return None
+    return (tr * p.transform().inverted()[0]).mapRect(got)
+
+
 def draw_item(p: QPainter, rect: QRectF, style: str, pose: ClapPose, colors: "dict[str, QColor]",
               icon: "QImage | None" = None, opacity: float = 1.0) -> "QRectF | None":
     """The clapper or the hands.  At ``opacity`` < 1 the whole item is composed fully opaque on a
@@ -947,7 +979,7 @@ def draw_item(p: QPainter, rect: QRectF, style: str, pose: ClapPose, colors: "di
     if opacity >= 0.995:
         if style == "hands":
             return draw_hands(p, rect, pose, colors, icon)
-        return draw_clapper(p, rect, pose, colors, icon)
+        return _draw_clapper_tilted(p, rect, pose, colors, icon)
     if opacity <= 0.003:
         return None
     dpr = max(1.0, float(p.device().devicePixelRatioF()))
@@ -960,7 +992,7 @@ def draw_item(p: QPainter, rect: QRectF, style: str, pose: ClapPose, colors: "di
     q.setRenderHint(QPainter.Antialiasing, True)
     q.setRenderHint(QPainter.SmoothPixmapTransform, True)
     q.translate(-box.topLeft())
-    got = draw_hands(q, rect, pose, colors, icon) if style == "hands" else draw_clapper(q, rect, pose, colors, icon)
+    got = draw_hands(q, rect, pose, colors, icon) if style == "hands" else _draw_clapper_tilted(q, rect, pose, colors, icon)
     q.end()
     p.save()
     p.setRenderHint(QPainter.SmoothPixmapTransform, True)

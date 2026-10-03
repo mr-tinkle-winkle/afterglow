@@ -318,6 +318,11 @@ class AppSettings:
     # apps and file managers only preview/embed a video reliably when
     # its extension says .mp4, regardless of the real container).
     auto_copy_as_mp4: bool = True
+    # Processing throttle (throttle.py): "off" | "light" | "medium" | "heavy" | "auto".  Slows
+    # afterglow's own ffmpeg / overlay-render work so a game keeps its frame rate; "auto" follows
+    # the CPU / GPU load.  Clicking the clip indicator's processing element bypasses it until
+    # clicked again (or until that processing is over).
+    processing_throttle: str = "off"
     default_sound_path: str = ""  # legacy -- specifically the "replay buffer completed" keyframe's sound (see keyframes.py)
     # "Advanced Sound": a distinct sound for each pipeline checkpoint in
     # keyframes.PIPELINE_KEYFRAMES, keyed by its keyframe id. All optional

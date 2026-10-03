@@ -220,6 +220,13 @@ class ClipDaemon:
         # The clip indicator's helper (a small Qt process) is started now, not on the first
         # hotkey, so the first clapper slides on instantly.
         indicator_client.ensure_started(daemon=True)
+        # The processing throttle (Settings > Clipping > Processing Throttle): throttles this
+        # process's ffmpeg / overlay-render children, re-reading the setting as it goes.
+        try:
+            from . import throttle
+            throttle.ensure_running()
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Processing throttle unavailable: %s", e)
 
         threading.Thread(target=self._reload_loop, daemon=True).start()
         threading.Thread(target=self._trigger_worker_loop, daemon=True).start()

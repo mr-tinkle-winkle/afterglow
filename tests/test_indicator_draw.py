@@ -583,9 +583,34 @@ for style in ("clapper", "hands"):
     check(amax(render_item(style, 0.0)) == 0, f"{style}: opacity 0 draws nothing")
 a1, a2 = render_item("clapper", 1.0), canvas(260, 260)
 p = QPainter(a2)
-draw.draw_clapper(p, rect_item, draw.ClapPose(open=0.0), draw.resolve_colors({}), None)
+draw._draw_clapper_tilted(p, rect_item, draw.ClapPose(open=0.0), draw.resolve_colors({}), None)
 p.end()
 check(all(a1.pixel(x, y) == a2.pixel(x, y) for x in range(0, 260, 5) for y in range(0, 260, 5)), "full opacity is exactly the plain drawing")
+
+# ---------------------------------------------------------------- the clapper's tilt and clap bounce
+check(draw.clapper_tilt(-1) == draw.CLAPPER_TILT_DEGREES > 0 and draw.clapper_tilt(40) == draw.CLAPPER_TILT_DEGREES,
+      "clapper: tilted clockwise at rest and while the stick shuts")
+tilts = [draw.clapper_tilt(draw.CLAP_SHUT_MS + ms) for ms in range(0, 700, 5)]
+peak = max(tilts)
+check(peak >= draw.CLAPPER_TILT_DEGREES + 3.5 and tilts.index(peak) * 5 < 100, f"...the clap knocks it further clockwise quickly (peak {peak:.1f} deg)")
+check(min(tilts) < draw.CLAPPER_TILT_DEGREES and min(tilts) > draw.CLAPPER_TILT_DEGREES - 2.5, "...then it rebounds a little past its resting tilt")
+check(abs(tilts[-1] - draw.CLAPPER_TILT_DEGREES) < 0.1, "...and settles back at the resting tilt")
+# drawn tilted: the board's bottom edge rises toward the left (clockwise turn in screen space)
+im_t = canvas(260, 260)
+p = QPainter(im_t)
+draw.draw_item(p, rect_item, "clapper", draw.ClapPose(open=0.0), draw.resolve_colors({}), None)
+p.end()
+def lowest(img, x):
+    ys = [y for y in range(260) if rgba(img, x, y).alpha() > 200]
+    return max(ys) if ys else None
+lx, rx_ = int(rect_item.left() + rect_item.width() * 0.2), int(rect_item.left() + rect_item.width() * 0.8)
+check(lowest(im_t, lx) is not None and lowest(im_t, rx_) is not None and lowest(im_t, rx_) - lowest(im_t, lx) >= 4,
+      f"...drawn tilted clockwise: its bottom edge is lower on the right ({lowest(im_t, lx)} vs {lowest(im_t, rx_)})")
+# the tilt is part of the item, so every enter animation ends on it (they end at the identity transform)
+check(all(abs(draw.xform_transform(rect_item, draw.animate("enter", k, 1.0, "bottom_right",
+                                                           draw.Space(200, 172, 600, 400, 400))).m12()) < 1e-6
+          for k in ("slide", "drop", "pop", "swing", "spin", "toss", "flip", "peek", "fade")),
+      "...whatever the enter animation: they all land untransformed, and the item itself is tilted")
 im = canvas(260, 260)
 p = QPainter(im)
 p.setOpacity(0.5)

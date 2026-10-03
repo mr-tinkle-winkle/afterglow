@@ -27,6 +27,7 @@ from PySide6.QtGui import QGuiApplication
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 
 from . import EVENTS, layershell
+from .. import throttle
 from .focus import choose_screen
 from .model import Model, Style
 from .surface import IndicatorSurface
@@ -72,6 +73,19 @@ class IndicatorHelper(QObject):
         self.timer.timeout.connect(self.step)
         self.server: "QLocalServer | None" = None
         self._buffers: "dict[QLocalSocket, bytes]" = {}
+        # the processing throttle's bypass (a click on a processing element toggles it); it lasts
+        # until clicked again or until the last capture is gone, never across helper restarts
+        self.bypass = False
+        throttle.set_bypass(False)
+
+    def toggle_bypass(self) -> None:
+        self.set_bypass(not self.bypass)
+
+    def set_bypass(self, on: bool) -> None:
+        self.bypass = bool(on)
+        throttle.set_bypass(self.bypass)
+        logger.info("processing throttle %s", "bypassed (THROTTLING = OFF)" if self.bypass else "back on")
+        self.step()
 
     # ------------------------------------------------------------ socket
 
@@ -170,7 +184,12 @@ class IndicatorHelper(QObject):
         now = self.clock()
         self.model.tick(now)
         self._sync(now)
+        if self.bypass and len(self.model) == 0:
+            self.set_bypass(False)               # the processing it was for is over
+            return
         for s in self.surfaces.values():
+            s.painter.bypass = self.bypass
+            s.update_clicks(now)
             s.update()
         if not self.surfaces and len(self.model) == 0:
             self.timer.stop()
@@ -188,7 +207,7 @@ class IndicatorHelper(QObject):
                     if st is None:
                         continue
                     surf = IndicatorSurface(self.model, key, key[1], st.size, st.padding_x, st.padding_y,
-                                            self._screen_obj(key[0]), self.clock, self.layer)
+                                            self._screen_obj(key[0]), self.clock, self.layer, on_click=self.toggle_bypass)
                     surf.present()
                     self.surfaces[key] = surf
         for key in list(self.surfaces):

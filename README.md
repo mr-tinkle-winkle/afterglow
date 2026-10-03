@@ -42,6 +42,14 @@ Settings > Clipping > Clip Indicator:
   a clip option): colours for each part, a custom icon (on the board, or on the back of the glove) and a
   clap sound.
 - Rapid repeats stack, up to five visible, with a "+N" badge beyond that.
+- The clapper sits slightly tilted clockwise and bounces a little further clockwise when it claps.
+
+Settings > Clipping > Processing Throttle: slows afterglow's own post-capture work (trimming,
+thumbnails, the input overlay render) so a running game keeps its frame rate -- Light / Medium /
+Heavy (that work runs 70 % / 45 % / 20 % of the time) or Auto (backs off as CPU / GPU load rises).
+While a clip is processing, clicking the clip indicator's loading circle (or the clapper, in "stays"
+mode) turns throttling off for the moment, with "THROTTLING = OFF" shown above it; clicking again turns
+it back on.
 
 The indicator runs as its own small process (`afterglow-indicator`), started on demand by the daemon, the CLI
 or the GUI. On Wayland it is a layer-shell overlay (the flake builds the small shim this needs); on X11 it is

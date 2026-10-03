@@ -44,6 +44,9 @@ FAIL_TIME = draw.duration_ms("fail", "fail") / 1000.0
 
 CLAPPER_STATES = ("enter", "hold", "clap", "stay", "leave", "popin", "fail")
 CIRCLE_STATES = ("circle_in", "circle", "cross", "overlay", "circle_out", "circle_fail")
+# while processing: the element showing it (the loading circle, or the item in "stay" mode) can be
+# clicked to toggle the processing throttle's bypass
+PROCESSING_STATES = ("circle_in", "circle", "cross", "overlay", "stay")
 LIVE_STATES = CLAPPER_STATES + CIRCLE_STATES
 
 
@@ -67,6 +70,7 @@ class Style:
     pulse: bool = True                       # the ring pulses when a stage completes
     hands_front: str = "right"               # the Hands style: which glove ends up in front
     hands_look: str = DEFAULT_HANDS_LOOK     # the Hands style: "retro" / "cel"
+    throttle: bool = False                   # processing throttle is on: the processing element toggles its bypass
     screen: str = "focused"
     screen_hint: "dict | None" = None        # {"x": .., "y": ..} = centre of the focused window
 
@@ -92,6 +96,7 @@ class Style:
         s.pulse = bool(d.get("pulse", True))
         s.hands_front = d.get("hands_front") if d.get("hands_front") in HANDS_FRONT else "right"
         s.hands_look = d.get("hands_look") if d.get("hands_look") in HANDS_LOOKS else DEFAULT_HANDS_LOOK
+        s.throttle = bool(d.get("throttle", False))
         s.screen = d.get("screen") if d.get("screen") in SCREEN_MODES else "focused"
         hint = d.get("screen_hint")
         s.screen_hint = dict(hint) if isinstance(hint, dict) else None

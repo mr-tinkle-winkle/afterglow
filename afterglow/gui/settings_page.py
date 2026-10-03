@@ -122,6 +122,7 @@ class SettingsPage(QWidget):
         clipping_layout = QVBoxLayout(clipping_page)
         clipping_layout.addWidget(self._build_obs_group())
         clipping_layout.addWidget(self._build_clipping_group())
+        clipping_layout.addWidget(self._build_throttle_group())
         self.indicator_group = ClipIndicatorGroup(self._settings)
         clipping_layout.addWidget(self.indicator_group)
         clipping_layout.addWidget(self._build_clip_options_group(), stretch=1)
@@ -709,6 +710,30 @@ class SettingsPage(QWidget):
         layout.addWidget(note)
         return group
 
+    def _build_throttle_group(self) -> CustomGroupBox:
+        from .. import throttle
+        group = CustomGroupBox("Processing Throttle")
+        layout = group.make_layout(QVBoxLayout)
+        form = QFormLayout()
+        layout.addLayout(form)
+        self.throttle_combo = CustomComboBox()
+        self.throttle_combo.setStyleSheet(combo_box_stylesheet(self._settings.appearance))
+        for mode in throttle.MODES:
+            self.throttle_combo.addItem(throttle.MODE_LABELS[mode], mode)
+        index = self.throttle_combo.findData(getattr(self._settings, "processing_throttle", "off"))
+        self.throttle_combo.setCurrentIndex(index if index >= 0 else 0)
+        form.addRow("Throttle:", self.throttle_combo)
+        note = QLabel(
+            "Slows afterglow's own work after a capture (trimming, thumbnails, the input overlay render) "
+            "so the game you're playing keeps its frame rate. Light / Medium / Heavy let that work run "
+            "70% / 45% / 20% of the time; Auto follows how busy your CPU and GPU are and backs off as "
+            "they fill up. While a clip is processing, click the clip indicator's loading circle (or the "
+            "clapper, if it stays) to turn throttling off for now -- \"THROTTLING = OFF\" shows above it; "
+            "click again to turn it back on.")
+        note.setWordWrap(True)
+        layout.addWidget(note)
+        return group
+
     def _build_performance_group(self) -> CustomGroupBox:
         group = CustomGroupBox("Performance")
         layout = group.make_layout(QVBoxLayout)
@@ -904,6 +929,7 @@ class SettingsPage(QWidget):
         self._settings.default_error_sound_path = self._pending_default_error_sound
         self._settings.offload_library_scan_to_daemon = self.offload_scan_checkbox.isChecked()
         self._settings.auto_copy_as_mp4 = self.auto_copy_mp4_checkbox.isChecked()
+        self._settings.processing_throttle = self.throttle_combo.currentData() or "off"
 
         a = self._settings.appearance
         a.rounded_corners_enabled = self.rounded_corners_check.isChecked()

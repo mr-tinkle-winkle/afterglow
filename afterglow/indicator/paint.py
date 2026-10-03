@@ -5,8 +5,8 @@ preview shows is what the screen shows.
 """
 from __future__ import annotations
 
-from PySide6.QtCore import QPointF
-from PySide6.QtGui import QColor, QPainter
+from PySide6.QtCore import QPointF, QRectF, Qt
+from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen
 
 from . import draw, layout
 
@@ -17,6 +17,7 @@ class StackPainter:
         self.pad_x, self.pad_y = float(pad_x), float(pad_y)
         self.surface = surface
         self._colors_cache: dict = {}
+        self.bypass = False          # the processing throttle is bypassed (shows "THROTTLING = OFF")
 
     def colors(self, style) -> "dict[str, QColor]":
         k = tuple(sorted(style.colors.items()))
@@ -36,6 +37,61 @@ class StackPainter:
             if st is not None:
                 draw.draw_badge(p, layout.badge_rect(self.anchor, self.size, self.pad_x, self.pad_y, self.surface),
                                 over, self.colors(st))
+
+    def element_rect(self, style, fr) -> "QRectF | None":
+        """Where the processing element of a capture is (the loading circle, or the item itself in
+        "stay" mode) when it can be clicked to toggle the throttle bypass, else None."""
+        from .model import PROCESSING_STATES
+        if not getattr(style, "throttle", False) or fr.state not in PROCESSING_STATES:
+            return None
+        rect = layout.slot_rect(self.anchor, self.size, self.pad_x, self.pad_y, fr.slot, self.surface)
+        if fr.state == "stay":
+            if style.style == "hands":
+                return QRectF(rect)
+            from PySide6.QtGui import QTransform
+            c = rect.center()                     # the clapper sits tilted: its corners reach past the rect
+            t = QTransform().translate(c.x(), c.y()).rotate(draw.clapper_tilt(-1)).translate(-c.x(), -c.y())
+            return t.mapRect(QRectF(rect))
+        if fr.circle_alpha < 0.3:
+            return None
+        dia = draw.circle_diameter(self.size)
+        c = rect.center()
+        return QRectF(c.x() + fr.circle_dx - dia / 2, c.y() - dia / 2, dia, dia)
+
+    def click_rects(self, model, key, now: float) -> "list[QRectF]":
+        out = []
+        for fr in model.frames(key, now):
+            ind = model._inds.get(fr.id)
+            if ind is not None:
+                r = self.element_rect(ind.style, fr)
+                if r is not None:
+                    out.append(r)
+        return out
+
+    def paint_throttle_label(self, p: QPainter, r: QRectF) -> None:
+        """"THROTTLING = OFF" just above a processing element."""
+        f = QFont()
+        f.setBold(True)
+        f.setPixelSize(max(10, int(round(self.size * 0.085))))
+        text = "THROTTLING = OFF"
+        path = QPainterPath()
+        from PySide6.QtGui import QFontMetricsF
+        fm = QFontMetricsF(f)
+        w = fm.horizontalAdvance(text)
+        x = r.center().x() - w / 2
+        y = r.top() - max(6.0, self.size * 0.06) - fm.descent()
+        x = min(max(2.0, x), self.surface[0] - w - 2.0)
+        y = max(fm.ascent() + 2.0, y)
+        path.addText(QPointF(x, y), f, text)
+        p.save()
+        p.setRenderHint(QPainter.Antialiasing, True)
+        p.setPen(QPen(QColor(0, 0, 0, 220), max(2.0, f.pixelSize() * 0.22), Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+        p.setBrush(Qt.NoBrush)
+        p.drawPath(path)
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor("#ffd34d"))
+        p.drawPath(path)
+        p.restore()
 
     def paint_frame(self, p: QPainter, style, fr, now: float) -> None:
         W, H = self.surface
@@ -78,3 +134,7 @@ class StackPainter:
             draw.draw_circle(p, centre, dia * draw.pulse_scale(fr.circle_pulse),
                              fr.circle_angle, col, style.circle_opacity, fr.circle_alpha)
             draw.draw_halo(p, centre, dia, col, fr.circle_pulse, style.circle_opacity, fr.circle_alpha)
+        if self.bypass:
+            r = self.element_rect(style, fr)
+            if r is not None:
+                self.paint_throttle_label(p, r)

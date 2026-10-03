@@ -106,6 +106,7 @@ def build_style(settings, clip_cfg=None, screen_hint: "dict | None" = None) -> d
         "pulse": ci.ring_pulse,
         "hands_front": getattr(ci, "hands_front", "right"),
         "hands_look": getattr(ci, "hands_look", "retro"),
+        "throttle": getattr(settings, "processing_throttle", "off") != "off",
         "screen": ci.screen,
         "screen_hint": screen_hint if ci.screen == "focused" else None,
     }

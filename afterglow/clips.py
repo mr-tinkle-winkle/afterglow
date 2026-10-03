@@ -465,6 +465,11 @@ def trigger_clip(clip_config_id: int, indicator_id: "str | None | object" = _AUT
     """
     clip_cfg = get_clip_config(clip_config_id)
     settings = config_module.load()
+    try:
+        from . import throttle
+        throttle.ensure_running()           # this process's processing throttle (idles when off)
+    except Exception as e:  # noqa: BLE001 -- never cost a clip over the throttle
+        print(f"Processing throttle unavailable: {e}")
     stage = keyframes.HOTKEY_RECEIVED
     cid = indicator_client.begin(clip_config_id, settings) if indicator_id is _AUTO else indicator_id
     indicator_closed = False       # `done` / `overlay` sent: the capture is over as far as the indicator goes
