@@ -34,6 +34,10 @@ def watch_url(video_id: str) -> str:
 
 
 def embed_url(video_id: str) -> str:
+    import os
+    tpl = os.environ.get("AFTERGLOW_YT_EMBED")          # tests: a local stand-in player
+    if tpl:
+        return tpl.format(id=video_id)
     return f"https://www.youtube.com/embed/{video_id}?autoplay=1&rel=0"
 
 

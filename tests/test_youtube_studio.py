@@ -70,6 +70,16 @@ def js(page, code, timeout=10):
         return r
 
 
+def wait_(cond, timeout=10.0):
+    end = time.perf_counter() + timeout
+    while time.perf_counter() < end:
+        app.processEvents()
+        if cond():
+            return True
+        time.sleep(0.01)
+    return cond()
+
+
 def run(flow, values, timeout=60, on_needs_user=None, cancel_after=None):
     ev = {"steps": [], "status": [], "pct": [], "links": [], "done": None, "failed": None, "needs": []}
     r = S.FlowRunner(win.page, flow, values, view=win.view, pace_ms=30)
@@ -209,6 +219,41 @@ win.set_busy(False)
 win.tuck_away()
 pump(0.3)
 check(not win.isVisible(), "not busy: hides for real")
+
+# ------------------------------------------------------------------ the embed player's fullscreen
+from afterglow.gui.youtube_player import YouTubePlayerDialog  # noqa: E402
+from afterglow import library as _lib  # noqa: E402
+
+
+class _V:
+    youtube_video_id = "FSvid123456"
+    youtube_title = "Fullscreen test"
+    title = "Fullscreen test"
+
+
+pd = YouTubePlayerDialog(_V())
+pd.show()
+pump(3.0)
+from PySide6.QtTest import QTest  # noqa: E402
+from PySide6.QtCore import QPoint  # noqa: E402
+target = pd.view.focusProxy() or pd.view
+QTest.mouseClick(target, Qt.LeftButton, Qt.NoModifier, QPoint(pd.view.width() // 2, pd.view.height() // 2))
+check(wait_(lambda: pd._fullscreen is not None and pd._fullscreen.window.isFullScreen(), 10),
+      "the player's fullscreen button really puts the video fullscreen")
+fsw = pd._fullscreen.window if pd._fullscreen else None
+check(fsw is not None and pd._fullscreen is not None and pd._fullscreen.view.page() is pd.page,
+      "...the same page (it keeps playing), in its own fullscreen window")
+from PySide6.QtGui import QKeyEvent  # noqa: E402
+if fsw is not None:
+    QTest.keyClick(fsw, Qt.Key_Escape)
+check(wait_(lambda: pd._fullscreen is None, 10), "Esc leaves fullscreen")
+check(pd.view.page() is pd.page, "...and the same page is back in the player")
+check(fsw is not None and not fsw.isVisible(), "...the fullscreen window is gone")
+QTest.mouseClick(target, Qt.LeftButton, Qt.NoModifier, QPoint(pd.view.width() // 2, pd.view.height() // 2))
+check(wait_(lambda: pd._fullscreen is not None, 10), "it can go fullscreen again")
+pd.accept()
+pump(0.5)
+check(pd._fullscreen is None, "closing the player while fullscreen closes the fullscreen window too")
 
 # ------------------------------------------------------------------ the sign-in user agent
 from PySide6.QtWebEngineCore import QWebEnginePage  # noqa: E402

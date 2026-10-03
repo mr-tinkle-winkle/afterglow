@@ -4,12 +4,14 @@ Public, signed-out checks of an uploaded video (no API, no account): run off the
 ``oembed(video_id)``  YouTube's oEmbed endpoint answers for public AND unlisted videos once they are
                       watchable, never for private ones -- the "it really plays" check made before
                       the local file is moved to the trash.
-``fetch_thumbnail``   https://i.ytimg.com/vi/<id>/hqdefault.jpg, cached for the Uploaded tab (public
-                      for unlisted videos too).  Until YouTube has processed the video this is a
-                      404 (or a tiny gray placeholder), so it doubles as a processing check.
+``fetch_thumbnail``   https://i.ytimg.com/vi/<id>/<variant>.jpg, cached for the Uploaded tab (public
+                      for unlisted videos too).  16:9 variants first (maxresdefault 1280x720,
+                      hq720, mqdefault 320x180); hqdefault (480x360, 4:3 with black bars baked in)
+                      only as the last resort -- the card centre-crops it.  Until YouTube has
+                      processed the video these are 404s (or a tiny gray placeholder).
 
 Base URLs can be overridden for tests: AFTERGLOW_YT_OEMBED (a format string with {url}) and
-AFTERGLOW_YT_THUMB (with {id}).
+AFTERGLOW_YT_THUMB (with {id} and {variant}).
 """
 from __future__ import annotations
 
@@ -32,9 +34,12 @@ def _oembed_url(video_id: str) -> str:
     return tpl.format(url=urllib.parse.quote(watch, safe=""))
 
 
-def _thumb_url(video_id: str) -> str:
-    tpl = os.environ.get("AFTERGLOW_YT_THUMB") or "https://i.ytimg.com/vi/{id}/hqdefault.jpg"
-    return tpl.format(id=video_id)
+THUMB_VARIANTS = ("maxresdefault", "hq720", "mqdefault", "hqdefault")
+
+
+def _thumb_url(video_id: str, variant: str = "hqdefault") -> str:
+    tpl = os.environ.get("AFTERGLOW_YT_THUMB") or "https://i.ytimg.com/vi/{id}/{variant}.jpg"
+    return tpl.format(id=video_id, variant=variant)
 
 
 def _get(url: str) -> "tuple[int, bytes]":
@@ -64,10 +69,11 @@ def fetch_thumbnail(video_id: str) -> "Path | None":
     """Download (or reuse) the cached thumbnail; None until YouTube has a real one."""
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     dest = CACHE_DIR / f"{video_id}.jpg"
-    status, body = _get(_thumb_url(video_id))
-    if status == 200 and len(body) >= MIN_REAL_THUMB_BYTES:
-        tmp = dest.with_suffix(".part")
-        tmp.write_bytes(body)
-        tmp.replace(dest)
-        return dest
+    for variant in THUMB_VARIANTS:
+        status, body = _get(_thumb_url(video_id, variant))
+        if status == 200 and len(body) >= MIN_REAL_THUMB_BYTES:
+            tmp = dest.with_suffix(".part")
+            tmp.write_bytes(body)
+            tmp.replace(dest)
+            return dest
     return dest if dest.exists() else None

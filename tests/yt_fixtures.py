@@ -28,10 +28,12 @@ HITS: "list[str]" = []
 def _jpeg_bytes() -> bytes:
     from PySide6.QtGui import QImage, QColor
     from PySide6.QtCore import QBuffer, QByteArray, QIODevice
+    # YouTube's hqdefault of a 16:9 video: 480x360 with 45 px black bars top and bottom
     img = QImage(480, 360, QImage.Format_RGB32)
-    for y in range(360):
-        for x in range(0, 480, 4):
-            img.setPixelColor(x, y, QColor((x * 7) % 255, (y * 5) % 255, (x + y) % 255))
+    img.fill(QColor(0, 0, 0))
+    for y in range(45, 315):
+        for x in range(480):
+            img.setPixelColor(x, y, QColor(200, 60 + (x * 7) % 120, 40 + (y * 5) % 120))
     ba = QByteArray()
     buf = QBuffer(ba)
     buf.open(QIODevice.WriteOnly)
@@ -77,8 +79,10 @@ class _Handler(http.server.SimpleHTTPRequestHandler):
                 self.send_error(401 if vid else 404)
             return
         if u.path.startswith("/thumb/"):
-            vid = u.path.split("/")[2].split(".")[0]
-            if vid in READY:
+            # like YouTube for a fresh upload: only the 4:3 hqdefault (black bars baked in) exists
+            parts = u.path.split("/")
+            vid, variant = parts[2], parts[3].split(".")[0] if len(parts) > 3 else "hqdefault"
+            if vid in READY and variant == "hqdefault":
                 if _JPEG is None:
                     _JPEG = _jpeg_bytes()
                 self.send_response(200)
@@ -107,7 +111,8 @@ def start(upload_query: str = "") -> dict:
     threading.Thread(target=srv2.serve_forever, daemon=True).start()
     base = f"http://127.0.0.1:{port}"
     os.environ["AFTERGLOW_YT_OEMBED"] = base + "/oembed?url={url}"
-    os.environ["AFTERGLOW_YT_THUMB"] = base + "/thumb/{id}.jpg"
+    os.environ["AFTERGLOW_YT_THUMB"] = base + "/thumb/{id}/{variant}.jpg"
+    os.environ["AFTERGLOW_YT_EMBED"] = base + "/embed.html?v={id}"
     info = {"port": port, "signin_port": port2, "base": base, "signin_base": f"http://localhost:{port2}"}
     info["steps_path"] = write_steps(info, upload_query)
     return info

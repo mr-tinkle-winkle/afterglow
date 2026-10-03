@@ -300,6 +300,20 @@ card = up_cards[vb.id]
 check(card.uploaded_view and str(card._thumbnail_path(library.get_video(vb.id))).endswith("SECONDvid12.jpg"),
       "Uploaded cards show YouTube's cached thumbnail")
 check(not card.upload_badge.isHidden() and card.upload_badge.text() == "Unlisted", "...with the visibility as a badge")
+# YouTube only had the 4:3 hqdefault (black bars baked in) -- the card must still be a rounded 16:9 image
+from afterglow.gui.video_card import THUMB_SIZE  # noqa: E402
+pm = card.thumb_label.pixmap()
+img = pm.toImage()
+check(pm.size() == THUMB_SIZE, f"the thumbnail is cropped to the card's exact size ({pm.width()}x{pm.height()})")
+corners = [img.pixelColor(x, y).alpha() for x, y in ((0, 0), (pm.width() - 1, 0), (0, pm.height() - 1),
+                                                         (pm.width() - 1, pm.height() - 1))]
+check(all(a_ == 0 for a_ in corners), f"its corners are rounded (transparent) ({corners})")
+mid = pm.width() // 2
+edge_rows = [img.pixelColor(mid, y) for y in (2, pm.height() - 3)]
+check(all(c.alpha() > 200 and c.red() > 120 for c in edge_rows),
+      f"no letterbox bars: the top / bottom edges are picture, not black ({[c.name() for c in edge_rows]})")
+check(any("/hqdefault.jpg" in h for h in F.HITS) and any("/maxresdefault.jpg" in h for h in F.HITS),
+      "16:9 variants are tried first, hqdefault last")
 check(loc_cards[vc_.id].upload_badge.text() == "On YouTube", "a Local card of an uploaded clip says On YouTube")
 check(loc_cards[vd.id].upload_badge.text() == "Upload failed", "a failed upload says so on its card")
 sizes = {c.sizeHint().height() for c in list(up_cards.values()) + list(loc_cards.values())}

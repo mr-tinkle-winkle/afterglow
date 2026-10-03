@@ -16,7 +16,8 @@ import os
 from pathlib import Path
 
 from PySide6.QtCore import QUrl
-from PySide6.QtWebEngineCore import (QWebEngineProfile, QWebEngineScript, QWebEngineUrlRequestInterceptor)
+from PySide6.QtWebEngineCore import (QWebEngineProfile, QWebEngineScript, QWebEngineSettings,
+                                     QWebEngineUrlRequestInterceptor)
 
 from .. import config as config_module
 
@@ -75,6 +76,9 @@ def profile() -> QWebEngineProfile:
     p.setCachePath(str(base / "cache"))
     p.setPersistentCookiesPolicy(QWebEngineProfile.ForcePersistentCookies)
     p.setHttpCacheType(QWebEngineProfile.DiskHttpCache)
+    # Off by default in QtWebEngine: without it a page's fullscreen request (the YouTube player's
+    # fullscreen button) is refused before the app ever hears of it.
+    p.settings().setAttribute(QWebEngineSettings.FullScreenSupportEnabled, True)
     _interceptor = _SignInInterceptor()
     p.setUrlRequestInterceptor(_interceptor)
     import json

@@ -1004,6 +1004,15 @@ class VideoCard(QWidget):
                 pixmap = _placeholder_pixmap()
             else:
                 pixmap = pixmap.scaled(THUMB_SIZE, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
+                # Crop to exactly the thumbnail's size BEFORE rounding: a source that isn't 16:9
+                # (YouTube's 4:3 hqdefault.jpg, with its black bars) scales to e.g. 400x300, and
+                # rounding that taller image put the rounded corners in the part the 400x224 label
+                # cuts off -- the visible thumbnail came out square-cornered. The centre crop also
+                # drops exactly those letterbox bars.
+                x = max(0, (pixmap.width() - THUMB_SIZE.width()) // 2)
+                y = max(0, (pixmap.height() - THUMB_SIZE.height()) // 2)
+                pixmap = pixmap.copy(x, y, min(pixmap.width(), THUMB_SIZE.width()),
+                                     min(pixmap.height(), THUMB_SIZE.height()))
         return round_pixmap_corners(pixmap, radius)
 
     def mousePressEvent(self, event) -> None:

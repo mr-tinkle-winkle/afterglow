@@ -1,0 +1,13 @@
+<!doctype html>
+<!-- Stand-in for YouTube's embed player: one big button that asks for fullscreen the way the real
+     player's fullscreen button does (Element.requestFullscreen on a user click). -->
+<html><head><meta charset="utf-8"><style>
+html,body{margin:0;height:100%;background:#111}
+#fs{width:100%;height:100%;font-size:40px;color:#fff;background:#c00;border:0}
+</style></head><body><button id="fs">fullscreen</button>
+<script>
+window.__fs = 0;
+document.getElementById("fs").addEventListener("click", () => {
+  document.documentElement.requestFullscreen().then(() => { window.__fs++; }, e => { window.__err = String(e); });
+});
+</script></body></html>

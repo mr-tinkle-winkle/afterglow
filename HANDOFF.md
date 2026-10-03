@@ -116,7 +116,7 @@ Unverified (needs the real thing):
    "Upload in browser instead" is the working path.
 3. The Nix build (QtWebEngine in nixpkgs' PySide6, `QTWEBENGINEPROCESS_PATH`), Chromium's sandbox
    and GPU on a real Plasma Wayland session, and the red circle's click on a real layer-shell surface.
-4. The YouTube embed player (needs network; here only the page it loads was checked).
+4. The YouTube embed player (needs network; fullscreen tested against a local stand-in player).
 
 
 ### The constraint that decided the design
@@ -1452,7 +1452,31 @@ plain QSS rule is unavoidable.
 Seven consecutive batches of Library/Settings/appearance
 features/bug fixes, given together each time. Newest first.
 
-### This session (newest -- YouTube upload built)
+### This session (newest -- YouTube player fullscreen, Uploaded thumbnails)
+Reported after the first real uploads: the YouTube player's fullscreen button does nothing, and the
+Uploaded tab's thumbnails aren't rounded.
+- **Fullscreen** -- two causes, both found by reproducing it against a local stand-in embed player
+  with a real fullscreen button (`tests/fake_studio/embed.html`): (1) QtWebEngine's
+  `FullScreenSupportEnabled` setting is OFF by default, so the page's request was refused before
+  afterglow heard of it (`fullScreenRequested` never fired) -- now on for the YouTube profile
+  (`youtube/profile.py`); (2) accepting the request only changes what the page thinks -- a window
+  has to actually go fullscreen. `youtube_player._FullScreenWindow` (QtWebEngine's own example
+  pattern): a frameless window with its own view takes the page over, full screen on the player's
+  screen; Esc / F11 (application-wide shortcuts while it's up) or the player's own button hand the
+  page back; closing the player closes it too. The page is held by the dialog (`self.page`), since
+  once another view owns it `player.view.page()` is no longer that page.
+- **Thumbnails** -- YouTube's `hqdefault.jpg` is 4:3 (480x360, black bars baked in). Scaled to fill
+  the 400x224 card it became 400x300; corners were rounded on that, then the label cut the top and
+  bottom (corners included) off, leaving square corners and the bars. `VideoCard._render_thumb_pixmap`
+  now centre-crops to the card's exact size before rounding (which also removes the bars), and
+  `remote.fetch_thumbnail` tries the 16:9 variants first (maxresdefault, hq720, mqdefault, then
+  hqdefault). Already-cached hqdefault thumbnails are fixed by the crop with no re-download.
+- Tests: fullscreen enter / Esc / page returns / re-enter / close-while-fullscreen
+  (`test_youtube_studio`); cropped size, transparent corners, no black edge rows, variant order
+  (`test_youtube_queue`). The fake thumbnail server now serves only the letterboxed hqdefault, like
+  YouTube for a fresh upload.
+
+### Previous session (YouTube upload built)
 Asked: build the YouTube upload from the "YouTube upload -- PLANNED" spec. Built in full (see
 "YouTube upload -- BUILT" at the top for the status, file map, decisions and what is unverified).
 Changelog:
