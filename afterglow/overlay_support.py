@@ -454,3 +454,98 @@ def preview_graph(sidecar: dict, video_w: int, video_h: int, enabled: bool, colo
                          f"[{last}][s{n}] overlay=x={ox:.2f}:y={oy:.2f}:format={ov_fmt}:eof_action=pass [{out}]")
         last = out
     return files, "; ".join(chain)
+
+
+# ---------------------------------------------------------------- burning the overlay in (Copy with input overlay)
+
+_MP4_AUDIO_OK = {"aac", "mp3", "opus", "ac3", "eac3", "alac", "flac"}
+
+
+def _audio_codec(path) -> "str | None":
+    try:
+        r = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "a:0", "-show_entries", "stream=codec_name",
+                            "-of", "default=nw=1:nk=1", str(path)], capture_output=True, text=True, timeout=10)
+        return (r.stdout or "").strip() or None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _video_size_duration(path) -> "tuple[int, int, float]":
+    r = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
+                        "stream=width,height:format=duration", "-of", "json", str(path)],
+                       capture_output=True, text=True, timeout=15)
+    try:
+        d = json.loads(r.stdout or "{}")
+        st = d["streams"][0]
+        return int(st["width"]), int(st["height"]), float(d["format"]["duration"])
+    except (KeyError, IndexError, ValueError, TypeError):
+        raise OverlayError(f"can't read {Path(path).name}'s size") from None
+
+
+def burn_command(clip, dst, sidecar: "dict | None" = None, mp4: bool = False) -> "list[str]":
+    """The ffmpeg command that renders `clip` with its input overlay drawn in, at the clip's saved
+    placements -- the SAME filter graph the previewer composites with (preview_graph), translated from
+    mpv's labels ([vid1] = the clip, [vidN] = piece N-1, [vo] = out) to ffmpeg's inputs, so the copy
+    looks exactly like the previewer with the overlay on.  Video is re-encoded (H.264, near-lossless);
+    audio is stream-copied, or AAC when it won't go into an .mp4 as is."""
+    import re
+    sidecar = sidecar or load_sidecar(clip)
+    if sidecar is None:
+        raise OverlayError("this clip has no input overlay")
+    w, h, _dur = _video_size_duration(clip)
+    files, graph = preview_graph(sidecar, w, h, True, video_color(clip))
+    graph = re.sub(r"\[vid(\d+)\]", lambda m: f"[{int(m.group(1)) - 1}:v]", graph)
+    graph = graph.replace("[vo]", "[vout]")
+    cmd = ["ffmpeg", "-y", "-loglevel", "error", "-nostdin", "-i", str(clip)]
+    for f in files:
+        cmd += ["-i", f]
+    cmd += ["-filter_complex", graph, "-map", "[vout]", "-map", "0:a?",
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p"]
+    acodec = _audio_codec(clip)
+    if acodec is None:
+        pass
+    elif mp4 and acodec not in _MP4_AUDIO_OK:
+        cmd += ["-c:a", "aac", "-b:a", "192k"]
+    else:
+        cmd += ["-c:a", "copy"]
+    if mp4 or str(dst).lower().endswith(".mp4"):
+        cmd += ["-movflags", "+faststart"]
+    cmd += ["-progress", "pipe:1", "-nostats", str(dst)]
+    return cmd
+
+
+def burn_overlay(clip, dst, mp4: bool = False, progress=None, cancel=None) -> Path:
+    """Render `clip` with its input overlay burned in to `dst` (written to a temp name first, so a
+    cancelled / failed render never leaves a half file at `dst`).  progress(fraction) is called from
+    this thread; cancel is a threading.Event.  Raises OverlayError on failure."""
+    dst = Path(dst)
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dst.with_name(dst.stem + ".burn_tmp" + dst.suffix)
+    cmd = burn_command(clip, tmp, mp4=mp4)
+    _w, _h, duration = _video_size_duration(clip)
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    try:
+        for line in proc.stdout:
+            if cancel is not None and cancel.is_set():
+                proc.kill()
+                break
+            if line.startswith("out_time_us=") and progress and duration > 0:
+                try:
+                    progress(min(1.0, max(0.0, int(line.split("=", 1)[1]) / 1e6 / duration)))
+                except ValueError:
+                    pass
+        proc.wait()
+        err = proc.stderr.read() if proc.stderr else ""
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+    if cancel is not None and cancel.is_set():
+        tmp.unlink(missing_ok=True)
+        raise OverlayError("cancelled")
+    if proc.returncode != 0 or not tmp.exists():
+        tmp.unlink(missing_ok=True)
+        raise OverlayError(f"ffmpeg couldn't burn the overlay in: {err.strip()[-400:]}")
+    tmp.replace(dst)
+    if progress:
+        progress(1.0)
+    return dst

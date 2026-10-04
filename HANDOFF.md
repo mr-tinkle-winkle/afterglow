@@ -18,7 +18,7 @@ unverified on real hardware) -- see "Clip indicator ("the clapper") -- BUILT".
 then `DISPLAY=:99 QT_QPA_PLATFORM=xcb python3 tests/<suite>.py` (the
 previewer suites need GL for mpv); the `tests/test_nle_*.py` engine
 suites run with `QT_QPA_PLATFORM=offscreen`. Every suite prints PASS/FAIL
-lines and exits non-zero on failure. All 41 suites pass at handoff (the four `test_youtube_*`
+lines and exits non-zero on failure. All 42 suites pass at handoff (`test_copy_menu` newest) (the four `test_youtube_*`
 suites are new: `core` runs anywhere; `studio`, `queue` and `entry_points` need Xvfb + QtWebEngine,
 and `QTWEBENGINE_DISABLE_SANDBOX=1` when run as root -- they set it themselves; `entry_points` starts
 a real `afterglow-youtube` host process); earlier 36 (incl. the overlay suites listed
@@ -1452,7 +1452,32 @@ plain QSS rule is unavoidable.
 Seven consecutive batches of Library/Settings/appearance
 features/bug fixes, given together each time. Newest first.
 
-### This session (newest -- YouTube player fullscreen, Uploaded thumbnails)
+### This session (newest -- Copy quick action: right-click menu, copy with input overlay)
+Asked: right-clicking the card's Copy quick action offers Copy normally, Copy and rename to .mp4
+(default), Copy with input overlay, Copy with input overlay and rename to .mp4.
+- `gui/copy_actions.py` (modes + clipboard + background render + cache) and `VideoCard._show_copy_menu`
+  / `_copy_as`. Left click = the default, which still follows the existing "Auto Copy as MP4"
+  setting (on by default -> "Copy as .mp4"); the menu marks whichever is the default. The overlay
+  items are disabled (tooltip says why) for a clip without an input-overlay sidecar. The Uploaded
+  tab's Copy button stays "Copy link" (no menu).
+- The overlay copies are real renders: `overlay_support.burn_overlay()` runs ffmpeg with the
+  previewer's own overlay graph (`preview_graph`, mpv labels translated to ffmpeg inputs), so the
+  copy matches the previewer with the overlay on (placements, rotation, colour handling). Video is
+  re-encoded (H.264, CRF 18, veryfast); audio is copied. **Decision:** "with input overlay and
+  rename to .mp4" renders straight into a real .mp4 rather than renaming (the video is being
+  re-encoded anyway), converting audio to AAC only when it can't go into an mp4 (e.g. PCM).
+- Renders run off the GUI thread (a few seconds for a short clip); the card's badge shows
+  "Rendering overlay N%", then "Copied with overlay"; the file lands on the clipboard when done.
+  Cached in `~/.cache/afterglow/copies/<video id>/<clip name>.<ext>`, re-rendered only when the clip
+  or its overlay placements (the sidecar manifest) changed since. The library clip is never touched.
+- Not done (not asked): the same choice in the right-click menu's Copy, the multi-selection Copy and
+  the previewer.
+- Tests: `tests/test_copy_menu.py` (23 checks: the menu via a real context-menu event, default
+  marking and the setting, disabled overlay items, each mode's file / container / codecs, overlay
+  pixels present in the render and absent in the original, progress badge, cache reuse and
+  invalidation).
+
+### Previous session (YouTube player fullscreen, Uploaded thumbnails)
 Reported after the first real uploads: the YouTube player's fullscreen button does nothing, and the
 Uploaded tab's thumbnails aren't rounded.
 - **Fullscreen** -- two causes, both found by reproducing it against a local stand-in embed player

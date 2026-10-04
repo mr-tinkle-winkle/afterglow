@@ -1258,7 +1258,7 @@ class VideoCard(QWidget):
         layout.setSpacing(8)
         actions = [
             ("edit_icon.png", "Edit", lambda: self.edit_requested.emit(self.video_id)),
-            ("copy_icon.png", "Copy", lambda: self._bulk_copy_to_clipboard({self.video_id})),
+            ("copy_icon.png", "Copy (right-click for more ways)", lambda: self._copy_as(None)),
             ("filters_icon.png", "Filters", self._open_filters_menu_for_self),
             ("delete_icon.png", "Delete", lambda: self._bulk_delete({self.video_id})),
         ]
@@ -1291,8 +1291,100 @@ class VideoCard(QWidget):
             btn.set_fill_color(self._appearance.card_text_color)
             btn.set_outline(self._appearance.card_text_outline_color, self._appearance.card_text_outline_width)
             btn.clicked.connect(handler)
+            if icon_name == "copy_icon.png" and not self.uploaded_view:
+                # right-click: copy normally / as .mp4 / with the input overlay burned in (both ways)
+                btn.setContextMenuPolicy(Qt.CustomContextMenu)
+                btn.customContextMenuRequested.connect(lambda pos, b=btn: self._show_copy_menu(b, pos))
+                self.copy_btn = btn
             layout.addWidget(btn)
         return row
+
+    # ------------------------------------------------------------ the Copy quick action
+
+    def _show_copy_menu(self, btn, pos) -> None:
+        from . import copy_actions as ca
+        from .. import overlay_support
+        video = library.get_video(self.video_id)
+        has_overlay = video.has_local_file and overlay_support.has_sidecar(video.path)
+        default = ca.default_mode()
+        menu = _NonClosingMenu(self)
+        menu.setStyleSheet(_menu_stylesheet(self._appearance))
+        actions = {}
+        for mode, label in ca.MODES:
+            act = menu.addAction(label + ("  (default)" if mode == default else ""))
+            if ca.needs_overlay(mode) and not has_overlay:
+                act.setEnabled(False)
+                act.setToolTip("This clip has no input overlay")
+            actions[act] = mode
+        self._copy_menu = menu
+        self.context_menu_opened.emit()
+        chosen = menu.exec(btn.mapToGlobal(pos))
+        self.context_menu_closed.emit()
+        if chosen in actions:
+            self._copy_as(actions[chosen])
+
+    def _copy_as(self, mode: "str | None") -> None:
+        """mode None = the default (the left click)."""
+        from . import copy_actions as ca
+        from .. import overlay_support
+        mode = mode or ca.default_mode()
+        video = library.get_video(self.video_id)
+        b = ca.bridge()
+        if ca.needs_overlay(mode) and not getattr(self, "_copy_hooked", False):
+            b.progress.connect(self._on_copy_progress)
+            b.done.connect(self._on_copy_done)
+            self._copy_hooked = True
+        try:
+            ca.copy_video(video, mode)
+        except FileNotFoundError as e:
+            show_message(self, "Copy Failed", f"File not found: {e}")
+            return
+        except overlay_support.OverlayError as e:
+            show_message(self, "Copy Failed", str(e))
+            return
+        if ca.needs_overlay(mode) and ca.is_rendering(self.video_id):
+            self.show_temp_badge("Rendering overlay\u2026", "busy")
+
+    def show_temp_badge(self, text: str, kind: str = "info") -> None:
+        """A short message on the thumbnail badge (copy progress); refresh_upload_badge() restores it."""
+        bg = {"error": "rgba(170, 30, 40, 220)", "busy": "rgba(200, 0, 40, 200)"}.get(kind, "rgba(0, 0, 0, 170)")
+        self.upload_badge.setStyleSheet(
+            f"QLabel {{ background-color: {bg}; color: white; border-radius: 9px; padding: 3px 10px;"
+            " font-size: 12px; font-weight: bold; }")
+        self.upload_badge.setText(text)
+        self.upload_badge.adjustSize()
+        m = 10
+        self.upload_badge.move(m, THUMB_SIZE.height() - self.upload_badge.height() - m)
+        self.upload_badge.show()
+        self.upload_badge.raise_()
+
+    def _on_copy_progress(self, video_id: int, fraction: float) -> None:
+        if video_id != self.video_id:
+            return
+        try:
+            self.show_temp_badge(f"Rendering overlay {int(fraction * 100)}%", "busy")
+        except RuntimeError:
+            pass
+
+    def _on_copy_done(self, video_id: int, path: str, error: str) -> None:
+        if video_id != self.video_id:
+            return
+        try:
+            if path:
+                self.show_temp_badge("Copied with overlay", "info")
+            else:
+                self.show_temp_badge("Copy failed", "error")
+                if error and error != "cancelled":
+                    show_message(self, "Copy Failed", error)
+            QTimer.singleShot(2500, self._restore_badge)
+        except RuntimeError:
+            pass
+
+    def _restore_badge(self) -> None:
+        try:
+            self.refresh_upload_badge()
+        except RuntimeError:
+            pass
 
     def _open_filters_menu_for_self(self) -> None:
         """The "Filters" action button opens the same filter selector the Library's sort popover

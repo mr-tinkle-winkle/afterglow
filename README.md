@@ -55,6 +55,22 @@ The indicator runs as its own small process (`afterglow-indicator`), started on 
 or the GUI. On Wayland it is a layer-shell overlay (the flake builds the small shim this needs); on X11 it is
 an always-on-top, click-through window. Design and status: `HANDOFF.md`.
 
+## Copying clips
+
+The Copy button on a Library card puts the clip on the clipboard as a file, ready to paste into a
+chat app or file manager. A left click copies it as .mp4 (a renamed copy of the same file; the
+"Auto Copy as MP4" setting decides this default). Right-click the button for every option:
+
+- **Copy**: the clip's own file, as it is.
+- **Copy as .mp4** (the default).
+- **Copy with input overlay**: the clip with its keyboard / mouse / controller overlay drawn in,
+  exactly as the previewer shows it with the overlay on, in the clip's own format.
+- **Copy with input overlay as .mp4**: the same, as a real .mp4.
+
+The overlay versions take a few seconds to render (the card shows the progress), are kept for the
+next copy, and are made again only after the clip or the overlay's placement changes. They're only
+offered for clips captured with an input overlay. The clip in the library is never changed.
+
 ## YouTube upload
 
 Uploads go through YouTube Studio running inside afterglow, not the YouTube Data API: videos uploaded
