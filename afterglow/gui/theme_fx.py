@@ -561,6 +561,7 @@ class CardFx(QWidget):
         self._enter_start = None
         self._hover = 0.0
         self._hover_target = 0.0
+        self._hover_t0 = time.monotonic()
         self._t0 = time.monotonic()
         self._last = time.monotonic()
         self._anim = _anim_on()
@@ -593,6 +594,8 @@ class CardFx(QWidget):
     def _set_hover(self, target: float):
         if self._p is None or self._p.hover in ("", "none"):
             return
+        if target > 0 and self._hover <= 0:
+            self._hover_t0 = time.monotonic()      # loops start from the beginning on each hover
         self._hover_target = target
         if not self._anim:
             self._hover = target
@@ -753,10 +756,15 @@ class CardFx(QWidget):
         elif kind == "shine":
             g.save()
             g.setClipPath(rounded_rect_path(r, rad))
-            x = r.left() - 120 + ((t * 420) % (r.width() + 240))
+            # one sweep per period, faded in and out at its ends so the restart
+            # back at the left edge is never visible (it used to jump there)
+            period = 1.8
+            ph = ((time.monotonic() - self._hover_t0) % period) / period
+            x = r.left() - 60 + ph * (r.width() + 120)
+            env = math.sin(math.pi * ph)
             band = QLinearGradient(x - 50, r.top(), x + 50, r.bottom())
             band.setColorAt(0, C("#ffffff", 0))
-            band.setColorAt(0.5, C("#ffffff", int(90 * h)))
+            band.setColorAt(0.5, C("#ffffff", int(90 * h * env)))
             band.setColorAt(1, C("#ffffff", 0))
             g.fillRect(r, band)
             g.restore()
@@ -848,7 +856,8 @@ class ThemeHeader(QWidget):
             title_px = h * 0.78
         tf = tp.display_font(title_px, p)
         sf = QFont(p.font_body)
-        sf.setPixelSize(int(sub_px))
+        sf.setPixelSize(max(11, int(sub_px)))
+        tp.set_weight(sf, 600 if p.font_body.endswith(" AG") else 700)
         if p.title_style in ("chrome", "spaced", "underline"):
             sf.setLetterSpacing(QFont.PercentageSpacing, 140)
             sf.setCapitalization(QFont.AllUppercase)
@@ -875,6 +884,7 @@ class ThemeHeader(QWidget):
                 g.drawText(QPointF(x, sub_px + 2), sub)
         path = QPainterPath()
         path.addText(QPointF(x, base - fm.descent() * 0.6), tf, title)
+        path.setFillRule(Qt.WindingFill)
         st = p.title_style
         if st == "chrome":
             for wdt, a in ((14, 40), (8, 70)):
@@ -953,7 +963,7 @@ def paint_nav_label(painter: QPainter, rect: QRectF, glyph: "QPixmap | None", wo
     painter.setRenderHint(QPainter.Antialiasing)
     painter.setRenderHint(QPainter.SmoothPixmapTransform)
     vertical = rect.height() > rect.width() * 1.8
-    f = tp.display_font(10, p)
+    f = _nav_font(p)
     if vertical:
         gs = min(glyph_size, int(rect.width() * 0.62))
         top = rect.top() + rect.width() * 0.22
@@ -987,11 +997,20 @@ def paint_nav_label(painter: QPainter, rect: QRectF, glyph: "QPixmap | None", wo
     painter.restore()
 
 
+def _nav_font(p, px: int = 10) -> QFont:
+    if p.nav_font:
+        f = QFont(p.nav_font)
+        f.setPixelSize(px)
+        tp.set_weight(f, 700)
+        return f
+    return tp.display_font(px, p)
+
+
 def nav_word_width(word: str, height: int) -> int:
     p = tp.active()
     if p is None or not word:
         return 0
-    f = tp.display_font(max(9, int(height * 0.28)), p)
+    f = _nav_font(p, max(9, int(height * 0.28)))
     f.setLetterSpacing(QFont.PercentageSpacing, 100 + min(p.letter_spacing, 4))
     return int(QFontMetricsF(f).horizontalAdvance(word)) + 18
 

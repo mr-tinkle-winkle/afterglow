@@ -72,6 +72,9 @@ class OutlinedLabel(QLabel):
 
         path = QPainterPath()
         path.addText(x, y, self.font(), text)
+        # Winding, not the default odd-even: fonts whose glyphs are built from
+        # overlapping contours would otherwise get holes where parts cross.
+        path.setFillRule(Qt.WindingFill)
 
         if self._outline_width > 0:
             # TWO SEPARATE passes, not one combined stroke+fill drawPath

@@ -69,6 +69,7 @@ class Preset:
     display_upper: bool = False
     display_italic: bool = False
     display_weight: int = 700
+    nav_font: str = ""               # small labels (sidebar / tab words) if the display font is too thin small
     letter_spacing: float = 0.0      # percent, display font
     # glyphs: resource name -> (text, font) ; font None = the display font
     glyphs: dict = field(default_factory=dict)
@@ -200,7 +201,7 @@ _add(Preset(
     highlight="#e2675a", border="", border_width=0.0, shadow="#00000033", shadow_offset=5,
     unedited=("#e2675a", "#f3d27a"), selected=("#e2675a", "#e2675a"), page_border=("#c9b48c", "#b39b6e"),
     radius=3,
-    font_body="Patrick Hand", font_display="Caveat", display_weight=400,
+    font_body="Patrick Hand", font_display="Caveat AG", display_weight=700, nav_font="Patrick Hand",
     glyphs=_g(**{"library.png": ("✿", SYM), "editor.png": ("✂", SYM), "settings.png": ("⌸", SYM),
                  "local_videos.png": ("✎", SYM), "uploaded_videos.png": ("✉", SYM),
                  "search_icon.png": ("⌕", SYM), "search_icon_active.png": ("⌕", SYM), "refresh_icon.png": ("↻", SYM),
@@ -323,7 +324,7 @@ _add(Preset(
     highlight="#ffd98a", border="#4b5cff55", border_width=1.0, fav_border="#ffd98a", glow="#4b5cff",
     unedited=("#4b5cff", "#9a5bff", "#4b5cff"), selected=("#ffd98a", "#fff1c2"), page_border=("#1d2a6b", "#05071a"),
     radius=18, icon_glow="#4b5cff",
-    font_body="Montserrat AG", font_display="Montserrat AG", display_weight=400, letter_spacing=10,
+    font_body="Montserrat AG", font_display="Montserrat AG", display_weight=600, letter_spacing=8,
     glyphs=_g(**{"library.png": ("✧", SYM), "editor.png": ("◎", SYM), "settings.png": ("⊹", SYM),
                  "local_videos.png": ("◌", SYM), "uploaded_videos.png": ("⟡", SYM),
                  "search_icon.png": ("◎", SYM), "search_icon_active.png": ("◎", SYM), "refresh_icon.png": ("↻", SYM),
@@ -500,6 +501,7 @@ def glyph_pixmap(name: str):
     origin = QPointF((GLYPH_PX - br.width()) / 2 - br.x(), (GLYPH_PX - br.height()) / 2 - br.y())
     path = QPainterPath()
     path.addText(origin, font, text)
+    path.setFillRule(Qt.WindingFill)        # overlapping contours must not cut holes
     if p.icon_glow:
         glow = _qcolor(p.icon_glow)
         for w, a in ((28, 40), (18, 70), (10, 110)):
