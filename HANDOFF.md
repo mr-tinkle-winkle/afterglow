@@ -18,7 +18,7 @@ unverified on real hardware) -- see "Clip indicator ("the clapper") -- BUILT".
 then `DISPLAY=:99 QT_QPA_PLATFORM=xcb python3 tests/<suite>.py` (the
 previewer suites need GL for mpv); the `tests/test_nle_*.py` engine
 suites run with `QT_QPA_PLATFORM=offscreen`. Every suite prints PASS/FAIL
-lines and exits non-zero on failure. All 42 suites pass at handoff (`test_copy_menu` newest) (the four `test_youtube_*`
+lines and exits non-zero on failure. All 45 suites pass at handoff (`test_themes`, `test_settings_autosave`, `test_smartcut_tail` newest) (the four `test_youtube_*`
 suites are new: `core` runs anywhere; `studio`, `queue` and `entry_points` need Xvfb + QtWebEngine,
 and `QTWEBENGINE_DISABLE_SANDBOX=1` when run as root -- they set it themselves; `entry_points` starts
 a real `afterglow-youtube` host process); earlier 36 (incl. the overlay suites listed
@@ -27,6 +27,99 @@ under the Input overlay status, the five clip-indicator suites (`test_indicator_
 and the previewer / advanced-editor suites need libmpv + Xvfb (with `libxcb-cursor0` for the xcb platform;
 they hang or fail under offscreen); `test_nle_render`'s preview-
 speed check is timing-based, run it on its own, not alongside other suites).
+
+## Themes, Settings auto-save, faster trims, OBS keyframe interval -- BUILT (newest session)
+
+### Themes (Settings > General > Theme)
+Ten whole-app looks besides classic: Synthwave, Phosphor Terminal, Comic Book, Blueprint,
+Scrapbook (+ Dark mode), Sumi Ink, Aero (+ Dark mode), Grimoire, Brutalist, Observatory. Each has its
+own colours, fonts, icons, words, card frame, backdrop and animations. Picked from 10 concept images
+(the user chose these; Arcade, Darkroom and Tactical HUD were dropped).
+- `gui/theme_presets.py` -- the data (one `Preset` per theme, `dark` = Dark-mode overrides) and the
+  hooks: `active()` (read ONCE per process), `word(key, default)`, `glyph_pixmap(name)` /
+  `gradient_pixmap(name)` (the theme's icon / gradient for a bundled resource name),
+  `apply_to_appearance()`, `apply_to_app()` (app font + palette).
+- How it reaches the existing code without touching most of it:
+  - `config.load_readonly()` returns the appearance WITH the theme's colours / corner radius / card
+    text layered on (cached per config stat key). Everything that draws reads that. `config.load()`
+    (Settings, anything that saves) stays the user's own values -- a theme is never written into them.
+    `config.load_raw_appearance()` is the un-themed one (theme_presets uses it, no recursion).
+  - `resources.resource_qpixmap()` / `resource_qicon()` ask the theme first: its glyph icons replace
+    the 16 PNG icons (`ICON_NAMES`), its colours replace the 4 gradient PNGs.
+  - `Theme.button_color()` and `CustomButton` / `LibraryTabButton` outlines read `btn_fill` /
+    `btn_line`. Card action buttons use them too (classic: card text colour, as before).
+- `gui/theme_fx.py` -- the visual extras: Library backdrop (static texture cached per size + a moving
+  layer for synthwave/phosphor/aero/grimoire/stars), card frame + hard shadow (painted into
+  VideoCard's cached background), `CardFx` (a transparent, paint-only overlay per card: decorations
+  that must sit ON TOP -- tape, seal, DWG label, index number, comic burst -- plus the entrance
+  animation and hover effect; one shared 60 fps clock, only while something is animating),
+  `ThemeHeader` (Library page title, e.g. "THE TAPES", with the clip count for Comic/Observatory),
+  `paint_nav_label` (the sidebar's words run down the tall buttons; Local/Uploaded get a word beside
+  the glyph and widen to fit).
+- Cost control (measured): the backdrop repaints ~12x/s ONLY the gaps between cards (the visible
+  region minus the cards), and ONLY while afterglow is the focused window -- behind a game it costs
+  nothing (0.3% CPU measured unfocused). "Theme Animations" off = everything stands still.
+- Changing the theme saves like any setting; "Restart to Apply" re-execs the GUI
+  (`main_window.restart_app()`: same interpreter + `sys.orig_argv`, so the Nix wrapper env carries over).
+- Fonts: `gui/resources/theme_fonts/` (README there). Qt renders an application-registered VARIABLE
+  font at its default instance (Montserrat's is Thin) whatever weight you ask for, so the themes use
+  static instances made with fontTools (`Montserrat AG`, `Playfair Display AG`, `Roboto AG`,
+  `Orbitron AG`, `Cinzel AG`, renamed per the OFL); plus DejaVu Sans (symbol glyphs), DejaVu Sans Mono
+  (Terminal) and a 10-glyph subset of Noto Serif CJK JP (`Afterglow Ink Glyphs`, Sumi Ink's 残光巻筆硯蔵送墨印一).
+- Not themed (yet): dialogs keep their own palette-derived look, the Editor/Settings get the palette +
+  fonts + button colours but no backdrop/animations, and cards don't physically tilt (Scrapbook's
+  tilt from the concept art) -- a rotated widget would need QGraphicsView.
+- Tests: `tests/test_themes.py` (every theme and dark variant builds the window, all 16 glyphs draw,
+  user settings untouched, classic unchanged, animations-off stands still).
+
+### Settings auto-save
+No Save button. `SettingsPage._watch_for_autosave()` connects every input on every tab (line edits,
+spin boxes, combos, check boxes; buttons that change things without an input signal -- Add, Remove,
+Browse..., icon pickers -- schedule a save after their own handler and re-scan for new widgets). 600 ms
+debounce, then `_save(quiet=True)`: a value that doesn't validate yet (half-typed colour, empty clip
+name) shows "Not saved yet -- ..." in the status line instead of a dialog. Leaving the page
+(`hideEvent`) flushes. Import Settings / Revert Appearance now emit `rebuild_requested` and MainWindow
+swaps in a fresh SettingsPage -- otherwise auto-save would write the stale widgets back over the
+imported values. Buttons opt out with the `_ag_no_autosave` property (Test Connection, Apply to OBS,
+Restart to Apply). Test: `tests/test_settings_autosave.py`.
+
+### Faster trims (smartcut.py)
+Measured first: on an OBS-like file (1440p120, CBR 51 Mbps, keyframe every 2 s, no B-frames)
+re-encoding the partial GOPs is ~90% of a trim. The END of a trim is now stream-copied instead of
+re-encoded when the video has no frame reordering (`in_display_order()`: has_b_frames == 0 and pts
+rising in decode order) -- OBS's VAAPI H.264 has b-frames 0, so each kept frame only references
+earlier ones and the GOP can simply stop at the out point (`CopyChunk(partial=True)`; the packet loop
+re-checks the order and raises Unsupported if it ever isn't). Bit-identical tail, same size. Library
+trims that end mid-GOP: 7.2 s -> 2.8 s here. Capture-time trims already ran to the end of the file
+(no tail), so only the head is still encoded. Test: `tests/test_smartcut_tail.py`.
+Tried and dropped: decoding in a background thread (no gain, measured). Considered and not done:
+encoding the head on the GPU -- VAAPI's parameter sets clash with OBS's (smartcut gives x264 its own
+SPS/PPS id; VAAPI has no such option, so its slices would have to be rewritten), it couldn't be tested
+here (no GPU), it saves well under a second on a 16-core CPU, and the GPU encoder needs more bits than
+x264 for the same quality (bigger files) -- against the "no bigger files" rule.
+
+### OBS keyframe interval (Settings > Clipping > OBS Connection)
+obs-websocket v5 can't change encoder settings, so `obs_profile.py` reads/writes `keyint_sec` in the
+current profile's replay-buffer encoder file: `streamEncoder.json` when Advanced output's recording
+"uses the stream encoder" (`[AdvOut] RecEncoder=none`, the user's setup per their OBS log), else
+`recordEncoder.json`. Simple output mode has no keyframe setting -- explained, nothing written. Finds the
+profile via `user.ini`/`global.ini` `[Basic] ProfileDir`, Flatpak or native config dir. One-time backup
+(`*.afterglow-backup`), atomic write. Takes effect when OBS restarts (OBS only writes that file from its
+own Settings dialog, so writing it while OBS runs is safe). 1 s halves the frames a trim re-encodes;
+file size is unchanged at CBR. The user's log showed keyint 240 at 120 fps = 2 s.
+
+### OBS crash (exit 132) -- investigated, NOT afterglow as far as the log shows
+The log ends with `[ble: exit 132]` = OBS killed by SIGILL, with nothing logged at the moment it died.
+- afterglow talks to OBS only when a clip is saved (and the Test Connection button): a request
+  connection + an event connection per clip, overlapping. The log's 14 connects are strictly
+  connect/disconnect/connect/disconnect (one at a time, never two open together, and no replay-buffer
+  save logged between them) -- that looks like some other client probing OBS, not afterglow's capture.
+  Unconfirmed: the log has no timestamps, and the user hasn't said yet whether they saved clips then.
+- SIGILL with no log line is how Chromium (OBS's browser sources, CEF) stops a process when an
+  internal check fails. The same log shows both browser sources ('keyboard overlay', 'mouse overlay')
+  failing to load their page (`chrome-error://chromewebdata`).
+- Next step needs a backtrace from the user: `coredumpctl list obs` then `coredumpctl info <PID>`
+  (and/or try a session with those two browser sources disabled). Asked for in the delivery message.
 
 ## YouTube upload -- BUILT (status first; the original spec and decisions follow, kept as the reference)
 

@@ -19,6 +19,23 @@ Build order, in progress:
 3. **YouTube upload — built** (through YouTube Studio, not the API; see "YouTube upload" below).
    Tested against a local stand-in for Studio; not yet run against the real YouTube Studio.
 
+## Themes
+Settings > General > Theme: Synthwave, Phosphor Terminal, Comic Book, Blueprint, Scrapbook, Sumi Ink,
+Aero, Grimoire, Brutalist, Observatory (or the classic afterglow look). Each brings its own colours,
+fonts, icons, words, card frames, background and animations; Scrapbook and Aero also have a Dark mode.
+Pick one and press **Restart to Apply**. **Theme Animations** turns the moving parts off; they also
+pause by themselves whenever afterglow isn't the focused window (no cost while you're in a game).
+
+## Settings save themselves
+There's no Save button any more: every change is saved a moment after you make it. A value that
+isn't valid yet (a half-typed colour, an empty clip name) waits, with the reason in the status line.
+
+## Faster trims, and OBS's keyframe interval
+Trims copy the end of a clip instead of re-encoding it (OBS records without B-frames, so that's
+exact). Only the frames from the cut-in point to the next keyframe are re-encoded. To make that part
+shorter too: Settings > Clipping > OBS Keyframe Interval > 1 s > Apply to OBS, then restart OBS.
+Same file size (OBS records at a fixed bitrate). Needs OBS's Output Mode set to Advanced.
+
 ## Clip indicator ("the clapper")
 
 A small on-screen indicator for clip captures, enabled by default and configured under

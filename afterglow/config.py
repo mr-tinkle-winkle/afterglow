@@ -295,6 +295,12 @@ class AppearanceSettings:
     # specifically (not the library page background above, despite the
     # similar name -- see Theme.turquoise()'s own docstring for why).
     afterglow_color_turquoise: str = "#0c8ea0"
+    # Theme (Settings > General > Theme; gui/theme_presets.py): "classic" is
+    # afterglow's own look and changes nothing. Any other theme is layered on
+    # top of these settings by load_readonly() -- never written into them.
+    theme: str = "classic"
+    theme_dark: bool = False             # the Dark mode variant, for themes that have one
+    theme_animations: bool = True        # the theme's moving backdrop and card animations
     # "normal" | "maximized" | "fullscreen" -- replaces the old
     # top-level default_to_fullscreen bool (see load()'s backward-compat
     # shim), moved here from the Clipping tab into General since it's
@@ -589,17 +595,49 @@ def load() -> AppSettings:
     return settings
 
 
-def load_readonly() -> AppSettings:
-    """Same as load(), but returns the SHARED cached instance with no
-    copy. For the (very common) read-only call sites -- constructors and
-    paintEvents that just read a value, e.g. `load_readonly().appearance`.
-    Never mutate the returned object; use load() for anything that edits
-    fields and save()s."""
+def _load_readonly_raw() -> AppSettings:
     global _cache_key, _cache_value
     key = _stat_key()
     if key is None or key != _cache_key or _cache_value is None:
         load()
     return _cache_value
+
+
+_themed_key = None
+_themed_value: "AppSettings | None" = None
+
+
+def load_readonly() -> AppSettings:
+    """Same as load(), but returns the SHARED cached instance with no
+    copy. For the (very common) read-only call sites -- constructors and
+    paintEvents that just read a value, e.g. `load_readonly().appearance`.
+    Never mutate the returned object; use load() for anything that edits
+    fields and save()s.
+
+    With a theme picked (appearance.theme), the appearance returned here has
+    the theme's colours / corners / card text layered on (see
+    gui/theme_presets.py) -- that's what everything that DRAWS reads. load()
+    stays the user's own values (what Settings shows and saves)."""
+    global _themed_key, _themed_value
+    raw = _load_readonly_raw()
+    if getattr(raw.appearance, "theme", "classic") in ("", "classic"):
+        return raw
+    try:
+        from .gui import theme_presets
+        if theme_presets.active() is None:
+            return raw
+    except Exception:  # noqa: BLE001 -- no Qt (daemon/CLI) or a bad preset: plain settings
+        return raw
+    if _themed_key != _cache_key or _themed_value is None:
+        themed = copy.deepcopy(raw)
+        theme_presets.apply_to_appearance(themed.appearance)
+        _themed_value, _themed_key = themed, _cache_key
+    return _themed_value
+
+
+def load_raw_appearance() -> "AppearanceSettings":
+    """The user's own appearance settings, without any theme layered on."""
+    return _load_readonly_raw().appearance
 
 
 def invalidate_cache() -> None:

@@ -121,7 +121,15 @@ class CustomButton(QToolButton):
         painter.fillRect(self.rect(), bg)
         painter.setClipping(False)
 
-        if self._outline_override is not None and self._outline_width > 0:
+        outline, outline_w = self._outline_override, self._outline_width
+        if outline is None:
+            # a theme's button outline (gui/theme_presets.py); doubled because
+            # only the inner half of the centred stroke is visible (see below)
+            from .theme_presets import active, _qcolor
+            _p = active()
+            if _p is not None and _p.btn_line and _p.btn_line_w > 0:
+                outline, outline_w = _qcolor(_p.btn_line), _p.btn_line_w * 2
+        if outline is not None and outline_w > 0:
             # Traced on the EXACT SAME rect + radius as the fill above --
             # not an inset copy with a separately-reduced radius, which
             # is what this used to do and was the actual cause of the
@@ -139,8 +147,8 @@ class CustomButton(QToolButton):
             # look anyway (the border reads as fully inside the
             # button), not a distortion of its shape.
             pen = painter.pen()
-            pen.setColor(self._outline_override)
-            pen.setWidthF(self._outline_width)
+            pen.setColor(outline)
+            pen.setWidthF(outline_w)
             painter.setPen(pen)
             painter.setBrush(Qt.NoBrush)
             if radius:

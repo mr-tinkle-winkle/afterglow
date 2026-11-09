@@ -9,6 +9,8 @@ from __future__ import annotations
 from pathlib import Path
 
 FONT_DIR = Path(__file__).parent / "resources" / "fonts"
+# fonts only the themes use (gui/theme_presets.py) -- registered, not offered in the editor
+THEME_FONT_DIR = Path(__file__).parent / "resources" / "theme_fonts"
 
 # (category, family) in dropdown order
 FONT_CHOICES = [
@@ -46,7 +48,7 @@ def load_bundled_fonts() -> None:
     if _loaded:
         return
     from PySide6.QtGui import QFontDatabase
-    for f in sorted(FONT_DIR.glob("*.ttf")):
+    for f in sorted(FONT_DIR.glob("*.ttf")) + sorted(THEME_FONT_DIR.glob("*.[ot]tf")):
         QFontDatabase.addApplicationFont(str(f))
     _loaded = True
 

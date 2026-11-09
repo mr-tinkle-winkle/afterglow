@@ -147,6 +147,7 @@ class SettingsPage(QWidget):
 
         general_page = QWidget()
         general_layout = QVBoxLayout(general_page)
+        general_layout.addWidget(self._build_theme_group())
         general_layout.addWidget(self._build_appearance_group())
         general_layout.addWidget(self._build_editor_group())
         general_layout.addStretch(1)
@@ -413,6 +414,67 @@ class SettingsPage(QWidget):
         return group
 
     # ------------------------------------------------------------ appearance group
+
+    def _build_theme_group(self) -> CustomGroupBox:
+        """Theme picker (gui/theme_presets.py). The choice saves like any other
+        setting; it's applied by restarting the window ("Restart to Apply")."""
+        from . import theme_presets
+        group = CustomGroupBox("Theme")
+        form = group.make_layout(QFormLayout)
+        a = self._settings.appearance
+        self.theme_combo = CustomComboBox()
+        for tid in theme_presets.ORDER:
+            self.theme_combo.addItem(theme_presets.NAMES[tid], tid)
+        i = self.theme_combo.findData(getattr(a, "theme", "classic"))
+        self.theme_combo.setCurrentIndex(max(0, i))
+        form.addRow("Theme:", self.theme_combo)
+        self.theme_blurb = QLabel("")
+        self.theme_blurb.setWordWrap(True)
+        form.addRow("", self.theme_blurb)
+        self.theme_dark_check = CustomCheckBox()
+        self.theme_dark_check.setChecked(bool(getattr(a, "theme_dark", False)))
+        form.addRow("Dark Mode:", self.theme_dark_check)
+        self.theme_anim_check = CustomCheckBox()
+        self.theme_anim_check.setChecked(bool(getattr(a, "theme_animations", True)))
+        self.theme_anim_check.setToolTip("The theme's moving background and card animations. "
+                                         "Off: the same look, standing still.")
+        form.addRow("Theme Animations:", self.theme_anim_check)
+        restart_row = QHBoxLayout()
+        self.theme_status = QLabel("")
+        self.theme_status.setWordWrap(True)
+        self.theme_restart_btn = CustomButton("Restart to Apply")
+        self.theme_restart_btn.setProperty("_ag_no_autosave", True)
+        self.theme_restart_btn.clicked.connect(self._restart_for_theme)
+        restart_row.addWidget(self.theme_status, stretch=1)
+        restart_row.addWidget(self.theme_restart_btn)
+        form.addRow("", restart_row)
+        self._running_theme = (getattr(a, "theme", "classic"), bool(getattr(a, "theme_dark", False)),
+                               bool(getattr(a, "theme_animations", True)))
+        for w in (self.theme_combo,):
+            w.currentIndexChanged.connect(self._refresh_theme_controls)
+        for w in (self.theme_dark_check, self.theme_anim_check):
+            w.toggled.connect(self._refresh_theme_controls)
+        self._refresh_theme_controls()
+        return group
+
+    def _theme_choice(self) -> tuple:
+        return (self.theme_combo.currentData() or "classic", self.theme_dark_check.isChecked(),
+                self.theme_anim_check.isChecked())
+
+    def _refresh_theme_controls(self, *_a) -> None:
+        from . import theme_presets
+        tid = self.theme_combo.currentData() or "classic"
+        p = theme_presets.PRESETS.get(tid)
+        self.theme_blurb.setText(p.blurb if p else "afterglow's own look, with every colour editable below.")
+        self.theme_dark_check.setEnabled(bool(p and p.dark))
+        changed = self._theme_choice() != self._running_theme
+        self.theme_restart_btn.setVisible(changed)
+        self.theme_status.setText("Saved — restart the window to switch." if changed else "")
+
+    def _restart_for_theme(self) -> None:
+        self._save(quiet=True)
+        from .main_window import restart_app
+        restart_app()
 
     def _build_appearance_group(self) -> CustomGroupBox:
         group = CustomGroupBox("Appearance")
@@ -1090,6 +1152,9 @@ class SettingsPage(QWidget):
         a.saved_videos_icon_size = self.saved_videos_icon_size_spin.value()
         a.uploaded_videos_icon_size = self.uploaded_videos_icon_size_spin.value()
         a.startup_window_mode = self.startup_window_mode_combo.currentData()
+        a.theme = self.theme_combo.currentData() or "classic"
+        a.theme_dark = self.theme_dark_check.isChecked()
+        a.theme_animations = self.theme_anim_check.isChecked()
         a.editor_track_handle_side = self.editor_handle_side_combo.currentData()
 
         for label, edit in (

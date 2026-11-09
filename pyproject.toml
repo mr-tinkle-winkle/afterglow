@@ -35,4 +35,6 @@ include = ["afterglow*"]
 # flake.nix's postInstall, not by the Python package.
 [tool.setuptools.package-data]
 afterglow = ["gui/resources/*.png", "gui/resources/fonts/*.ttf", "gui/resources/fonts/*.md", "gui/resources/fonts/licenses/*",
+             "gui/resources/theme_fonts/*.ttf", "gui/resources/theme_fonts/*.otf", "gui/resources/theme_fonts/*.md",
+             "gui/resources/theme_fonts/licenses/*",
              "indicator/resources/*.json.gz", "youtube/*.json", "youtube/*.js"]

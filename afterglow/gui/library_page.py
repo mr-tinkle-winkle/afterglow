@@ -18,7 +18,7 @@ import traceback
 
 from pathlib import Path
 from PySide6.QtCore import Qt, Signal, QSize, QFileSystemWatcher, QTimer, QRectF
-from PySide6.QtGui import QPainter, QPixmap, QColor
+from PySide6.QtGui import QPainter, QPixmap, QColor, QPen
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLineEdit,
     QScrollArea, QLabel, QStackedWidget,
@@ -32,6 +32,7 @@ from .. import config as config_module
 from .. import db as db_module
 from .video_card import VideoCard, THUMB_SIZE, FAVORITE_STAR
 from .resources import resource_qpixmap
+from . import theme_fx, theme_presets
 from .theme import Theme
 from .rounded_rect import rounded_rect_path
 from .custom_button import CustomButton
@@ -86,6 +87,7 @@ class LibraryTabButton(QAbstractButton):
         self._position = position  # 'left' | 'right' | 'full'
         self._icon_target_size = 32
         self._loading = False
+        self._theme_word = ""
         appearance = config_module.load_readonly().appearance
         self._appearance = appearance
         self._theme = Theme(appearance)
@@ -105,9 +107,20 @@ class LibraryTabButton(QAbstractButton):
         self.updateGeometry()
         self.update()
 
+    def set_theme_word(self, word: str) -> None:
+        """The theme's word for this button (gui/theme_presets.py), drawn
+        beside / below its glyph. Empty (classic theme) = icon only."""
+        self._theme_word = word or ""
+        self.updateGeometry()
+        self.update()
+
     def sizeHint(self) -> QSize:
         pad = 16
-        return QSize(self._icon_target_size + pad, self._icon_target_size + pad)
+        side = self._icon_target_size + pad
+        if self._theme_word and self._position != "full":
+            from .theme_fx import nav_word_width
+            return QSize(side + nav_word_width(self._theme_word, side), side)
+        return QSize(side, side)
 
     def paintEvent(self, event) -> None:
         painter = QPainter(self)
@@ -147,6 +160,25 @@ class LibraryTabButton(QAbstractButton):
         else:
             painter.fillRect(rect, bg)
 
+        from . import theme_presets
+        p = theme_presets.active()
+        if p is not None and p.btn_line and p.btn_line_w > 0:
+            w2 = p.btn_line_w / 2
+            inner = rect.adjusted(w2, w2, -w2, -w2)
+            painter.setPen(QPen(theme_presets._qcolor(p.btn_line), p.btn_line_w))
+            painter.setBrush(Qt.NoBrush)
+            if radius:
+                painter.drawPath(rounded_rect_path(inner, max(0.0, radius - w2), top_left=round_left,
+                                                   bottom_left=round_left, top_right=round_right,
+                                                   bottom_right=round_right))
+            else:
+                painter.drawRect(inner)
+        if self._theme_word and p is not None and (self._position != "full" or self.height() > self.width() * 1.8):
+            from .theme_fx import paint_nav_label
+            paint_nav_label(painter, QRectF(self.rect()), self._icon_pixmap, self._theme_word,
+                            theme_presets._qcolor(p.tab_fg or p.icon), self._icon_target_size)
+            painter.end()
+            return
         scaled = scaled_cached(self._icon_pixmap, self._icon_target_size, self._icon_target_size)
         x = (self.width() - scaled.width()) // 2
         y = (self.height() - scaled.height()) // 2
@@ -375,8 +407,12 @@ class _VideoGridTab(QWidget):
             widget.setPalette(palette)
         self.scroll.setWidget(self.grid_container)
         outer.addWidget(self.scroll, stretch=1)
+        # the theme's backdrop (static texture + moving layer) under the cards
+        self._backdrop = theme_fx.install_backdrop(self.grid_container, self.scroll.viewport())
 
-        self.empty_label = QLabel("Nothing uploaded yet -- right-click a clip in Local and choose Upload." if uploaded_only else "No clips yet.")
+        self.empty_label = QLabel(
+            theme_presets.word("empty_uploaded", "Nothing uploaded yet -- right-click a clip in Local and choose Upload.")
+            if uploaded_only else theme_presets.word("empty_local", "No clips yet."))
         self.empty_label.setAlignment(Qt.AlignCenter)
         outer.addWidget(self.empty_label)
 
@@ -1088,9 +1124,11 @@ class LibraryPage(QWidget):
         header.setSpacing(0)
 
         self.local_btn = LibraryTabButton(resource_qpixmap("local_videos.png"), "left")
-        self.local_btn.setToolTip("Local")
+        self.local_btn.setToolTip(theme_presets.word("tab_local", "Local"))
+        self.local_btn.set_theme_word(theme_presets.word("tab_local"))
         self.uploaded_btn = LibraryTabButton(resource_qpixmap("uploaded_videos.png"), "right")
-        self.uploaded_btn.setToolTip("Uploaded")
+        self.uploaded_btn.setToolTip(theme_presets.word("tab_uploaded", "Uploaded"))
+        self.uploaded_btn.set_theme_word(theme_presets.word("tab_uploaded"))
         self._page_button_group = QButtonGroup(self)
         self._page_button_group.setExclusive(True)
         self._page_button_group.addButton(self.local_btn, 0)
@@ -1099,7 +1137,13 @@ class LibraryPage(QWidget):
         self._page_button_group.idClicked.connect(self._switch_page)
         header.addWidget(self.local_btn)
         header.addWidget(self.uploaded_btn)
-        header.addStretch(1)
+        # the theme's page title in the free space (gui/theme_fx.py); classic: just space
+        self.theme_header = None
+        if theme_presets.active() is not None:
+            self.theme_header = theme_fx.ThemeHeader()
+            header.addWidget(self.theme_header, stretch=1)
+        else:
+            header.addStretch(1)
 
         # Search/Refresh/Sort are shared across both tabs now (one row,
         # not one per tab) -- each acts on whichever tab is CURRENTLY
@@ -1335,6 +1379,8 @@ class LibraryPage(QWidget):
         # Only reports "not loading" once every tab that was loading has
         # actually finished (or failed) -- see __init__'s comment.
         self.loading_changed.emit(bool(self._loading_tabs))
+        if not self._loading_tabs and self.theme_header is not None:
+            self.theme_header.set_count(len(self._stack.currentWidget()._cards))
         if not self._loading_tabs and self._page_refresh_pending:
             self._page_refresh_pending = False
             QTimer.singleShot(0, self.refresh)

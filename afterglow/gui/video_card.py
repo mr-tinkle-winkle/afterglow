@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
 
 from .. import library, thumbnails, config as config_module
 from .resources import resource_qpixmap
+from . import theme_fx, theme_presets
 from .pixmap_effects import resolve_border_pixmap, hue_shift_pixmap_cached, silhouette_outline_pixmap_cached
 from .rounded_rect import rounded_rect_path, round_pixmap_corners
 from .theme import Theme
@@ -474,6 +475,15 @@ class VideoCard(QWidget):
         # base_pt is cached so later font_scale changes (via
         # set_font_scale) don't compound on top of an already-scaled
         # value.
+        _tp = theme_presets.active()
+        if _tp is not None:
+            tf = self.title_label.font()
+            tf.setFamily(_tp.font_display)
+            theme_presets.set_weight(tf, _tp.display_weight)
+            tf.setItalic(_tp.display_italic)
+            if _tp.display_upper:
+                tf.setCapitalization(theme_fx.QFont.AllUppercase)
+            self.title_label.setFont(tf)
         self._base_title_pt = self.title_label.font().pointSizeF()
         if self._base_title_pt <= 0:  # some platforms report pixel-based fonts instead
             self._base_title_pt = 9.0
@@ -591,8 +601,16 @@ class VideoCard(QWidget):
         self.setContextMenuPolicy(Qt.CustomContextMenu)
         self.customContextMenuRequested.connect(self._show_context_menu)
 
+        # The theme's entrance animation + hover effect: a transparent,
+        # paint-only overlay on top of everything (gui/theme_fx.py).
+        self._theme_fx = None
+        if theme_presets.active() is not None:
+            self.setProperty("video_id", self.video_id)
+            self._theme_fx = theme_fx.CardFx(self, favorite=bool(video.favorite))
+
     def _title_text(self, video: "library.Video") -> str:
-        return f"{FAVORITE_STAR} {video.title}" if video.favorite else video.title
+        star = theme_presets.word("fav", FAVORITE_STAR)
+        return f"{star} {video.title}" if (video.favorite and star) else video.title
 
     def _build_icon_row(self, matching: list[tuple[str, str]], vertical: bool) -> QWidget:
         available = THUMB_SIZE.height() if vertical else THUMB_SIZE.width()
@@ -815,8 +833,9 @@ class VideoCard(QWidget):
         painter.setRenderHint(QPainter.Antialiasing)
         painter.setRenderHint(QPainter.SmoothPixmapTransform)
 
-        outer_rect = QRectF(self.rect())
         radius = self._appearance.rounded_corner_radius if self._appearance.rounded_corners_enabled else 0
+        theme_fx.paint_card_shadow(painter, self.rect(), radius)      # (themes with a drop shadow)
+        outer_rect = theme_fx.card_body_rect(self.rect())               # the whole rect unless themed
         border_width = self._appearance.unedited_selected_border_width
 
         if selected:
@@ -853,7 +872,7 @@ class VideoCard(QWidget):
             # own background color (this used to also do the latter).
             if radius:
                 painter.setClipPath(rounded_rect_path(outer_rect, radius))
-            painter.fillRect(self.rect(), self._theme.card_background())
+            painter.fillRect(outer_rect, self._theme.card_background())
             painter.setClipping(False)
 
         # Video-thumbnail border: the unedited-highlight gradient for an
@@ -929,6 +948,8 @@ class VideoCard(QWidget):
                 else:
                     painter.fillRect(video_rect, self._theme.accent())
 
+        theme_fx.paint_card_frame(painter, self.rect(), radius, bool(self._video.favorite), self.video_id,
+                                  QRectF(self.video_box.geometry()))
         painter.end()
         return pixmap
 
@@ -950,9 +971,16 @@ class VideoCard(QWidget):
             self.upload_badge.hide()
             return
         bg = {"error": "rgba(170, 30, 40, 220)", "busy": "rgba(200, 0, 40, 200)"}.get(kind, "rgba(0, 0, 0, 170)")
+        fg, extra = "white", ""
+        _tp = theme_presets.active()
+        if _tp is not None and kind == "info":
+            if text == "On YouTube":
+                text = theme_presets.word("badge_uploaded", text)
+            bg, fg = _tp.highlight[:7], ("#000000" if not theme_presets._dark(_tp.highlight) else "#ffffff")
+            extra = f" font-family: '{_tp.font_display}'; border-radius: {min(9, _tp.radius)}px;"
         self.upload_badge.setStyleSheet(
-            f"QLabel {{ background-color: {bg}; color: white; border-radius: 9px; padding: 3px 10px;"
-            " font-size: 12px; font-weight: bold; }")
+            f"QLabel {{ background-color: {bg}; color: {fg}; border-radius: 9px; padding: 3px 10px;"
+            f" font-size: 12px; font-weight: bold;{extra} }}")
         self.upload_badge.setText(text)
         self.upload_badge.adjustSize()
         m = 10
@@ -1288,8 +1316,13 @@ class VideoCard(QWidget):
             # there was nothing separate to fix for "barely visible"
             # once the shape itself was corrected.
             btn.set_circular(56)
-            btn.set_fill_color(self._appearance.card_text_color)
-            btn.set_outline(self._appearance.card_text_outline_color, self._appearance.card_text_outline_width)
+            _tp = theme_presets.active()
+            if _tp is not None:
+                btn.set_fill_color(_tp.btn_fill or _tp.accent)
+                btn.set_outline(_tp.btn_line or None, _tp.btn_line_w)
+            else:
+                btn.set_fill_color(self._appearance.card_text_color)
+                btn.set_outline(self._appearance.card_text_outline_color, self._appearance.card_text_outline_width)
             btn.clicked.connect(handler)
             if icon_name == "copy_icon.png" and not self.uploaded_view:
                 # right-click: copy normally / as .mp4 / with the input overlay burned in (both ways)

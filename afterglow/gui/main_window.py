@@ -98,9 +98,11 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         from . import wheel_guard, fonts, app_chrome
+        fonts.load_bundled_fonts()    # the editor's bundled text fonts (+ the themes' fonts)
+        from . import theme_presets
+        theme_presets.apply_to_app(QApplication.instance())   # the theme's font + palette (no-op for classic)
         wheel_guard.install()         # the wheel never changes combo boxes anywhere in the app
         app_chrome.install()          # app-styled tooltips, text-field menus, scroll bars
-        fonts.load_bundled_fonts()    # the editor's bundled text fonts
         self.setWindowTitle("afterglow")
         # 16:9-ish and reasonably large by default, matching the
         # 1920x1080 reference-scale baseline in scaling.py -- the
@@ -170,12 +172,15 @@ class MainWindow(QMainWindow):
         # All three fully rounded now ('full' -- no touching-seam corner
         # skipping needed anymore, now that real padding separates them)
         # and no border-gradient system at all -- see module docstring.
+        from .theme_presets import word
         self.library_nav_btn = LibraryTabButton(resource_qpixmap("library.png"), "full")
-        self.library_nav_btn.setToolTip("Library")
+        self.library_nav_btn.setToolTip(word("nav_library", "Library"))
+        self.library_nav_btn.set_theme_word(word("nav_library"))
         self.editor_nav_btn = LibraryTabButton(resource_qpixmap("editor.png"), "full")
-        self.editor_nav_btn.setToolTip("Editor")
+        self.editor_nav_btn.setToolTip(word("nav_editor", "Editor"))
+        self.editor_nav_btn.set_theme_word(word("nav_editor"))
         self.settings_nav_btn = LibraryTabButton(resource_qpixmap("settings.png"), "full")
-        self.settings_nav_btn.setToolTip("Settings")
+        self.settings_nav_btn.setToolTip(word("nav_settings", "Settings"))
 
         # Library and Editor stretch to fill most of the sidebar's
         # vertical space; the gear stays a fixed small size at the bottom
@@ -375,3 +380,15 @@ class MainWindow(QMainWindow):
         self.editor_page.load_video(video_id)
         self.editor_nav_btn.setChecked(True)
         crossfade_to_index(self.stack, _EDITOR_INDEX)
+
+
+def restart_app() -> None:
+    """Start a fresh afterglow window and close this one -- how a theme change
+    is applied (every widget is built from the theme, so a clean start is
+    simpler and more reliable than repainting everything in place). The new
+    process inherits this one's environment (the Nix wrapper's paths too)."""
+    import sys
+    from PySide6.QtCore import QProcess
+    args = list(getattr(sys, "orig_argv", [sys.executable] + sys.argv))[1:]
+    if QProcess.startDetached(sys.executable, args):
+        QApplication.instance().quit()

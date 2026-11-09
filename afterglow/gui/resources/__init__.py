@@ -32,8 +32,17 @@ def resource_qicon(name: str):
     from PySide6.QtGui import QIcon
 
     if name not in _icon_cache:
-        with resource_path(name) as p:
-            _icon_cache[name] = QIcon(str(p))
+        themed = None
+        try:
+            from .. import theme_presets
+            themed = theme_presets.glyph_pixmap(name)
+        except Exception:  # noqa: BLE001
+            pass
+        if themed is not None:
+            _icon_cache[name] = QIcon(themed)
+        else:
+            with resource_path(name) as p:
+                _icon_cache[name] = QIcon(str(p))
     return _icon_cache[name]
 
 
@@ -66,6 +75,16 @@ def resource_qpixmap(name: str):
     broken forever -- a small, bounded cost given how rare that actually
     is, versus the alternative of a permanently blank icon."""
     from PySide6.QtGui import QPixmap
+
+    # A theme (gui/theme_presets.py) draws its own glyph icons and gradient
+    # colours in place of these bundled images.
+    try:
+        from .. import theme_presets
+        themed = theme_presets.glyph_pixmap(name) or theme_presets.gradient_pixmap(name)
+    except Exception:  # noqa: BLE001 -- a theme problem must never cost an icon
+        themed = None
+    if themed is not None:
+        return themed
 
     cached = _pixmap_cache.get(name)
     if cached is not None:

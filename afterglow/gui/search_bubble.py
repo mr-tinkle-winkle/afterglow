@@ -96,7 +96,8 @@ class SearchBubble(QWidget):
         row.setSizeConstraint(QLayout.SetNoConstraint)
 
         self.line_edit = QLineEdit(self)
-        self.line_edit.setPlaceholderText("Search title or description...")
+        from .theme_presets import word
+        self.line_edit.setPlaceholderText(word("search", "Search title or description..."))
         text_color = contrast_text(self._theme.card_background()).name()
         # Scoped to QLineEdit specifically (not a bare "background-color:
         # ..." with no type selector) -- deliberately avoiding the exact

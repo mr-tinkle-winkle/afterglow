@@ -104,6 +104,10 @@ class Theme:
         fill and, say, the info-portrusion's fill are conceptually
         different things that happen to share a color today and might
         not always."""
+        from .theme_presets import active
+        p = active()
+        if p is not None and p.btn_fill:
+            return QColor(p.btn_fill[:7])
         return self.accent()
 
     def button_text_color(self) -> QColor:
