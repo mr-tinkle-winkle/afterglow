@@ -41,7 +41,7 @@ from . import overlay_support
 from . import indicator_client
 from .editor import TrimRequest, commit_trim, probe_duration, EditorError
 from .obs_client import OBSClient, OBSError
-from .library import add_video, add_tag_to_video, get_video, Video
+from .library import add_video, add_tag_to_video, get_video, path_in_library, Video
 
 # Settling the raw replay file before trimming it: OBS reports the save
 # (ReplayBufferSaved) once the file is closed, so this is only a safety net
@@ -534,6 +534,12 @@ def trigger_clip(clip_config_id: int, indicator_id: "str | None | object" = _AUT
         # below, this only changes what the file on disk is called.
         final_name = f"{timestamp}{raw_path.suffix}"
         final_path = clips_dir / final_name
+        # Two clips saved within the same second (fast trims make that easy)
+        # would share a name: number the later one instead of colliding.
+        n = 2
+        while final_path.exists() or path_in_library(final_path):
+            final_path = clips_dir / f"{timestamp}-{n}{raw_path.suffix}"
+            n += 1
         trimmed = False
         if trim_start <= SKIP_TRIM_TOLERANCE_SECONDS:
             # The raw buffer is already at or under the requested clip length

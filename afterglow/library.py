@@ -1255,3 +1255,9 @@ if __name__ == "__main__":
 
     delete_video(v.id)
     print("Deleted OK, remaining videos:", len(list_videos()))
+
+
+def path_in_library(path) -> bool:
+    """True when a video row already has this exact path."""
+    with db.get_conn() as conn:
+        return conn.execute("SELECT 1 FROM videos WHERE path = ?", (str(path),)).fetchone() is not None
