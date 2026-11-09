@@ -485,10 +485,9 @@ class FiltersSettingsPage(QWidget):
 
     # ------------------------------------------------------------ save
 
-    def save(self) -> None:
-        """Called by SettingsPage's own Save button -- this page has no
-        separate save button of its own, to keep one consistent "Save
-        Settings" action for the whole Settings area."""
+    def save(self, quiet: bool = False) -> None:
+        """Called by SettingsPage's save (auto-save, quiet=True: an invalid
+        colour is just skipped until it's valid, no dialog)."""
         settings = config_module.load()
         settings.filter_display.show_filter_names = self.show_names_check.isChecked()
         settings.filter_display.show_filter_icons = self.show_icons_check.isChecked()
@@ -502,6 +501,8 @@ class FiltersSettingsPage(QWidget):
             library.set_tag_icon(row.tag_id, row.icon_path or None)
             outline_text = row.outline_color_edit.text().strip()
             if outline_text and not QColor(outline_text).isValid():
+                if quiet:
+                    continue
                 show_message(
                     self, "Invalid Color",
                     f"'{outline_text}' isn't a valid outline color for '{row.tag_name}' -- "

@@ -205,6 +205,7 @@ class MainWindow(QMainWindow):
         self.stack.addWidget(self.settings_page)
         self.stack.addWidget(self.library_page)
         self.stack.addWidget(self.editor_page)
+        self.settings_page.rebuild_requested.connect(self._rebuild_settings_page)
 
         # Double-click / context-menu "Edit" in the Library routes here to
         # the Editor page (and loads that video into it).
@@ -226,6 +227,21 @@ class MainWindow(QMainWindow):
         self.library_nav_btn.setChecked(True)
         self.stack.setCurrentIndex(_LIBRARY_INDEX)
         self._setup_youtube()
+
+    def _rebuild_settings_page(self) -> None:
+        """Settings were imported / reset outside the page's widgets: swap in a
+        page built from the new values (auto-save would otherwise write the
+        old ones back)."""
+        old = self.settings_page
+        idx = self.stack.indexOf(old)
+        current = self.stack.currentWidget() is old
+        self.settings_page = SettingsPage()
+        self.settings_page.rebuild_requested.connect(self._rebuild_settings_page)
+        self.stack.insertWidget(idx, self.settings_page)
+        self.stack.removeWidget(old)
+        if current:
+            self.stack.setCurrentWidget(self.settings_page)
+        old.deleteLater()
 
     # ------------------------------------------------------------ YouTube
 

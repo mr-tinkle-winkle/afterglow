@@ -5,8 +5,12 @@ order: OBS connection, clips directory, default sound, and the clip
 options list (name/length/sound/hotkey each), and the YouTube tab
 (gui/youtube_settings.py: sign-in, upload defaults, the description template).
 
-Save strategy: explicit "Save" button rather than autosave-on-every-
-keystroke. Clip config rows are diffed against the DB on save (added /
+Save strategy: auto-save. Every input on every Settings tab is watched
+(_watch_for_autosave); a change starts a short debounce and then _save()
+runs quietly -- a value that doesn't validate yet (a half-typed colour, an
+empty clip name) shows in the status line instead of popping a dialog, and
+is saved as soon as it's valid. Leaving the page flushes anything pending.
+Clip config rows are diffed against the DB on save (added /
 updated / deleted) rather than the naive "delete everything, reinsert
 everything" approach, so that a clip config's numeric id -- and therefore
 any daemon state or future video->clip_config_id references -- stays
@@ -21,8 +25,9 @@ from PySide6.QtWidgets import (
     QLabel, QScrollArea,
     QComboBox, QStackedWidget, QButtonGroup, QFrame,
 )
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QColor
+from PySide6.QtWidgets import QAbstractButton, QAbstractSpinBox, QCheckBox, QRadioButton
 
 from .. import config as config_module
 from .. import clips
@@ -49,9 +54,22 @@ from .themed_dialogs import get_color, get_existing_directory, get_open_file_nam
 CLIP_OPTIONS_MIN_HEIGHT = 340   # px, the clip option list inside Settings > Clipping
 
 
+AUTOSAVE_DELAY_MS = 600
+
+
 class SettingsPage(QWidget):
+    # Settings were replaced from outside the page's widgets (import / revert
+    # to defaults): MainWindow swaps in a fresh page so auto-save can't write
+    # the old values back over them.
+    rebuild_requested = Signal()
+
     def __init__(self, parent=None):
         super().__init__(parent)
+        self._autosave_timer = QTimer(self)
+        self._autosave_timer.setSingleShot(True)
+        self._autosave_timer.setInterval(AUTOSAVE_DELAY_MS)
+        self._autosave_timer.timeout.connect(lambda: self._save(quiet=True))
+        self._autosave_ready = False
         self._settings = config_module.load()
         self._rows: list[ClipConfigRow] = []
         self._deleted_ids: set[int] = set()
@@ -161,14 +179,67 @@ class SettingsPage(QWidget):
         outer.addWidget(self._settings_stack, stretch=1)
 
         save_row = QHBoxLayout()
-        self.status_label = QLabel("")
+        self.status_label = QLabel("Changes save automatically.")
         save_row.addWidget(self.status_label, stretch=1)
-        save_btn = CustomButton("Save Settings")
-        save_btn.clicked.connect(self._save)
-        save_row.addWidget(save_btn)
         outer.addLayout(save_row)
 
         self._load_clip_configs()
+        self._watch_for_autosave(self)
+        self._autosave_ready = True
+
+    # ------------------------------------------------------------ auto-save
+
+    def _watch_for_autosave(self, root: QWidget) -> None:
+        """Connect every input under `root` (once each) to the auto-save
+        debounce. Buttons that change things without an input signal (Add,
+        Remove, Browse..., pick an icon) schedule a save too, and re-scan for
+        widgets they may have created."""
+        skip = set(self._tab_button_group.buttons())
+        for w in [root] + root.findChildren(QWidget):
+            if w.property("_ag_autosave") or w in skip:
+                continue
+            if isinstance(w, QLineEdit):
+                if isinstance(w.parent(), QAbstractSpinBox):     # a spin box's own editor
+                    continue
+                w.textChanged.connect(self._schedule_autosave)
+            elif isinstance(w, QAbstractSpinBox) and hasattr(w, "valueChanged"):
+                w.valueChanged.connect(self._schedule_autosave)
+            elif isinstance(w, QComboBox):
+                w.currentIndexChanged.connect(self._schedule_autosave)
+            elif isinstance(w, (CustomCheckBox, QCheckBox, QRadioButton)):
+                w.toggled.connect(self._schedule_autosave)
+            elif isinstance(w, QAbstractButton):
+                if w.property("_ag_no_autosave") or w.isCheckable():
+                    continue
+                w.clicked.connect(self._after_button)
+            else:
+                continue
+            w.setProperty("_ag_autosave", True)
+
+    def _schedule_autosave(self, *_a) -> None:
+        if self._autosave_ready:
+            self.status_label.setText("Saving…")
+            self._autosave_timer.start()
+
+    def _after_button(self, *_a) -> None:
+        # (after the click's own handler -- it may add rows / open a dialog)
+        QTimer.singleShot(0, lambda: (self._watch_for_autosave(self), self._schedule_autosave()))
+
+    def flush_autosave(self) -> None:
+        """Save now if a change is still waiting for its debounce."""
+        if self._autosave_timer.isActive():
+            self._autosave_timer.stop()
+            self._save(quiet=True)
+
+    def hideEvent(self, event) -> None:
+        self.flush_autosave()
+        super().hideEvent(event)
+
+    def _problem(self, quiet: bool, title: str, text: str) -> None:
+        if quiet:
+            self.status_label.setText(f"Not saved yet — {text}")
+        else:
+            show_message(self, title, text)
 
     # ------------------------------------------------------------ OBS group
 
@@ -224,10 +295,59 @@ class SettingsPage(QWidget):
         form.addRow("Wait after OBS Replay Buffer Finishes:", self.obs_wait_after_finish_spin)
 
         test_btn = CustomButton("Test Connection")
+        test_btn.setProperty("_ag_no_autosave", True)
         test_btn.clicked.connect(self._test_obs_connection)
         form.addRow("", test_btn)
 
+        # OBS's keyframe interval (written into OBS's own profile -- see obs_profile.py)
+        kf_row = QHBoxLayout()
+        self.obs_keyint_combo = CustomComboBox()
+        for sec in (1, 2, 3, 4):
+            self.obs_keyint_combo.addItem(f"{sec} s" + ("  (fastest trims)" if sec == 1 else ""), sec)
+        self.obs_keyint_combo.setProperty("_ag_autosave", True)     # an OBS action, not an afterglow setting
+        kf_apply = CustomButton("Apply to OBS")
+        kf_apply.setProperty("_ag_no_autosave", True)
+        kf_apply.clicked.connect(self._apply_obs_keyint)
+        kf_row.addWidget(self.obs_keyint_combo, stretch=1)
+        kf_row.addWidget(kf_apply)
+        form.addRow("OBS Keyframe Interval:", kf_row)
+        self.obs_keyint_status = QLabel("")
+        self.obs_keyint_status.setWordWrap(True)
+        form.addRow("", self.obs_keyint_status)
+        self._refresh_obs_keyint()
+
         return group
+
+    def _refresh_obs_keyint(self) -> None:
+        from .. import obs_profile
+        info = obs_profile.read_keyframe_info()
+        if not info.ok:
+            self.obs_keyint_status.setText(info.reason)
+            return
+        cur = info.keyint_sec
+        self.obs_keyint_status.setText(
+            f"Profile “{info.profile}”: OBS currently puts a keyframe every "
+            + (f"{cur} s." if cur else "few seconds (Auto).")
+            + " Trims re-encode only up to the first keyframe, so shorter = faster trims."
+              " Same file size (OBS records at a fixed bitrate).")
+        i = self.obs_keyint_combo.findData(cur if cur else 2)
+        if i >= 0:
+            self.obs_keyint_combo.setCurrentIndex(i)
+
+    def _apply_obs_keyint(self) -> None:
+        from .. import obs_profile
+        sec = int(self.obs_keyint_combo.currentData() or 1)
+        try:
+            obs_profile.set_keyint_sec(sec)
+        except (RuntimeError, OSError, ValueError) as e:
+            show_message(self, "Couldn't Change OBS", str(e))
+            return
+        self._refresh_obs_keyint()
+        if obs_profile.obs_running():
+            show_message(self, "OBS Keyframe Interval",
+                         f"Set to {sec} s. Restart OBS for it to take effect.")
+        else:
+            show_message(self, "OBS Keyframe Interval", f"Set to {sec} s. It applies the next time OBS starts.")
 
     def _test_obs_connection(self) -> None:
         from ..config import OBSSettings
@@ -793,10 +913,10 @@ class SettingsPage(QWidget):
         except (OSError, tomllib.TOMLDecodeError) as exc:
             show_message(self, "Import Failed", f"Could not read settings from {path}:\n{exc}")
             return
-        show_message(
-            self, "Settings Imported",
-            "Settings were imported successfully. Reopen Settings to see the new values everywhere.",
-        )
+        self._autosave_timer.stop()
+        self._autosave_ready = False
+        show_message(self, "Settings Imported", "Settings were imported successfully.")
+        self.rebuild_requested.emit()
 
     def _revert_default_colors(self) -> None:
         defaults = config_module.AppearanceSettings()
@@ -814,11 +934,10 @@ class SettingsPage(QWidget):
         settings.appearance = config_module.AppearanceSettings()
         config_module.save(settings)
         self._settings = settings
-        show_message(
-            self, "Reverted",
-            "All appearance settings have been reset to their defaults. "
-            "Reopen Settings to see the reset values reflected in this page.",
-        )
+        self._autosave_timer.stop()
+        self._autosave_ready = False
+        show_message(self, "Reverted", "All appearance settings have been reset to their defaults.")
+        self.rebuild_requested.emit()
 
     def _build_color_row(self, initial_hex: str) -> tuple[QHBoxLayout, QLineEdit]:
         row = QHBoxLayout()
@@ -891,6 +1010,7 @@ class SettingsPage(QWidget):
                             indicator=indicator, indicator_style_provider=self.indicator_group.style_dict,
                             youtube_playlist=youtube_playlist)
         row.delete_requested.connect(lambda: self._remove_row(row))
+        row.changed.connect(self._schedule_autosave)    # incl. a recorded hotkey / overlay options
         # insert before the trailing stretch
         self.rows_layout.insertWidget(self.rows_layout.count() - 1, row)
         self._rows.append(row)
@@ -901,21 +1021,23 @@ class SettingsPage(QWidget):
         self._rows.remove(row)
         row.setParent(None)
         row.deleteLater()
+        self._schedule_autosave()
 
     # ------------------------------------------------------------ save
 
-    def _save(self) -> None:
+    def _save(self, quiet: bool = False) -> None:
+        self._autosave_timer.stop()
         # Validate all rows first so a bad row doesn't leave things half-saved.
         seen_names = set()
         for row in self._rows:
             fields = row.to_fields()
             if not fields["name"]:
-                show_message(self, "Invalid Clip Option", "Every clip option needs a name.")
+                self._problem(quiet, "Invalid Clip Option", "Every clip option needs a name.")
                 return
             key = fields["name"].lower()
             if key in seen_names:
-                show_message(
-                    self, "Duplicate Name",
+                self._problem(
+                    quiet, "Duplicate Name",
                     f"Clip option name '{fields['name']}' is used more than once. "
                     f"Names must be unique.",
                 )
@@ -980,8 +1102,8 @@ class SettingsPage(QWidget):
             ("Card Text Outline Color", self.card_text_outline_color_edit),
         ):
             if not QColor(edit.text().strip()).isValid():
-                show_message(
-                    self, "Invalid Color",
+                self._problem(
+                    quiet, "Invalid Color",
                     f"'{edit.text()}' isn't a valid color for {label} -- "
                     f"use a hex code like #257fff.",
                 )
@@ -997,7 +1119,7 @@ class SettingsPage(QWidget):
 
         problem = self.youtube_page.validate()
         if problem:
-            show_message(self, "Invalid Setting", problem)
+            self._problem(quiet, "Invalid Setting", problem)
             return
         self.input_overlay_page.save_into(self._settings)
         self.indicator_group.save_into(self._settings)
@@ -1005,7 +1127,7 @@ class SettingsPage(QWidget):
         # flipped from the previewer since this page loaded its copy: keep the latest
         self._settings.preview_input_overlay = config_module.load().preview_input_overlay
         config_module.save(self._settings)
-        self.filters_settings_page.save()
+        self.filters_settings_page.save(quiet=quiet)
 
         try:
             for clip_config_id in self._deleted_ids:
@@ -1020,11 +1142,11 @@ class SettingsPage(QWidget):
                 else:
                     clips.update_clip_config(row.clip_config_id, **fields)
         except ClipError as e:
-            show_message(self, "Save Failed", str(e))
+            self._problem(quiet, "Save Failed", str(e))
             return
 
         self.input_overlay_page.refresh_status()   # which clip types capture the overlay
-        self.status_label.setText("Saved.")
+        self.status_label.setText("All changes saved.")
 
     def refresh_dynamic_lists(self) -> None:
         """Passthrough to the Filters sub-page -- see its own docstring
