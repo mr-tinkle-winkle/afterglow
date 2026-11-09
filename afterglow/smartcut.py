@@ -453,6 +453,32 @@ def decoded_frames(path, t0: float, n: int, rate: Fraction):
                 return
 
 
+def in_display_order(path, t0: float, t1: float) -> bool:
+    """True when every video packet from the keyframe at t0 up to t1 comes in
+    display order (pts rising in decode order: no B-frames / reordering).
+    Then a GOP can be cut short anywhere by just dropping the packets after
+    the cut -- each kept frame only references frames before it -- so the
+    end of a trim is copied as-is instead of re-encoded. Reads packet
+    headers only."""
+    with av.open(str(path)) as c:
+        vs = c.streams.video[0]
+        if (vs.codec_context.has_b_frames or 0) > 0:
+            return False
+        tb = vs.time_base
+        c.seek(max(0, int((t0 - 0.001) / tb)), stream=vs, backward=True, any_frame=False)
+        last = None
+        for pkt in c.demux(vs):
+            if pkt.pts is None:
+                continue
+            pts = float(pkt.pts * tb)
+            if last is not None and pts <= last:
+                return False
+            last = pts
+            if pts >= t1:
+                return True
+        return last is not None
+
+
 # =========================================================================
 # muxing chunks
 # =========================================================================
@@ -465,6 +491,8 @@ class CopyChunk:
     end: "float | None"
     at: int
     n: int
+    partial: bool = False   # `end` may fall mid-GOP: only for streams with no frame reordering
+                            # (no B-frames, e.g. OBS's default) -- see in_display_order()
 
 
 @dataclass
@@ -505,10 +533,17 @@ def _chunk_packets(chunk, rate: Fraction):
         if isinstance(chunk, CopyChunk):
             c.seek(max(0, int((chunk.start - 0.001) / tb)), stream=vs, backward=True, any_frame=False)
             started = False
+            last_pts = None
             for pkt in c.demux(vs):
                 if pkt.pts is None:
                     continue
                 pts = float(pkt.pts * tb)
+                if chunk.partial and started:
+                    if last_pts is not None and pts <= last_pts:
+                        raise Unsupported("reordered frames in a partially copied GOP")
+                    if chunk.end is not None and pts >= chunk.end - fd * 0.5:
+                        return
+                last_pts = pts
                 if not started:
                     if not (pkt.is_keyframe and abs(pts - chunk.start) < fd * 0.5):
                         if pts > chunk.start + fd * 0.5 and pkt.is_keyframe:
@@ -762,6 +797,15 @@ def smart_trim(src, dst, start: float, end: float, crf: int = 18, preset: str = 
             if to_eof:
                 copy_end, tail_n = None, 0
                 copy_n = n_total - head_n
+            elif in_display_order(src, cut_in.pts, end_t):
+                # no frame reordering (OBS records without B-frames): the copy
+                # simply stops at the out point -- nothing at the end is re-encoded
+                copy_end, tail_n = end_t, 0
+                copy_n = n_total - head_n
+                if copy_n > 0:
+                    chunks.append(CopyChunk(src, cut_in.pts, end_t, head_n, copy_n, partial=True))
+                    stats["copied"] = copy_n
+                    copy_n = 0          # (already added)
             else:
                 k2 = k2_found
                 if k2 is None:
