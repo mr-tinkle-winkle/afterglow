@@ -313,6 +313,8 @@ class _VideoGridTab(QWidget):
         self._refresh_pending = False
         # Signature of what the grid currently shows -- see refresh().
         self._last_signature = None
+        self._card_rows: dict = {}          # video id -> the signature row its current card was built from
+        self._pool: dict = {}               # video id -> (hidden card, its row): see _plan_cards
         self._pending_signature = None
 
         outer = QVBoxLayout(self)
@@ -784,33 +786,207 @@ class _VideoGridTab(QWidget):
             self._finish_refresh()
             return
         self._pending_signature = signature
-        self._build_queue = list(videos)
         self._build_cards: list[VideoCard] = []
+        # Which cards actually have to be made. A card depends on its own
+        # video's row and on the grid-wide part of the signature (filter
+        # icons / colours, the highlight option, the settings file). When only
+        # rows changed -- a clip was edited, renamed, tagged, favourited,
+        # deleted, uploaded, or a new one was captured -- every card whose row
+        # is unchanged is KEPT (same widget, same thumbnail, same scroll
+        # position, same selection) and only the changed / new ones are built.
+        # This used to rebuild every card of the library for any change at all.
+        rows, keep, incremental = self._plan_cards(videos, signature)
+        self._build_plan = [(v, keep.get(v.id)) for v in videos]
+        self._build_rows = rows
+        self._build_incremental = incremental
+        # An EMPTY grid (the app just opened, or the tab had nothing) fills
+        # progressively: the first screenful is shown as soon as it is built,
+        # with its thumbnails already in, and the rest is added underneath as
+        # it gets built. A grid that already shows cards keeps them until the
+        # new set is complete (no half-built flash).
+        self._build_progressive = not incremental and not self._cards
+        self._build_shown = 0
+        self._build_queue = [v for v, card in self._build_plan if card is None]
         self._build_step(self._build_generation)
+
+    # How many cards the first, immediately shown batch of an empty grid has:
+    # enough to fill the viewport on a large monitor (5 columns x 3 rows + 1).
+    _FIRST_BATCH = 16
 
     def _build_step(self, generation: int) -> None:
         if generation != getattr(self, "_build_generation", 0) or not self._refresh_in_progress:
             return  # superseded (shouldn't normally happen, but never double-build)
         try:
             deadline = time.perf_counter() + self._BUILD_SLICE_SECONDS
+            progressive = getattr(self, "_build_progressive", False)
             while self._build_queue:
-                self._build_cards.append(self._make_card(self._build_queue.pop(0)))
+                first_batch = progressive and len(self._build_cards) < self._FIRST_BATCH
+                # the first screenful's thumbnails are read right here when they are
+                # cached on disk (~2 ms each): the grid appears complete, no pop-in
+                self._build_cards.append(self._make_card(self._build_queue.pop(0), eager_thumbnail=first_batch))
+                if first_batch:
+                    if len(self._build_cards) >= self._FIRST_BATCH:
+                        break           # show the first screenful now; the rest in later slices
+                    continue            # no deadline until the first screenful exists
                 if time.perf_counter() >= deadline:
                     break
+            # progressive: the first screenful at once, everything else in ONE more
+            # step when it is all built (adding a few cards per slice re-ran the
+            # grid's layout dozens of times: measured 0.6 s extra for 93 clips)
+            if progressive and len(self._build_cards) > self._build_shown \
+                    and (self._build_shown == 0 or not self._build_queue):
+                self._show_built_so_far()
             if self._build_queue:
                 QTimer.singleShot(0, lambda: self._build_step(generation))
                 return
-            self._swap_in_cards(self._build_cards)
+            if progressive:
+                if not self._build_cards:
+                    self._swap_in_cards([])     # nothing to show: the empty state
+            elif getattr(self, "_build_incremental", False):
+                built = iter(self._build_cards)
+                self._apply_cards([card if card is not None else next(built) for _v, card in self._build_plan])
+            else:
+                self._swap_in_cards(self._build_cards)
+            self._card_rows = dict(getattr(self, "_build_rows", {}))
             self._last_signature = getattr(self, "_pending_signature", None)
         except Exception:
             # Don't leave the tab wedged in "loading" forever if one card
             # blows up -- discard the partial build, keep the old grid.
             traceback.print_exc()
+            shown = set(map(id, self._cards))
             for card in getattr(self, "_build_cards", []):
-                card.deleteLater()
+                if id(card) not in shown:
+                    card.deleteLater()
+            self._last_signature = None
+            self._card_rows = {}
         self._build_cards = []
         self._build_queue = []
+        self._build_plan = []
         self._finish_refresh()
+
+    # Cards that a search / filter / sort took out of view are kept, hidden, for
+    # as long as their clip doesn't change: clearing a search brings them back
+    # instead of building them again (93 cards: 560 ms -> a few ms).
+    _POOL_MAX = 400
+
+    def _plan_cards(self, videos, signature) -> "tuple[dict, dict, bool]":
+        """For a refresh that will show `videos`: (rows, reuse, incremental).
+        rows: video id -> its signature row. reuse: video id -> an existing
+        card (on screen or in the pool) whose row is unchanged. incremental:
+        False when every card has to be rebuilt (the grid-wide part of the
+        signature changed, or nothing is known about the current cards)."""
+        rows = dict(zip((v.id for v in videos), signature[0])) if signature is not None else {}
+        last = self._last_signature
+        if signature is None or last is None or signature[1:] != last[1:]:
+            self._drop_pool()
+            return rows, {}, False
+        reuse: dict = {}
+        current = {c.video_id: c for c in self._cards}
+        for v in videos:
+            card = current.get(v.id)
+            if card is not None and self._card_rows.get(v.id) == rows.get(v.id):
+                reuse[v.id] = card
+                continue
+            pooled = self._pool.get(v.id)
+            if pooled is not None and pooled[1] == rows.get(v.id):
+                reuse[v.id] = pooled[0]
+        return rows, reuse, True
+
+    def _drop_pool(self) -> None:
+        for card, _row in self._pool.values():
+            try:
+                card.deleteLater()
+            except RuntimeError:
+                pass
+        self._pool = {}
+
+    def _show_built_so_far(self) -> None:
+        """Progressive fill of an empty grid: put the cards built since the
+        last call into the grid, after the ones already there."""
+        new = self._build_cards[self._build_shown:]
+        if not new:
+            return
+        self.grid_container.setUpdatesEnabled(False)
+        try:
+            if self._build_shown == 0:
+                # the first batch: clear whatever the layout still holds, like a full swap
+                while self.grid_layout.count():
+                    item = self.grid_layout.takeAt(0)
+                    widget = item.widget()
+                    if widget:
+                        widget.hide()
+                        widget.deleteLater()
+                self._cards = []
+                self._selected_ids = set()
+                self._selection_anchor_index = None
+                self._current_columns = self._columns_for_width(self.scroll.viewport().width())
+                self.empty_label.setVisible(False)
+                self.scroll.setVisible(True)
+            columns = self._current_columns or 1
+            start = len(self._cards)
+            for offset, card in enumerate(new):
+                row, col = divmod(start + offset, columns)
+                self.grid_layout.addWidget(card, row, col, Qt.AlignLeft | Qt.AlignTop)
+            self._cards.extend(new)
+            self._build_shown = len(self._build_cards)
+            self._set_row_stretch(columns)
+        finally:
+            self.grid_container.setUpdatesEnabled(True)
+
+    def _apply_cards(self, cards: "list[VideoCard]") -> None:
+        """Incremental refresh: `cards` (cards kept on screen, cards taken back
+        from the pool and newly built ones, in the new order) becomes the grid.
+        Cards no longer shown go to the pool, hidden; kept ones are not touched
+        beyond their position. The selection survives for every clip that is
+        still shown."""
+        keep_ids = set(map(id, cards))
+        self.grid_container.setUpdatesEnabled(False)
+        try:
+            anchor_id = None
+            if self._selection_anchor_index is not None and 0 <= self._selection_anchor_index < len(self._cards):
+                anchor_id = self._cards[self._selection_anchor_index].video_id
+            for old in self._cards:
+                if id(old) not in keep_ids:
+                    self.grid_layout.removeWidget(old)
+                    old.hide()                 # (out of the layout alone leaves it visible)
+                    row = self._card_rows.get(old.video_id)
+                    stale = self._pool.pop(old.video_id, None)
+                    if stale is not None and stale[0] is not old:
+                        stale[0].deleteLater()
+                    if row is not None:
+                        self._pool[old.video_id] = (old, row)
+                    else:
+                        old.deleteLater()
+            # cards coming back from the pool, and pooled cards replaced by a newly built one
+            returning = []
+            for card in cards:
+                pooled = self._pool.get(card.video_id)
+                if pooled is None:
+                    continue
+                del self._pool[card.video_id]
+                if pooled[0] is card:
+                    returning.append(card)
+                else:
+                    pooled[0].deleteLater()
+            while len(self._pool) > self._POOL_MAX:
+                _vid, (card, _row) = next(iter(self._pool.items()))
+                del self._pool[_vid]
+                card.deleteLater()
+            unchanged_order = len(cards) == len(self._cards) and all(a is b for a, b in zip(cards, self._cards))
+            self._cards = list(cards)
+            present = {c.video_id for c in cards}
+            self._selected_ids = {i for i in self._selected_ids if i in present}
+            self._selection_anchor_index = next(
+                (i for i, c in enumerate(cards) if c.video_id == anchor_id), None) if anchor_id is not None else None
+            self.empty_label.setVisible(len(cards) == 0)
+            self.scroll.setVisible(len(cards) > 0)
+            if not unchanged_order:
+                self._relayout(self._current_columns or self._columns_for_width(self.scroll.viewport().width()))
+            for card in returning:
+                card.show()
+            self._apply_selection_visuals()
+        finally:
+            self.grid_container.setUpdatesEnabled(True)
 
     def _display_signature(self, videos) -> tuple:
         """Everything a rebuilt grid would depend on. If this matches the
@@ -855,12 +1031,41 @@ class _VideoGridTab(QWidget):
             QTimer.singleShot(0, self.refresh)
 
     def _do_refresh(self) -> None:
-        """Synchronous full rebuild (query + build + swap in one go).
-        Kept for any caller/test that needs the grid populated before it
-        returns; normal UI paths use the time-sliced refresh() above."""
-        videos = self._query_videos()
-        self._swap_in_cards([self._make_card(v) for v in videos])
-        self._last_signature = None  # not computed on this path; force the next refresh() to compare fresh
+        """Synchronous refresh (query + build + show in one go): search-as-
+        you-type, and any caller/test that needs the grid up to date before it
+        returns. Incremental like refresh(): cards whose clip is unchanged are
+        kept, only the others are built -- typing in the search box hides and
+        brings back cards instead of rebuilding the matches on every key."""
+        in_flight = self._refresh_in_progress
+        if in_flight:
+            # a time-sliced refresh is under way: this one replaces it
+            self._build_generation = getattr(self, "_build_generation", 0) + 1
+            shown = set(map(id, self._cards))
+            for card in getattr(self, "_build_cards", []):
+                if id(card) not in shown:
+                    card.deleteLater()
+            self._build_cards, self._build_queue, self._build_plan = [], [], []
+            if getattr(self, "_build_progressive", False):
+                self._card_rows = {}            # a half-filled grid: rebuild it whole
+                self._last_signature = None
+        try:
+            videos = self._query_videos()
+            try:
+                signature = self._display_signature(videos)
+            except Exception:
+                traceback.print_exc()
+                signature = None
+            rows, keep, incremental = self._plan_cards(videos, signature)
+            cards = [keep.get(v.id) or self._make_card(v) for v in videos]
+            if incremental:
+                self._apply_cards(cards)
+            else:
+                self._swap_in_cards(cards)
+            self._card_rows = rows
+            self._last_signature = signature
+        finally:
+            if in_flight:
+                self._finish_refresh()
 
     def _swap_in_cards(self, cards: "list[VideoCard]") -> None:
         # hide() before deleteLater(): removing a widget from a layout
@@ -870,6 +1075,7 @@ class _VideoGridTab(QWidget):
         # stale "duplicate" cards on screen during spam-clicking.
         self.grid_container.setUpdatesEnabled(False)
         try:
+            self._drop_pool()       # a full rebuild: the hidden cards are as out of date as the shown ones
             while self.grid_layout.count():
                 item = self.grid_layout.takeAt(0)
                 widget = item.widget()
@@ -888,9 +1094,10 @@ class _VideoGridTab(QWidget):
         finally:
             self.grid_container.setUpdatesEnabled(True)
 
-    def _make_card(self, video) -> "VideoCard":
+    def _make_card(self, video, eager_thumbnail: bool = False) -> "VideoCard":
         card = VideoCard(
             video, highlight_enabled=self._highlight_unedited, font_scale=self._font_scale,
+            eager_thumbnail=eager_thumbnail,
             get_selected_ids=lambda: self._selected_ids,
             ensure_selected=self._ensure_selected_for_context_menu,
             neighbor_provider=self.neighbors,
@@ -1012,6 +1219,9 @@ class _VideoGridTab(QWidget):
         # last one), then give exactly the row just past the real content
         # all the stretch, so it absorbs 100% of the slack and the real
         # rows stay packed at their natural height.
+        self._set_row_stretch(columns)
+
+    def _set_row_stretch(self, columns: int) -> None:
         row_count = -(-len(self._cards) // columns) if self._cards else 0  # ceiling division
         for stale_row in range(max(row_count + 2, 8)):
             self.grid_layout.setRowStretch(stale_row, 0)

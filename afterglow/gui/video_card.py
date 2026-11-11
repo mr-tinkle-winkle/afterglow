@@ -126,7 +126,12 @@ def _loading_pixmap(radius) -> QPixmap:
     pixmap = _LOADING_PIXMAPS.get(radius)
     if pixmap is None:
         base = QPixmap(THUMB_SIZE)
-        base.fill(QColor("#1b1b1b"))
+        # the card's own colour, slightly darker: a quiet empty frame in any theme
+        # (it was near-black, which read as a broken clip on a light theme)
+        try:
+            base.fill(Theme().card_background().darker(112))
+        except Exception:  # noqa: BLE001
+            base.fill(QColor("#1b1b1b"))
         pixmap = _LOADING_PIXMAPS[radius] = round_pixmap_corners(base, radius)
     return pixmap
 
@@ -326,8 +331,11 @@ class VideoCard(QWidget):
 
     def __init__(self, video: "library.Video", parent=None, highlight_enabled: bool = True,
                  font_scale: float = 1.0, get_selected_ids=None, ensure_selected=None,
-                 neighbor_provider=None, uploaded_view: bool = False):
+                 neighbor_provider=None, uploaded_view: bool = False, eager_thumbnail: bool = False):
         super().__init__(parent)
+        # eager_thumbnail: read the thumbnail right here when it is cached on disk (the
+        # first screenful of a freshly opened Library) instead of on the loader's threads.
+        self._eager_thumbnail = eager_thumbnail
         self.video_id = video.id
         self._video = video
         # In the Uploaded tab a card is the YouTube copy: YouTube's thumbnail, double-click plays the
@@ -1039,9 +1047,35 @@ class VideoCard(QWidget):
             _THUMB_PIXMAP_CACHE.move_to_end(cache_key)
             return cached
         self._thumb_key = cache_key
+        if getattr(self, "_eager_thumbnail", False):
+            ready = explicit
+            if ready is None:
+                small = thumbnails.card_thumbnail_path(video.id, Path(video.path))
+                ready = small if small is not None and small.exists() else None
+            image = thumb_loader.read_scaled_cover(ready, THUMB_SIZE) if ready is not None else None
+            if image is not None:
+                pixmap = round_pixmap_corners(QPixmap.fromImage(image), radius)
+                _THUMB_PIXMAP_CACHE[cache_key] = pixmap
+                return pixmap
+        self._thumb_request = (video.id, video.path, explicit)
         thumb_loader.loader().request(cache_key, video.id, video.path, explicit, THUMB_SIZE,
                                       self._on_thumb_loaded)
         return _loading_pixmap(radius)
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        # A card that is (re)shown still waiting for a picture nobody is
+        # loading any more asks again -- it can never be left on the placeholder.
+        key = getattr(self, "_thumb_key", None)
+        request = getattr(self, "_thumb_request", None)
+        if key is None or request is None:
+            return
+        cached = _THUMB_PIXMAP_CACHE.get(key)
+        if cached is not None:
+            self._thumb_request = None
+            self.thumb_label.setPixmap(cached)
+        elif not thumb_loader.loader().is_waiting(key):
+            thumb_loader.loader().request(key, request[0], request[1], request[2], THUMB_SIZE, self._on_thumb_loaded)
 
     def _on_thumb_loaded(self, key, image) -> None:
         """GUI thread: the worker's QImage -> rounded QPixmap -> cache -> label.
@@ -1057,6 +1091,7 @@ class VideoCard(QWidget):
                 while len(_THUMB_PIXMAP_CACHE) > _THUMB_PIXMAP_CACHE_MAX:
                     _THUMB_PIXMAP_CACHE.popitem(last=False)
         if getattr(self, "_thumb_key", None) == key:
+            self._thumb_request = None
             self.thumb_label.setPixmap(pixmap)
 
     def _render_thumb_pixmap(self, thumb_path, radius) -> QPixmap:

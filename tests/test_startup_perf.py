@@ -86,7 +86,9 @@ built_in = time.perf_counter() - t0
 check(len(calls) == 0 or built_in < 0.5, "building a card doesn't wait for ffmpeg")
 check(thumb_loader.loader().busy(), "the thumbnail is requested from the loader")
 first = centre(card0.thumb_label.pixmap())
-check(first[2] < 100, f"until it arrives the card shows the plain placeholder {first}")
+check(card0.thumb_label.pixmap().cacheKey() == video_card._loading_pixmap(
+    card0._appearance.rounded_corner_radius if card0._appearance.rounded_corners_enabled else 0).cacheKey(),
+      f"until it arrives the card shows the plain placeholder {first}")
 check(thumb_loader.loader().wait_idle(30), "the loader finishes")
 got0, got1 = centre(card0.thumb_label.pixmap()), centre(card1.thumb_label.pixmap())
 check(got0[2] > 180 and got0[0] < 80, f"then the real thumbnail (blue clip) {got0}")
@@ -155,7 +157,8 @@ deadline = time.time() + 30
 while time.time() < deadline and (w.library_page.local_tab._refresh_in_progress or thumb_loader.loader().busy()):
     pump(0.05)
 check(len(w.library_page.local_tab._cards) == 6, "the Library fills as before")
-check(all(centre(c.thumb_label.pixmap()) != (0x1b, 0x1b, 0x1b) for c in w.library_page.local_tab._cards),
+_ph = {video_card._loading_pixmap(r).cacheKey() for r in list(video_card._LOADING_PIXMAPS)}
+check(all(c.thumb_label.pixmap().cacheKey() not in _ph for c in w.library_page.local_tab._cards),
       "every card ends up with its picture")
 w.resize(1500, 850)      # a resize before the Editor exists must not build it
 pump(0.1)

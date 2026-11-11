@@ -629,6 +629,19 @@ class CardFx(QWidget):
         p = self._p
         if p is None:
             return
+        if self._enter_t < 1.0:
+            # The entrance draws a cover over the card that fades away. It must
+            # never be left there: if this card is being painted with its entrance
+            # not started (its Show event was missed) start it now, and if the
+            # entrance is unfinished but nothing is driving it any more (or it is
+            # long overdue), it is over.
+            now = time.monotonic()
+            clock = _get_clock()
+            if self._enter_start is None:
+                self._enter_start = now
+                clock.add(self)
+            elif self not in clock.subs or now - self._enter_start > ENTER_MS.get(p.enter, 400) / 1000.0 + 1.5:
+                self._enter_t = 1.0
         if self._enter_t >= 1.0 and self._hover <= 0 and not p.decor:
             return
         g = QPainter(self)

@@ -62,6 +62,13 @@ type, and records (longest, shortest, largest, newest, oldest clip). Each is cli
 bar opens the Library showing exactly those clips (a banner names the view; "Show all" leaves it),
 a record opens that clip in the previewer.
 
+## Library
+The Library opens with its first screen already filled in (cards and thumbnails); the rest is
+added underneath in the background. Afterwards it only updates what changed: editing, renaming,
+tagging, favoriting, deleting or uploading a clip, or capturing a new one, rebuilds that clip's card
+and nothing else -- scroll position and selection stay. Searching, filtering and sorting hide,
+show and re-order the existing cards.
+
 ## Speed
 Benchmarks (`tools/bench_startup.py`, `tools/bench_capture.py`, `tools/bench_export.py`) and their
 before/after numbers are in HANDOFF.md. In short: the Library's thumbnails load in the background

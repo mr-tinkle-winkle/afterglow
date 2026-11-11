@@ -128,6 +128,11 @@ class ThumbLoader(QObject):
             return
         self._waiting[key] = [callback]
         with self._cond:
+            if self._stopping:
+                # shutdown() was called (a window closed) and pictures are wanted
+                # again (another window in the same process): start over
+                self._stopping = False
+            self._threads = [t for t in self._threads if t.is_alive()]
             self._stack.append((key, video_id, video_path, explicit_path, QSize(target)))
             if len(self._threads) < _MAX_WORKERS and len(self._stack) + self._active > len(self._threads):
                 t = threading.Thread(target=self._run, name="afterglow-thumbs", daemon=True)
@@ -163,10 +168,16 @@ class ThumbLoader(QObject):
         return not self._waiting
 
     def shutdown(self) -> None:
+        """Stop the workers and drop what is queued (the callbacks waiting for
+        those pictures are dropped with it). Usable again afterwards."""
         with self._cond:
             self._stopping = True
             self._stack.clear()
             self._cond.notify_all()
+        self._waiting.clear()
+
+    def is_waiting(self, key) -> bool:
+        return key in self._waiting
 
     # ------------------------------------------------------------ workers
 

@@ -18,7 +18,7 @@ unverified on real hardware) -- see "Clip indicator ("the clapper") -- BUILT".
 then `DISPLAY=:99 QT_QPA_PLATFORM=xcb python3 tests/<suite>.py` (the
 previewer suites need GL for mpv); the `tests/test_nle_*.py` engine
 suites run with `QT_QPA_PLATFORM=offscreen`. Every suite prints PASS/FAIL
-lines and exits non-zero on failure. All 51 suites pass (`test_bug_sweep`, `test_nle_fast_paths`, `test_setup_guide`, `test_stats_page`, `test_startup_perf` newest, then `test_themes`, `test_settings_autosave`, `test_smartcut_tail`) (the four `test_youtube_*`
+lines and exits non-zero on failure. All 52 suites pass (`test_library_incremental`, `test_bug_sweep`, `test_nle_fast_paths`, `test_setup_guide`, `test_stats_page`, `test_startup_perf` newest, then `test_themes`, `test_settings_autosave`, `test_smartcut_tail`) (the four `test_youtube_*`
 suites are new: `core` runs anywhere; `studio`, `queue` and `entry_points` need Xvfb + QtWebEngine,
 and `QTWEBENGINE_DISABLE_SANDBOX=1` when run as root -- they set it themselves; `entry_points` starts
 a real `afterglow-youtube` host process); earlier 36 (incl. the overlay suites listed
@@ -50,6 +50,52 @@ Reference numbers given for the sweep: 93 clips; typical export 30 s at 2560x144
 effects", taking ~10-30 s; OBS's keyframe interval had not been changed (2 s).
 
 Rule that held every time: MEASURE FIRST. Profile, find the actual hot path, fix it, measure again.
+
+### Library: opens with its first screen ready, and refreshes only what changed (newest)
+Three reports: the Library "redoes itself" every time the app opens; any edit / delete / etc. on
+one clip reloaded the whole Library; pressing Alt "blacks out a lot of the clips" (Aero theme).
+
+**Refresh is incremental** (`_VideoGridTab.refresh` / `_do_refresh` -> `_plan_cards` ->
+`_apply_cards`). `_display_signature` already described the grid as (one row per video, grid-wide
+part). When only rows differ, every card whose row is unchanged is the SAME widget afterwards --
+thumbnail, scroll position and selection kept -- and only changed / new clips get a card built.
+Cards a search, filter or sort takes out of view are hidden in a pool (`_pool`, max 400) and come
+back without being rebuilt; a clip that changed while hidden is rebuilt when it returns. A change
+of the grid-wide part (filter icons / colours, the highlight option, the settings file) still
+rebuilds everything and empties the pool. Measured, 93 clips:
+
+| | before | after |
+|---|---|---|
+| favourite / tag / rename one clip, then refresh | 634 ms, 93 cards built | 28-48 ms, 1 card built |
+| type a search that matches 10 clips | 180 ms | 33 ms |
+| clear that search | 562 ms | 194 ms, 0 cards built |
+
+(`work/bench_refresh.py` was a throwaway; the numbers are easy to retake by wrapping
+`tab._make_card` as `tests/test_library_incremental.py` does.)
+
+**Opening**: an empty grid fills progressively (`_build_progressive`). The first `_FIRST_BATCH`
+(16) cards are built without a time slice and shown at once -- inside `LibraryPage()`, i.e. before
+the window's first paint -- with their thumbnails read right there from the cached card files
+(`VideoCard(eager_thumbnail=True)`, ~2 ms each), so the first frame the window paints already is
+the Library's first screen, no placeholders. The remaining cards are built in time slices and
+added in ONE step (adding a few per slice re-ran the grid layout dozens of times: +0.6 s measured).
+93 clips at 1440p: first paint, with the first screen complete, at 0.66 s (was: an empty window at
+0.53 s, cards at 1.27 s); everything built at 1.45 s.
+
+**Alt "blacks out clips": NOT reproduced** (Xvfb, X11, Fusion and Windows styles which repaint
+every widget on Alt like Breeze does, real key events, Aero light and dark, focus changes,
+scrolling, display scaling). What a full-window repaint could reveal was hardened anyway:
+- `CardFx` (theme entrance animation) covers a card with the Library's background colour while
+  it "enters" -- near-black in Aero's dark mode. A card painted with an entrance that never
+  started now starts it, and an unfinished entrance that nothing is driving any more (or that is
+  overdue) is treated as finished: the cover can no longer be left on a card.
+- The thumbnail placeholder was #1b1b1b in every theme; it is now the theme's card colour,
+  slightly darker. A card (re)shown while still on the placeholder with no load in flight asks
+  again. `ThumbLoader.shutdown()` no longer leaves the loader dead for the rest of the process.
+If it still happens: a screenshot while Alt is held, whether it is Aero's light or dark mode,
+whether the clips come back on release, and whether Settings > General > Theme Animations off
+changes it would narrow it down.
+- Tests: `tests/test_library_incremental.py`.
 
 ### Clip processing -- DONE
 Benchmark: `tools/bench_capture.py` (`clips.trigger_clip` against a stand-in for OBS that hands
@@ -299,8 +345,8 @@ available here -- **the real-machine gain is unmeasured**. Three changes:
   the earlier note) is still open too.
 
 ### What could come next (nothing is queued)
-- Startup: the cards themselves (~0.45 s for 93) are built before any is shown; showing the first
-  screenful as soon as it is built, or building only the cards in view, is the remaining step.
+- Library: cards below the first screen are still all built at startup (in the background, ~0.8 s
+  for 93); building only the cards near the viewport would make that independent of library size.
 - Export: frames whose base clip is transformed (zoom / crop / fade) still go through RGB; a
   YUV-space scale + blend for the zoom case would cover the most common "effect".
 - Capture: one process rendering all overlay pieces (Puppetry side) instead of one per piece.
