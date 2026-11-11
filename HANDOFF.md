@@ -28,7 +28,70 @@ and the previewer / advanced-editor suites need libmpv + Xvfb (with `libxcb-curs
 they hang or fail under offscreen); `test_nle_render`'s preview-
 speed check is timing-based, run it on its own, not alongside other suites).
 
-## Themes, Settings auto-save, faster trims, OBS keyframe interval -- BUILT (newest session)
+## NEXT SESSION -- performance + bug sweep (read this first)
+
+Goals, in priority order as given:
+1. The app opens faster.
+2. Clips process (capture -> trim -> library) even faster.
+3. Clips export faster from the Editor.
+4. Bugs fixed across the whole app AND the daemon.
+5. General optimizations wherever possible.
+
+Rule that held every time so far: MEASURE FIRST. Profile, find the actual hot path, fix it,
+measure again, and record before/after numbers here.
+
+### Measured leads (profiled at handoff; Xvfb, 2-core sandbox, so absolute times are pessimistic)
+Startup with 60 clips (cold thumbnail cache), `cProfile` cumulative:
+- Library fill ~4.0 s, of which `thumbnails.get_thumbnail` ~3.6 s (~60 ms per clip, an ffmpeg
+  process per missing thumbnail, synchronous inside `VideoCard.__init__` -> `_load_pixmap`).
+  Candidates: generate thumbnails off the GUI thread (placeholder, then swap in), batch/parallel
+  generation, generate at capture time in the daemon so the GUI never has to, and lazy-build only
+  the cards in view. Warm-cache cost needs its own measurement.
+- `AdvancedEditorPage` -> `preview.py` MpvVideoWidget init ~2.6 s at STARTUP although the Editor is
+  not open. Candidate: create the mpv player lazily on first Editor use (mind the documented mpv /
+  GL embedding pitfalls further down this file before touching it).
+- `fonts.load_bundled_fonts()` ~1.2 s (registers every bundled font, ~50 files). Candidates:
+  register only what the active theme + the editor's chosen fonts need at startup, the rest lazily
+  (the Advanced Editor's font list needs them when it opens).
+- Module imports ~2-3 s on a cold `.pyc` cache (editor/nle/settings imported eagerly by
+  main_window). Candidates: import heavy pages lazily.
+- Earlier measurement (still open): a sidebar click into a 100-clip Library took ~640 ms.
+- A script for these numbers: build N clips in a temp HOME, then time `MainWindow()` + first
+  full Library fill under cProfile (the session used one; easy to recreate).
+
+Clip processing (see "Faster trims" below for what's done): the remaining cost per capture is the
+head re-encode (x264 veryfast, up to one keyframe interval of frames -- set OBS's keyframe interval
+to 1 s from Settings to halve it), plus waits around OBS's save (`wait_after_replay_buffer_finishes_sec`,
+`POST_SAVE_SETTLE_SECONDS`, the duration probes). Time each stage on a real capture before changing
+any of them; several waits exist because OBS was still writing the file (see the history below).
+
+Editor export (`nle/render.py`): NOT profiled yet. Start by timing an export of a simple timeline
+(one clip, no effects) against a plain `ffmpeg -c copy` / single re-encode of the same range, then
+a timeline with text/overlays, and find where frames are produced (Python per-frame work vs ffmpeg).
+
+### Known issues at handoff
+- The repo root contains a stray nested copy of an OLDER version of the project at
+  `afterglow/afterglow/` (its own HANDOFF.md, flake.nix, tests, afterglow/ package...) plus
+  `Archive.zip`. Not imported by anything, but `tests/test_themed_dialogs.py`'s source scan walks into
+  it and fails. Deleting both is pending confirmation.
+- `tests/test_themed_dialogs.py` also segfaults in the sandbox's Xvfb (same on the commit before this
+  session -- environment, not a regression).
+- Spin boxes render empty in the sandbox's Xvfb (also on older commits -- environment).
+- Tracked `__pycache__/*.pyc` files exist in the repo; there is no .gitignore.
+- OBS crash (exit 132 / SIGILL, see below): RESOLVED by removing two hidden browser sources
+  ("keyboard overlay", "mouse overlay") whose page failed to load -- hidden browser sources keep
+  running unless "Shutdown source when not visible" is on. Not afterglow. One earlier, different
+  crash (SIGABRT) was in Mesa's libgallium after the Flatpak GL runtime was updated under a running
+  OBS.
+
+### Open questions for the user (ask at the start)
+- Delete the stray `afterglow/afterglow/` copy and `Archive.zip`? Add a .gitignore for `__pycache__`?
+- Library size in practice, and how long opening the app takes now (cold start vs. reopening).
+- Typical export: length, resolution/fps, effects used, and how long it takes now.
+- Any bugs already noticed (app or daemon), with steps.
+- Whether OBS's keyframe interval has been set to 1 s (affects trim timing measurements).
+
+## Themes, Settings auto-save, faster trims, OBS keyframe interval -- BUILT (previous session)
 
 ### Themes (Settings > General > Theme)
 Ten whole-app looks besides classic: Synthwave, Phosphor Terminal, Comic Book, Blueprint,
@@ -108,7 +171,7 @@ profile via `user.ini`/`global.ini` `[Basic] ProfileDir`, Flatpak or native conf
 own Settings dialog, so writing it while OBS runs is safe). 1 s halves the frames a trim re-encodes;
 file size is unchanged at CBR. The user's log showed keyint 240 at 120 fps = 2 s.
 
-### OBS crash (exit 132) -- investigated, NOT afterglow as far as the log shows
+### OBS crash (exit 132) -- RESOLVED (not afterglow): removing two hidden, failing browser sources stopped it
 The log ends with `[ble: exit 132]` = OBS killed by SIGILL, with nothing logged at the moment it died.
 - afterglow talks to OBS only when a clip is saved (and the Test Connection button): a request
   connection + an event connection per clip, overlapping. The log's 14 connects are strictly
