@@ -37,6 +37,20 @@ Goals, in priority order as given:
 4. Bugs fixed across the whole app AND the daemon.
 5. General optimizations wherever possible.
 
+Added with the answers to the open questions (same session):
+6. OBS keyframe interval set AUTOMATICALLY (see "Automatic keyframe interval" below).
+7. A setup guide that walks a new user through full setup (see "Setup guide" below).
+8. Stats page redesign: format it to look better, and make each stat clickable -- clicking a stat
+   either filters the Library by it or opens the video it refers to (e.g. "longest clip" opens that
+   clip; "clips tagged X" filters by X).
+
+Answers / reference numbers from the user:
+- Library: 93 clips; the app takes "a few seconds" to open.
+- Typical Editor export: 30 s at 2560x1440, 120 fps, "some effects"; takes ~10-30 s, possibly more.
+  Benchmark exports against exactly this shape.
+- No known bugs reported -- the bug sweep is a proactive audit (app + daemon).
+- OBS's keyframe interval had NOT been changed (still 2 s = keyint 240 at 120 fps).
+
 Rule that held every time so far: MEASURE FIRST. Profile, find the actual hot path, fix it,
 measure again, and record before/after numbers here.
 
@@ -69,27 +83,52 @@ Editor export (`nle/render.py`): NOT profiled yet. Start by timing an export of 
 (one clip, no effects) against a plain `ffmpeg -c copy` / single re-encode of the same range, then
 a timeline with text/overlays, and find where frames are produced (Python per-frame work vs ffmpeg).
 
+### Automatic keyframe interval (requested)
+Today: Settings > Clipping > OBS Keyframe Interval + "Apply to OBS" (obs_profile.py), manual.
+Wanted: afterglow keeps it at 1 s by itself. Suggested shape:
+- A setting "Keep OBS's keyframe interval at 1 s" (default on) instead of the manual row (or beside it).
+- Check at GUI start / daemon start / after a successful OBS connection; if the profile is in
+  Advanced output mode and `keyint_sec` != 1, write 1 (obs_profile.set_keyint_sec keeps a one-time
+  backup) and tell the user once that OBS needs a restart for it to apply.
+- Simple output mode: can't be set (OBS has no keyframe setting there) -> the setup guide explains how
+  to switch OBS to Advanced, or what to do manually.
+- obs-websocket v5 can't change encoder settings, so the file route is the only one; OBS only rewrites
+  that file from its own Settings dialog (which re-reads it when opened), so writing it is safe.
+- Watch for: a running replay buffer keeps the old encoder until OBS restarts; profile switches in OBS
+  (re-check on CurrentProfileChanged); a `keyint_sec` of 0 means "auto" in OBS.
+
+### Setup guide (requested)
+Walks a new user through EVERYTHING needed for a fully working setup, in order:
+1. OBS connection: enable obs-websocket in OBS (Tools > WebSocket Server Settings), host/port/
+   password into afterglow, Test Connection; replay buffer enabled and its length.
+2. Recommended OBS output settings: Advanced output mode, the encoder, and the keyframe interval
+   (automatic if afterglow can do it; otherwise the exact manual steps in OBS).
+3. Setting up clips: Clip Options (clip types, lengths, hotkeys, sounds, input overlay).
+4. Making filters (tags, icons, auto-filters by app).
+5. Using the simple editor (the video previewer: trim, filters, overlay toggle).
+6. Using the Advanced Editor (timeline, effects, export).
+Form is open: a first-run wizard and/or a re-openable guide from Settings; each step should be able
+to check its own state (e.g. "connected", "keyframe interval 1 s") and jump to the relevant setting.
+README/HANDOFF style rules: objective, impersonal, no personal details.
+
 ### Known issues at handoff
-- The repo root contains a stray nested copy of an OLDER version of the project at
-  `afterglow/afterglow/` (its own HANDOFF.md, flake.nix, tests, afterglow/ package...) plus
-  `Archive.zip`. Not imported by anything, but `tests/test_themed_dialogs.py`'s source scan walks into
-  it and fails. Deleting both is pending confirmation.
-- `tests/test_themed_dialogs.py` also segfaults in the sandbox's Xvfb (same on the commit before this
-  session -- environment, not a regression).
+- `tests/test_themed_dialogs.py` segfaults in the sandbox's Xvfb at its dialog-runtime checks (same
+  on the commit before this session -- environment, not a regression); its source scan passes.
 - Spin boxes render empty in the sandbox's Xvfb (also on older commits -- environment).
-- Tracked `__pycache__/*.pyc` files exist in the repo; there is no .gitignore.
+- Sandbox resets wipe the apt packages/Xvfb: reinstall `libmpv2 openbox libxcb-cursor0
+  libpipewire-0.3-common pipewire-bin libgl1-mesa-dri`, start `Xvfb :99 +extension GLX` + openbox.
+  Without the PipeWire client config, QtMultimedia segfaults (`QMediaDevices.defaultAudioOutput`).
 - OBS crash (exit 132 / SIGILL, see below): RESOLVED by removing two hidden browser sources
   ("keyboard overlay", "mouse overlay") whose page failed to load -- hidden browser sources keep
   running unless "Shutdown source when not visible" is on. Not afterglow. One earlier, different
   crash (SIGABRT) was in Mesa's libgallium after the Flatpak GL runtime was updated under a running
   OBS.
 
-### Open questions for the user (ask at the start)
-- Delete the stray `afterglow/afterglow/` copy and `Archive.zip`? Add a .gitignore for `__pycache__`?
-- Library size in practice, and how long opening the app takes now (cold start vs. reopening).
-- Typical export: length, resolution/fps, effects used, and how long it takes now.
-- Any bugs already noticed (app or daemon), with steps.
-- Whether OBS's keyframe interval has been set to 1 s (affects trim timing measurements).
+### Repo cleanup done at handoff
+The stale nested project copy inside the package dir (`afterglow/afterglow/`, `afterglow/tests`,
+`afterglow/native`, `afterglow/data`, `afterglow/integrations`, `afterglow/flake.nix`, ... -- all
+byte-identical or older duplicates of the root ones, loaded by nothing) and `Archive.zip` are removed;
+`__pycache__` is untracked and ignored (.gitignore).
 
 ## Themes, Settings auto-save, faster trims, OBS keyframe interval -- BUILT (previous session)
 
