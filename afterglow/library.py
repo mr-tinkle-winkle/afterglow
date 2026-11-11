@@ -7,11 +7,12 @@ about the database; library.py is the glue.
 """
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import sqlite3
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -1187,6 +1188,30 @@ class LibraryStats:
     longest_length_sec: float | None
     shortest_title: str | None
     shortest_length_sec: float | None
+    # filled in by compute_stats() (the ids behind each count, for the Stats page's clickable stats)
+    edited_ids: list = field(default_factory=list)
+    unedited_ids: list = field(default_factory=list)
+    with_filter_ids: list = field(default_factory=list)
+    no_filter_ids: list = field(default_factory=list)
+    favorite_ids: list = field(default_factory=list)
+    uploaded_ids: list = field(default_factory=list)
+    local_ids: list = field(default_factory=list)
+    last_7_days_ids: list = field(default_factory=list)
+    last_30_days_ids: list = field(default_factory=list)
+    per_clip_type: dict = field(default_factory=dict)       # clip type name -> [video ids], most clips first
+    total_length_sec: float = 0.0
+    total_size_bytes: int = 0
+    longest_id: int | None = None
+    shortest_id: int | None = None
+    largest_id: int | None = None
+    largest_title: str | None = None
+    largest_size_bytes: int | None = None
+    newest_id: int | None = None
+    newest_title: str | None = None
+    newest_created: str | None = None
+    oldest_id: int | None = None
+    oldest_title: str | None = None
+    oldest_created: str | None = None
 
 
 def compute_stats() -> "LibraryStats":
@@ -1204,6 +1229,7 @@ def compute_stats() -> "LibraryStats":
     unedited = total - edited
 
     timed = [v for v in videos if v.duration_sec is not None]
+    longest = shortest = None
     if timed:
         avg_length_sec = sum(v.duration_sec for v in timed) / len(timed)
         longest = max(timed, key=lambda v: v.duration_sec)
@@ -1215,12 +1241,82 @@ def compute_stats() -> "LibraryStats":
         longest_title = longest_length_sec = None
         shortest_title = shortest_length_sec = None
 
-    return LibraryStats(
+    stats = LibraryStats(
         total=total, with_filter=with_filter, per_filter=per_filter,
         unedited=unedited, edited=edited, avg_length_sec=avg_length_sec,
         longest_title=longest_title, longest_length_sec=longest_length_sec,
         shortest_title=shortest_title, shortest_length_sec=shortest_length_sec,
     )
+
+    # ---- what the Stats page needs to make every stat clickable: the ids
+    # behind each count, and the clip each "record" refers to
+    stats.edited_ids = [v.id for v in videos if v.has_edit]
+    stats.unedited_ids = [v.id for v in videos if not v.has_edit]
+    stats.with_filter_ids = [v.id for v in videos if v.tags]
+    stats.no_filter_ids = [v.id for v in videos if not v.tags]
+    stats.favorite_ids = [v.id for v in videos if v.favorite]
+    stats.uploaded_ids = [v.id for v in videos if v.is_uploaded]
+    stats.local_ids = [v.id for v in videos if not v.local_deleted]
+    stats.total_length_sec = sum(v.duration_sec for v in timed) if timed else 0.0
+    # sizes straight from the files (the DB only records a size at upload time)
+    sizes: dict = {}
+    for v in videos:
+        if v.local_deleted:
+            continue
+        try:
+            sizes[v.id] = os.stat(v.path).st_size
+        except OSError:
+            continue
+    stats.total_size_bytes = sum(sizes.values())
+    stats.longest_id = longest.id if longest is not None else None
+    stats.shortest_id = shortest.id if shortest is not None else None
+    largest = max((v for v in videos if v.id in sizes), key=lambda v: sizes[v.id], default=None)
+    stats.largest_id = largest.id if largest else None
+    stats.largest_title = largest.title if largest else None
+    stats.largest_size_bytes = sizes[largest.id] if largest else None
+    dated = [v for v in videos if v.created_at]
+    newest = max(dated, key=lambda v: v.created_at) if dated else None
+    oldest = min(dated, key=lambda v: v.created_at) if dated else None
+    stats.newest_id, stats.newest_title = (newest.id, newest.title) if newest else (None, None)
+    stats.newest_created = newest.created_at if newest else None
+    stats.oldest_id, stats.oldest_title = (oldest.id, oldest.title) if oldest else (None, None)
+    stats.oldest_created = oldest.created_at if oldest else None
+
+    from datetime import datetime, timedelta, timezone
+
+    def _when(v):
+        try:
+            d = datetime.fromisoformat(str(v.created_at).replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        return d if d.tzinfo else d.replace(tzinfo=timezone.utc)   # the DB stores UTC
+    now = datetime.now(timezone.utc)
+    stats.last_7_days_ids, stats.last_30_days_ids = [], []
+    for v in dated:
+        d = _when(v)
+        if d is None:
+            continue
+        if now - d <= timedelta(days=7):
+            stats.last_7_days_ids.append(v.id)
+        if now - d <= timedelta(days=30):
+            stats.last_30_days_ids.append(v.id)
+
+    # per clip type (Settings > Clipping's clip options); clips whose type was deleted, or
+    # that were imported rather than captured, count as "Other"
+    names: dict = {}
+    try:
+        with db.get_conn() as conn:
+            for row in conn.execute("SELECT id, name FROM clip_configs"):
+                names[row["id"]] = row["name"]
+    except Exception:  # noqa: BLE001
+        pass
+    per_type: dict = {}
+    for v in videos:
+        name = names.get(v.clip_config_id)
+        if name:
+            per_type.setdefault(name, []).append(v.id)
+    stats.per_clip_type = dict(sorted(per_type.items(), key=lambda kv: (-len(kv[1]), kv[0].lower())))
+    return stats
 
 
 if __name__ == "__main__":

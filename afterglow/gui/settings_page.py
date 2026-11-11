@@ -129,6 +129,12 @@ class SettingsPage(QWidget):
                 btn.setChecked(True)
 
         self._tab_button_group.idClicked.connect(self._settings_stack.setCurrentIndex)
+        self._tab_labels: list[str] = []
+        _orig_add_tab = _add_settings_tab
+
+        def _add_settings_tab(label: str, page: QWidget) -> None:   # noqa: F811 -- records each tab's name
+            self._tab_labels.append(label)
+            _orig_add_tab(label, page)
 
         # A tab per settings cluster. "Clipping" is everything that used
         # to be the page's single "General" section (OBS/clip-capture
@@ -168,6 +174,7 @@ class SettingsPage(QWidget):
 
         advanced_page = QWidget()
         advanced_layout = QVBoxLayout(advanced_page)
+        advanced_layout.addWidget(self._build_setup_guide_group())
         advanced_layout.addWidget(self._build_afterglow_theme_group())
         advanced_layout.addWidget(self._build_reset_group())
         advanced_layout.addWidget(self._build_import_export_group())
@@ -301,6 +308,14 @@ class SettingsPage(QWidget):
         form.addRow("", test_btn)
 
         # OBS's keyframe interval (written into OBS's own profile -- see obs_profile.py)
+        self.obs_auto_keyint_check = CustomCheckBox("Keep OBS's keyframe interval at 1 s automatically")
+        self.obs_auto_keyint_check.setChecked(bool(getattr(self._settings.obs, "auto_keyframe_interval", True)))
+        self.obs_auto_keyint_check.setToolTip(
+            "Checks OBS's profile when afterglow starts and after each clip, and sets the keyframe\n"
+            "interval to 1 s if it is anything else (a notification says so; OBS needs a restart once).\n"
+            "Clips trim about twice as fast with 1 s than with OBS's default 2 s. Turn off to choose\n"
+            "the interval yourself below.")
+        form.addRow("", self.obs_auto_keyint_check)
         kf_row = QHBoxLayout()
         self.obs_keyint_combo = CustomComboBox()
         for sec in (1, 2, 3, 4):
@@ -315,9 +330,24 @@ class SettingsPage(QWidget):
         self.obs_keyint_status = QLabel("")
         self.obs_keyint_status.setWordWrap(True)
         form.addRow("", self.obs_keyint_status)
+        self._kf_apply_btn = kf_apply
+        self.obs_auto_keyint_check.toggled.connect(self._on_auto_keyint_toggled)
         self._refresh_obs_keyint()
+        self._on_auto_keyint_toggled(self.obs_auto_keyint_check.isChecked(), apply_now=False)
 
         return group
+
+    def _on_auto_keyint_toggled(self, on: bool, apply_now: bool = True) -> None:
+        # automatic = always 1 s: the manual choice is only for when it is off
+        self.obs_keyint_combo.setEnabled(not on)
+        self._kf_apply_btn.setEnabled(not on)
+        if on and apply_now:
+            from .. import obs_profile
+            self._settings.obs.auto_keyframe_interval = True
+            msg = obs_profile.auto_apply(self._settings, on_changed=lambda _m: None)
+            self._refresh_obs_keyint()
+            if msg:
+                show_message(self, "OBS Keyframe Interval", msg)
 
     def _refresh_obs_keyint(self) -> None:
         from .. import obs_profile
@@ -838,6 +868,36 @@ class SettingsPage(QWidget):
 
         return group
 
+    def show_tab(self, label: str) -> bool:
+        """Switch to the settings tab called `label` ("Clipping", "Filters", ...)."""
+        try:
+            index = self._tab_labels.index(label)
+        except ValueError:
+            return False
+        button = self._tab_button_group.button(index)
+        if button is not None:
+            button.setChecked(True)
+        self._settings_stack.setCurrentIndex(index)
+        return True
+
+    def _build_setup_guide_group(self) -> CustomGroupBox:
+        group = CustomGroupBox("Setup Guide")
+        layout = group.make_layout(QVBoxLayout)
+        self.setup_guide_btn = CustomButton("Open Setup Guide...")
+        self.setup_guide_btn.setProperty("_ag_no_autosave", True)
+        self.setup_guide_btn.clicked.connect(lambda _c=False: self._open_setup_guide())
+        layout.addWidget(self.setup_guide_btn)
+        note = QLabel("Walks through everything afterglow needs (OBS connection, replay buffer, keyframe "
+                      "interval, hotkey daemon, clip options) and shows which steps are done.")
+        note.setWordWrap(True)
+        layout.addWidget(note)
+        return group
+
+    def _open_setup_guide(self) -> None:
+        opener = getattr(self.window(), "show_setup_guide", None)
+        if opener is not None:
+            opener()
+
     def _build_reset_group(self) -> CustomGroupBox:
         """Recovery tools for exactly the class of problem that's come
         up repeatedly: a color or setting default changes in a new
@@ -1106,6 +1166,7 @@ class SettingsPage(QWidget):
                 return
             seen_names.add(key)
 
+        self._settings.obs.auto_keyframe_interval = self.obs_auto_keyint_check.isChecked()
         self._settings.obs.host = self.obs_host_edit.text().strip()
         self._settings.obs.port = self.obs_port_spin.value()
         self._settings.obs.password = self.obs_password_edit.text()

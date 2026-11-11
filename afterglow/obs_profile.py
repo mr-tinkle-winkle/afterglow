@@ -150,3 +150,54 @@ def set_keyint_sec(seconds: int) -> KeyframeInfo:
     tmp.write_text(json.dumps(data, indent=4), encoding="utf-8")
     os.replace(tmp, f)
     return read_keyframe_info()
+
+
+# ---------------------------------------------------------------- automatic
+
+AUTO_KEYINT_SEC = 1
+
+
+def notify(text: str) -> None:
+    """One desktop notification (notify-send), printed as well. Used from the
+    daemon and the CLI, which have no window to show it in."""
+    print(text)
+    import subprocess
+    if shutil.which("notify-send"):
+        try:
+            subprocess.Popen(["notify-send", "-a", "afterglow", "-i", "afterglow", "afterglow", text],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except OSError:
+            pass
+
+
+def auto_apply(settings=None, on_changed=None) -> "str | None":
+    """Set OBS's keyframe interval to 1 s if the "automatic" setting is on
+    and it is anything else (OBS's own 0 = "auto" included, which resolves to
+    a longer interval). Called when the GUI and the daemon start and after
+    each capture, so a new or switched OBS profile is picked up too.
+
+    Returns the message to show the user when something was changed (and
+    passes it to `on_changed`, default: a desktop notification) -- which only
+    happens once per profile, since afterwards the value already is 1 -- else
+    None. Never raises: Simple output mode, no OBS, an unreadable profile all
+    just mean "nothing to do"."""
+    try:
+        if settings is None:
+            from . import config
+            settings = config.load()
+        if not getattr(settings.obs, "auto_keyframe_interval", True):
+            return None
+        info = read_keyframe_info()
+        if not info.ok or info.keyint_sec == AUTO_KEYINT_SEC:
+            return None
+        before = info.keyint_sec
+        set_keyint_sec(AUTO_KEYINT_SEC)
+        msg = (f"OBS's keyframe interval (profile “{info.profile}”) was set to {AUTO_KEYINT_SEC} s "
+               f"(it was {'Auto' if not before else f'{before} s'}) so clips trim faster. "
+               + ("Restart OBS for it to take effect." if obs_running() else "It applies the next time OBS starts.")
+               + " Turn this off in Settings > OBS Connection.")
+        (on_changed or notify)(msg)
+        return msg
+    except Exception as e:  # noqa: BLE001 -- never in the way of a capture or of starting up
+        print(f"Automatic keyframe interval: skipped ({e})")
+        return None

@@ -31,10 +31,43 @@ There's no Save button any more: every change is saved a moment after you make i
 isn't valid yet (a half-typed colour, an empty clip name) waits, with the reason in the status line.
 
 ## Faster trims, and OBS's keyframe interval
-Trims copy the end of a clip instead of re-encoding it (OBS records without B-frames, so that's
-exact). Only the frames from the cut-in point to the next keyframe are re-encoded. To make that part
-shorter too: Settings > Clipping > OBS Keyframe Interval > 1 s > Apply to OBS, then restart OBS.
-Same file size (OBS records at a fixed bitrate). Needs OBS's Output Mode set to Advanced.
+Trims copy the end of a clip instead of re-encoding it (OBS records without B-frames, so that is
+exact). Only the frames from the cut-in point to the next keyframe are re-encoded, with a fast
+preset (those frames are under one keyframe interval, so the size cost is a few MB at most).
+The keyframe interval decides how long that part is, and it is kept at 1 s automatically:
+Settings > Clipping > OBS Connection > "Keep OBS's keyframe interval at 1 s automatically" (on by
+default). When it changes OBS's profile a notification says so; OBS needs one restart to apply it.
+With the box off, the interval is chosen by hand from the same place (Apply to OBS). Same file size
+either way (OBS records at a fixed bitrate). Needs OBS's Output Mode set to Advanced.
+
+## Setup guide
+Settings > Advanced > Setup Guide (it also opens once on a new install). Lists what a working
+setup needs, in order -- OBS connection, replay buffer, keyframe interval, hotkey daemon, clip
+options and hotkeys, clips folder -- each checked against the current state and marked Ready or
+To do, with the steps to fix it and a button to the settings it is about; then how filters, the
+Library and previewer, the Advanced Editor, the input overlay and YouTube are used. "Check Again"
+re-runs the checks; the guide stays open while settings are changed.
+
+## Hotkeys
+A clip hotkey fires when its last key goes down with the rest of the combo held; other keys held at
+the same time (movement keys, sprint, crouch, push-to-talk) do not block it. When two registered
+hotkeys are both complete (f9 and ctrl+f9 with ctrl held) the longer one fires. Keyboards that are
+unplugged, reconnected or connected after login are picked up within a few seconds, without
+restarting the daemon.
+
+## Stats
+Settings > Stats shows the library as tiles (clips, total length, size on disk, recent clips,
+unedited / edited / favorites / uploaded, with / without a filter), a bar per filter and per clip
+type, and records (longest, shortest, largest, newest, oldest clip). Each is clickable: a count or
+bar opens the Library showing exactly those clips (a banner names the view; "Show all" leaves it),
+a record opens that clip in the previewer.
+
+## Speed
+Benchmarks (`tools/bench_startup.py`, `tools/bench_capture.py`, `tools/bench_export.py`) and their
+before/after numbers are in HANDOFF.md. In short: the Library's thumbnails load in the background
+from small files and the Settings / Editor pages are built on first use; a capture's remaining
+cost is the short head re-encode and the copy; an export renders "something drawn over an
+untouched clip" (a caption, a sticker) without converting the frame to RGB and back.
 
 ## Clip indicator ("the clapper")
 

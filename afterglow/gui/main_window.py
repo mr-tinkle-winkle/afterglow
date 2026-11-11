@@ -240,8 +240,19 @@ class MainWindow(QMainWindow):
         # background thread so the first click on Settings / Editor only has
         # to build widgets, not import everything first.
         QTimer.singleShot(1500, self._preload_page_modules)
+        QTimer.singleShot(2500, self._auto_keyframe_interval)
 
     # ------------------------------------------------------------ lazy pages
+
+    def _auto_keyframe_interval(self) -> None:
+        """OBS's keyframe interval kept at 1 s (obs_profile.auto_apply); says so
+        once in the status bar + a notification when it changed something."""
+        import threading
+        from .. import obs_profile
+
+        def run():
+            obs_profile.auto_apply(on_changed=_notify)
+        threading.Thread(target=run, name="afterglow-keyint", daemon=True).start()
 
     def _preload_page_modules(self) -> None:
         if self._settings_page is not None and self._editor_page is not None:
@@ -339,6 +350,84 @@ class MainWindow(QMainWindow):
         overlay.show()
         overlay.raise_()
         self._preview_overlay = overlay
+
+    # ---- setup guide -------------------------------------------------------
+
+    def show_setup_guide(self):
+        """Open the setup guide (non-modal, so the settings it points at can be
+        changed while it stays open). One at a time."""
+        from .setup_guide import SetupGuideDialog
+        existing = getattr(self, "_setup_guide", None)
+        if existing is not None:
+            try:
+                if existing.isVisible():
+                    existing.raise_()
+                    existing.activateWindow()
+                    return existing
+            except RuntimeError:
+                pass
+        dialog = SetupGuideDialog(self)
+        dialog.setAttribute(Qt.WA_DeleteOnClose, True)
+        dialog.navigate_requested.connect(self._on_setup_guide_navigate)
+        self._setup_guide = dialog
+        dialog.show()
+        return dialog
+
+    def maybe_show_setup_guide(self) -> None:
+        """First start of a new install (nothing in the library, never shown
+        before): open the guide once. Called by gui/main.py after show()."""
+        try:
+            settings = config_module.load()
+            if settings.setup_guide_seen:
+                return
+            from .. import library
+            settings.setup_guide_seen = True
+            config_module.save(settings)
+            if library.list_videos():
+                return          # an existing install that just got this version: don't pop anything up
+        except Exception:  # noqa: BLE001
+            return
+        QTimer.singleShot(600, self.show_setup_guide)
+
+    def _on_setup_guide_navigate(self, check) -> None:
+        if check.settings_tab:
+            self.open_settings_tab(check.settings_tab)
+        elif check.page == "library":
+            self.library_nav_btn.setChecked(True)
+            self._on_nav_clicked(_LIBRARY_INDEX)
+        elif check.page == "editor":
+            self.editor_nav_btn.click()
+
+    def open_settings_tab(self, label: str) -> None:
+        if self.stack.currentIndex() != _SETTINGS_INDEX:
+            self.settings_nav_btn.setChecked(True)
+            self._on_nav_clicked(_SETTINGS_INDEX)
+        self.settings_page.show_tab(label)
+
+    # ---- Settings > Stats: a clicked stat ---------------------------------
+
+    def show_library_filtered(self, request: dict) -> None:
+        """Go to the Library showing the clips a stat stands for (see
+        LibraryPage.show_filtered for `request`)."""
+        if self.stack.currentIndex() != _LIBRARY_INDEX:
+            self.library_nav_btn.setChecked(True)
+            self._on_nav_clicked(_LIBRARY_INDEX)
+        self.library_page.show_filtered(request)
+
+    def open_video_by_id(self, video_id: int) -> None:
+        """Go to the Library and open one clip in the previewer (a "record"
+        on the Stats page: longest clip, newest clip...)."""
+        from .. import library
+        try:
+            video = library.get_video(video_id)
+        except Exception:  # noqa: BLE001 -- deleted since the stats were computed
+            self.library_page.show_status_message("That clip is no longer in the library.")
+            video = None
+        if self.stack.currentIndex() != _LIBRARY_INDEX:
+            self.library_nav_btn.setChecked(True)
+            self._on_nav_clicked(_LIBRARY_INDEX)
+        if video is not None:
+            self._show_preview_overlay(video, self.library_page.neighbors_for)
 
     def _on_preview_overlay_closed(self) -> None:
         self._preview_overlay = None

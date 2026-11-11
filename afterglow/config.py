@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import copy
 import os
+import threading
 import tomllib
 import tomli_w
 from dataclasses import dataclass, field, asdict
@@ -38,6 +39,11 @@ class OBSSettings:
     # slower disk/filesystem needs a moment longer than OBS's own event
     # accounts for.
     wait_after_replay_buffer_finishes_sec: float = 0.0
+    # Keep OBS's keyframe interval at 1 s without being asked (obs_profile.auto_apply):
+    # a frame-exact trim re-encodes only up to the first keyframe, so 1 s instead of
+    # OBS's 2 s default halves the slowest step of every capture. Off = OBS's setting
+    # is only changed from Settings > OBS Connection > "Apply to OBS".
+    auto_keyframe_interval: bool = True
 
 
 @dataclass
@@ -376,6 +382,8 @@ class AppSettings:
     # number (120 -> 60, 144 -> 48, 240 -> 60) so its frames line up with the
     # video's. 0 = always match the clip.
     overlay_max_fps: int = 60
+    # The setup guide (Settings > Advanced > Setup Guide) opened by itself once on a new install.
+    setup_guide_seen: bool = False
     obs: OBSSettings = field(default_factory=OBSSettings)
     clip_indicator: ClipIndicatorSettings = field(default_factory=ClipIndicatorSettings)
     youtube: YouTubeSettings = field(default_factory=YouTubeSettings)
@@ -404,11 +412,19 @@ def _load_uncached() -> AppSettings:
     with open(CONFIG_FILE, "rb") as f:
         raw = tomllib.load(f)
 
-    obs = OBSSettings(**raw.get("obs", {}))
+    # Only known keys, for every section: the GUI, the daemon and the indicator
+    # helper are separate processes that can be different builds for a while
+    # (an update installed while one of them keeps running), and a field one of
+    # them doesn't know must never stop it from loading its settings.
+    def _known(cls, values: dict) -> dict:
+        fields = cls.__dataclass_fields__
+        return {k: v for k, v in (values or {}).items() if k in fields}
+
+    obs = OBSSettings(**_known(OBSSettings, raw.get("obs", {})))
     # Only known keys: the pre-Studio OAuth fields (client_secret_path, token_path, ...) are gone.
     _yt_known = set(YouTubeSettings.__dataclass_fields__)
     youtube = YouTubeSettings(**{k: v for k, v in raw.get("youtube", {}).items() if k in _yt_known})
-    filter_display = FilterDisplaySettings(**raw.get("filter_display", {}))
+    filter_display = FilterDisplaySettings(**_known(FilterDisplaySettings, raw.get("filter_display", {})))
     # Only known keys: an older / newer build's config.toml must never stop the app (or the
     # daemon) from starting because of a field this build doesn't have.
     _ci_known = set(ClipIndicatorSettings.__dataclass_fields__)
@@ -421,9 +437,9 @@ def _load_uncached() -> AppSettings:
             # Pre-multi-select config format -- one filter per rule.
             old_tag = rule.pop("tag_name")
             rule["tag_names"] = [old_tag] if old_tag else []
-        auto_filters.append(AutoFilterRule(**rule))
+        auto_filters.append(AutoFilterRule(**_known(AutoFilterRule, rule)))
 
-    card_info = CardInfoSettings(**raw.get("card_info", {}))
+    card_info = CardInfoSettings(**_known(CardInfoSettings, raw.get("card_info", {})))
     appearance_raw = dict(raw.get("appearance", {}))
     if "startup_window_mode" not in appearance_raw and raw.get("default_to_fullscreen"):
         # Pre-startup-window-mode config format -- the old top-level
@@ -550,10 +566,10 @@ def _load_uncached() -> AppSettings:
         # damage, not a real choice. A GENUINELY custom value (anything
         # other than these seven specific numbers) is left alone.
         appearance_raw["unedited_selected_border_width"] = AppearanceSettings.unedited_selected_border_width
-    appearance = AppearanceSettings(**appearance_raw)
+    appearance = AppearanceSettings(**_known(AppearanceSettings, appearance_raw))
     top_level = {
         k: v for k, v in raw.items()
-        if k not in (
+        if k in AppSettings.__dataclass_fields__ and k not in (
             "obs", "youtube", "filter_display", "auto_filters", "card_info", "appearance", "clip_indicator",
             "default_to_fullscreen",  # old field, folded into appearance.startup_window_mode above
         )
@@ -673,18 +689,40 @@ def import_from_file(path: "Path | str") -> AppSettings:
     outright on a since-renamed or removed field."""
     with open(path, "rb") as f:
         raw = tomllib.load(f)
-    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    with open(CONFIG_FILE, "wb") as f:
-        tomli_w.dump(raw, f)
+    _write_config_atomically(raw)
     invalidate_cache()
     return load()
 
 
-def save(settings: AppSettings) -> None:
+def _write_config_atomically(data: dict) -> None:
+    """The settings file written under a temporary name and renamed into
+    place, so another process never reads it half-written.
+
+    It used to be opened for writing directly (truncate, then write). The
+    daemon and the indicator helper re-read this file all the time, and the
+    GUI saves it on every changed setting: a read landing between the
+    truncate and the last byte saw an EMPTY file (= every setting at its
+    default: wrong OBS port / password, default clips folder) or a cut-off
+    one (a TOML error: a clip hotkey pressed at that moment failed)."""
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    payload = tomli_w.dumps(data).encode("utf-8")
+    tmp = CONFIG_FILE.with_name(f".{CONFIG_FILE.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+    try:
+        with open(tmp, "wb") as f:
+            f.write(payload)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, CONFIG_FILE)
+    finally:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+
+
+def save(settings: AppSettings) -> None:
     data = asdict(settings)
-    with open(CONFIG_FILE, "wb") as f:
-        tomli_w.dump(data, f)
+    _write_config_atomically(data)
     # Belt-and-braces: the mtime/size check alone would catch this, but
     # two saves inside one filesystem timestamp tick with an identical
     # byte count would otherwise look unchanged.

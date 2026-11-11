@@ -220,7 +220,7 @@ buf = Path(HOME) / "inputs.jsonl"
 buf.write_text('{"format": "puppetry-input-buffer", "version": 1}\n')
 log = Path(HOME) / "calls.jsonl"
 os.environ["FAKE_PUPPETRY_LOG"] = str(log)
-os.environ["FAKE_PUPPETRY_DELAY"] = "0.6"
+os.environ["FAKE_PUPPETRY_DELAY"] = "1.5"
 end = time.time()
 dest_new = osup.sidecar_dir(clip).with_name(osup.sidecar_dir(clip).name + ".new")
 t0 = time.perf_counter()
@@ -232,7 +232,7 @@ man = osup.install_render(job, buf, clip, end, {})
 took = time.perf_counter() - t0
 check(set(man["pieces"]) == {"keyboard", "mouse"} and osup.has_sidecar(clip) and not dest_new.exists(),
       "install_render waits and writes <clip>.input")
-check(took < 1.15, f"the two pieces rendered in parallel ({took:.2f}s for 2 x 0.6 s)")
+check(took < 2.6, f"the two pieces rendered in parallel ({took:.2f}s for 2 x 1.5 s; one after the other would be 3 s+)")
 sc = osup.load_sidecar(clip)
 check(sc["pieces"]["keyboard"]["width"] > 0 and (Path(sc["dir"]) / "inputs.jsonl").exists(), "sizes and the input record are stored")
 del os.environ["FAKE_PUPPETRY_DELAY"]

@@ -123,6 +123,10 @@ class Renderer:
         self._video: dict[str, media.VideoSource] = {}
         self._images: dict[str, QImage] = {}
         self._frames = media.FrameCache()
+        # export fast paths (see overlay_frame / _smart_frame): reused pixel buffers
+        self._ov_buf = None          # transparent canvas for "things drawn over an untouched clip"
+        self._ov_dirty = None        # the box of it that isn't transparent any more
+        self._rgb_buf = None         # opaque canvas for fully rendered frames
 
     def close(self) -> None:
         for v in self._video.values():
@@ -187,16 +191,23 @@ class Renderer:
         finally:
             self._only = None
 
-    def _compose(self, t: float, width: "int | None", height: "int | None", transparent: bool = False) -> QImage:
+    def _compose(self, t: float, width: "int | None", height: "int | None", transparent: bool = False,
+                 skip: "Segment | None" = None, into=None, clean: bool = False) -> QImage:
+        """skip: a segment left out (overlay_frame draws everything BUT the
+        untouched clip underneath). into: a (height, width, 4) uint8 numpy
+        array to paint into instead of a new QImage (the caller keeps it alive
+        for as long as the returned QImage is used); clean=True: it is already
+        cleared."""
         p = self.project
         cw, ch = p.width, p.height
         width, height = width or cw, height or ch
-        if transparent:
-            out = QImage(width, height, QImage.Format_ARGB32_Premultiplied)
-            out.fill(Qt.transparent)
+        fmt = QImage.Format_ARGB32_Premultiplied if transparent else QImage.Format_RGB32
+        if into is not None:
+            out = QImage(into.data, width, height, width * 4, fmt)
         else:
-            out = QImage(width, height, QImage.Format_RGB32)
-            out.fill(QColor(0, 0, 0))
+            out = QImage(width, height, fmt)
+        if not clean:
+            out.fill(Qt.transparent if transparent else QColor(0, 0, 0))
         painter = QPainter(out)
         painter.setRenderHint(QPainter.SmoothPixmapTransform)
         painter.setRenderHint(QPainter.Antialiasing)
@@ -207,7 +218,7 @@ class Renderer:
             if track.hidden:
                 continue
             for seg in track.segments:
-                if not seg.covers(t):
+                if not seg.covers(t) or seg is skip:
                     continue
                 if seg.overlay_piece and (not self.overlays or (only is not None and seg.overlay_piece != only)):
                     continue                    # an overlay element, left out (as if hidden) / not this piece
@@ -268,6 +279,82 @@ class Renderer:
         if src is None or src.width != p.width or src.height != p.height or (width, height) != (p.width, p.height):
             return None
         return part, local
+
+    def _untouched_full_frame(self, seg: Segment, local: float, width: int, height: int) -> "Part | None":
+        """The single video part `seg` shows at `local` when it is drawn as an
+        untouched, canvas-filling picture (the passthrough conditions), else None."""
+        p = self.project
+        if (seg.transition_in is not None and local < seg.transition_in.duration) or seg.keyframes \
+                or not seg.transform.is_identity() or zoom_factor(seg, local) != 1.0 \
+                or float(fade_envelope(seg, local)) < 1.0 or getattr(seg, "shadow", False):
+            return None
+        parts = [pt for pt in seg.parts if pt.has_video and pt.visible and pt.active_at(local)]
+        if len(parts) != 1 or parts[0].kind != KIND_AV:
+            return None
+        part = parts[0]
+        if self.overlays and any(o.visible for o in part.overlays):
+            return None
+        src = self._source(part.source)
+        if src is None or src.width != p.width or src.height != p.height or (width, height) != (p.width, p.height):
+            return None
+        return part
+
+    def overlay_base(self, t: float, width: int, height: int):
+        """(segment, part, local) when the BOTTOM-most thing drawn at t is one
+        untouched full-frame video picture and everything else is drawn on top
+        of it (captions, bubbles, stickers, other clips, their transitions...).
+        The export then leaves that picture in YUV and blends only what is
+        drawn over it (overlay_frame). None otherwise. Decodes nothing."""
+        for track in reversed(self.project.tracks):        # _compose's drawing order: bottom first
+            if getattr(track, "hidden", False):
+                continue
+            for seg in track.segments:
+                if not seg.covers(t):
+                    continue
+                if seg.overlay_piece and not self.overlays:
+                    continue
+                local = t - seg.start
+                tr = seg.transition_in
+                if tr is not None and tr.duration > EPS and local < tr.duration \
+                        and previous_on_track(track, seg) is not None:
+                    return None                 # the first thing drawn is a transition
+                if not seg.visible or not seg.has_video:
+                    continue                    # draws nothing
+                part = self._untouched_full_frame(seg, local, width, height)
+                return None if part is None else (seg, part, local)
+        return None
+
+    def overlay_frame(self, t: float, width: int, height: int, matrix: str = "ITU601"):
+        """The output frame at t as YUV (av.VideoFrame), made WITHOUT the RGB
+        round trip, when overlay_base() applies: the untouched clip's decoded
+        frame with everything above it painted on a transparent canvas and
+        blended into its planes (nle/yuv_blend.py) -- only the pixels actually
+        drawn on change. None when the frame has to be rendered the long way."""
+        found = self.overlay_base(t, width, height)
+        if found is None:
+            return None
+        seg, part, local = found
+        src = self._source(part.source)
+        frame = src.frame_at(part.source_time(local)) if src is not None else None
+        if frame is None or frame.format.name not in ("yuv420p", "yuvj420p") \
+                or frame.width != width or frame.height != height or width % 2 or height % 2:
+            return None
+        from . import yuv_blend
+        buf = self._ov_buf
+        if buf is None or buf.shape[0] != height or buf.shape[1] != width:
+            buf = self._ov_buf = np.zeros((height, width, 4), np.uint8)
+        elif self._ov_dirty is not None:
+            x0, y0, x1, y1 = self._ov_dirty
+            buf[y0:y1, x0:x1] = 0               # clear only what the last frame drew
+        self._ov_dirty = (0, 0, width, height)  # (until the box below is known: an exception mid-paint clears all)
+        img = self._compose(t, width, height, transparent=True, skip=seg, into=buf, clean=True)
+        del img                                 # painter ended: the pixels are in buf
+        box = yuv_blend.bounding_box(buf)
+        self._ov_dirty = box
+        try:
+            return yuv_blend.blend_onto_frame(frame, buf, matrix, box)
+        except ValueError:
+            return None
 
     def passthrough_frame(self, t: float, width: int, height: int):
         """The decoded source frame itself (as yuv420p), when the output at t
@@ -1634,7 +1721,7 @@ def _new_video_stream(out, rate, width, height, crf, preset, threads=None):
     return vs
 
 
-def _smart_frame(renderer: "Renderer", i: int, rate, width: int, height: int):
+def _smart_frame(renderer: "Renderer", i: int, rate, width: int, height: int, matrix: "str | None" = None):
     """Output frame i for the smart export: the source frame itself when it's
     a plain passthrough (converted to the output's YUV by the encoder, with
     the source's own matrix), else the rendered picture (BGRA)."""
@@ -1642,6 +1729,28 @@ def _smart_frame(renderer: "Renderer", i: int, rate, width: int, height: int):
     src = renderer.passthrough_frame(t, width, height)
     if src is not None:
         return src
+    # something drawn over an untouched clip: blend it into the clip's own YUV
+    try:
+        vf = renderer.overlay_frame(t, width, height, matrix or "ITU601")
+    except Exception:  # noqa: BLE001 -- never lose an export to the fast path
+        vf = None
+    if vf is not None:
+        return vf
+    # Everything else is painted in RGB. The canvas is one buffer reused for
+    # every frame and handed to the encoder without a copy: the caller
+    # (smartcut.encode_frames) converts each frame to YUV before it asks for
+    # the next one, so the pixels are never overwritten while still needed.
+    from_buffer = getattr(av.VideoFrame, "from_numpy_buffer", None)
+    if from_buffer is not None:
+        buf = renderer._rgb_buf
+        if buf is None or buf.shape[0] != height or buf.shape[1] != width:
+            buf = renderer._rgb_buf = np.empty((height, width, 4), np.uint8)
+        img = renderer._compose(t, width, height, into=buf)
+        del img
+        try:
+            return from_buffer(buf, format="bgra")
+        except Exception:  # noqa: BLE001 -- this PyAV can't wrap it: copy instead
+            return av.VideoFrame.from_ndarray(buf, format="bgra")
     img = renderer.frame(t, width, height)
     ptr = img.constBits()
     arr = np.frombuffer(ptr, np.uint8, count=img.sizeInBytes()).reshape(height, img.bytesPerLine() // 4, 4)[:, :width]
@@ -1782,11 +1891,16 @@ def export(project: Project, out_path: str, progress: "Callable[[float], None] |
                 encode_audio(aout, aus)
         try:
             cpus = os.cpu_count() or 2
-            workers = jobs_given or max(1, min(4, cpus // 2))
+            # Chunks render in parallel, one renderer + encoder each. Up to 4 on
+            # 8 threads as before; machines with more get more (8 on 32 threads) --
+            # the per-frame work is mostly outside the GIL (swscale, x264, numpy).
+            workers = jobs_given or max(1, min(8, max(min(4, cpus // 2), cpus // 4)))
+            from ..smartcut import SWS_COLORSPACE
+            smart_matrix = SWS_COLORSPACE.get(int((_out_color(project) or {}).get("colorspace", 2) or 2)) or "ITU601"
             stats = smart_export.smart_export(
                 project, out_path, rate, width, height, n_frames, crf, preset, workers, progress, cancel,
                 audio_to if has_audio else None, lambda: Renderer(project, overlays=False),
-                lambda r, i, _last: (_smart_frame(r, i, rate, width, height), None))
+                lambda r, i, _last: (_smart_frame(r, i, rate, width, height, smart_matrix), None))
             LAST_EXPORT_STATS.update(stats, mode="smart")
             if progress is not None:
                 progress(1.0)

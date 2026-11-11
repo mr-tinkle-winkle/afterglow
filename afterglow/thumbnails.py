@@ -98,6 +98,21 @@ def full_thumbnail_path_if_cached(video_id: int, video_path: Path) -> "Path | No
     return path if path.exists() else None
 
 
+def _drop_stale_card_thumbnails(video_id: int, keep: Path) -> None:
+    """Card thumbnails of the same video from before its file last changed
+    (every trim / re-export gives the file a new mtime, i.e. a new cache
+    name): without this they pile up for good."""
+    try:
+        for old in CACHE_DIR.glob(f"{video_id}_*_card.jpg"):
+            if old != keep:
+                try:
+                    old.unlink()
+                except OSError:
+                    pass
+    except OSError:
+        pass
+
+
 def get_card_thumbnail(video_id: int, video_path: Path) -> "Path | None":
     """The small (CARD_THUMB_WIDTH wide) thumbnail, made with ffmpeg when it
     isn't cached. Blocks for one ffmpeg run on a miss: call it off the GUI
@@ -121,6 +136,7 @@ def get_card_thumbnail(video_id: int, video_path: Path) -> "Path | None":
             )
             if result.returncode == 0 and tmp.exists() and tmp.stat().st_size > 0:
                 os.replace(tmp, cache_path)
+                _drop_stale_card_thumbnails(video_id, cache_path)
                 return cache_path
         return None
     except OSError:

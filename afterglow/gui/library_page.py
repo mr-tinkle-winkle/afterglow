@@ -18,7 +18,7 @@ import traceback
 
 from pathlib import Path
 from PySide6.QtCore import Qt, Signal, QSize, QFileSystemWatcher, QTimer, QRectF
-from PySide6.QtGui import QPainter, QPixmap, QColor, QPen
+from PySide6.QtGui import QPainter, QPixmap, QColor, QPen, QPalette
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLineEdit,
     QScrollArea, QLabel, QStackedWidget,
@@ -33,7 +33,7 @@ from .. import db as db_module
 from .video_card import VideoCard, THUMB_SIZE, FAVORITE_STAR
 from .resources import resource_qpixmap
 from . import theme_fx, theme_presets
-from .theme import Theme
+from .theme import Theme, contrast_text
 from .rounded_rect import rounded_rect_path
 from .custom_button import CustomButton
 from .custom_message_dialog import show_message
@@ -279,6 +279,7 @@ class _VideoGridTab(QWidget):
         self._active_tags: set[str] = set()
         self._excluded_tags: set[str] = set()
         self._favorite_only: bool = False
+        self._only_ids: "frozenset[int] | None" = None    # a clicked stat's clips (LibraryPage.show_filtered)
         self._sort_by: str = library.DEFAULT_SORT
         self._highlight_unedited: bool = True
         self._font_scale: float = 1.0
@@ -716,6 +717,24 @@ class _VideoGridTab(QWidget):
     # library in a handful of ticks.
     _BUILD_SLICE_SECONDS = 0.012
 
+    def _query_videos(self) -> list:
+        """The videos this tab shows right now: its search / filters / sort,
+        then -- when a stat was clicked on Settings > Stats -- only that
+        stat's own clips (_only_ids; see LibraryPage.show_filtered)."""
+        videos = library.list_videos(
+            tag_filter=list(self._active_tags) or None,
+            tag_exclude=list(self._excluded_tags) or None,
+            favorite_only=self._favorite_only,
+            uploaded_only=self._uploaded_only,
+            local_only=self._local_only,
+            search=self.search_edit.text().strip() or None,
+            sort_by=self._sort_by,
+        )
+        only = self._only_ids
+        if only is not None:
+            videos = [v for v in videos if v.id in only]
+        return videos
+
     def refresh(self) -> None:
         """Rebuild this tab's cards from a fresh DB query.
 
@@ -744,15 +763,7 @@ class _VideoGridTab(QWidget):
         self._build_generation = getattr(self, "_build_generation", 0) + 1
         self.loading_changed.emit(True)
         try:
-            videos = library.list_videos(
-                tag_filter=list(self._active_tags) or None,
-                tag_exclude=list(self._excluded_tags) or None,
-                favorite_only=self._favorite_only,
-                uploaded_only=self._uploaded_only,
-                local_only=self._local_only,
-                search=self.search_edit.text().strip() or None,
-                sort_by=self._sort_by,
-            )
+            videos = self._query_videos()
         except Exception:
             traceback.print_exc()
             self._finish_refresh()
@@ -847,15 +858,7 @@ class _VideoGridTab(QWidget):
         """Synchronous full rebuild (query + build + swap in one go).
         Kept for any caller/test that needs the grid populated before it
         returns; normal UI paths use the time-sliced refresh() above."""
-        videos = library.list_videos(
-            tag_filter=list(self._active_tags) or None,
-            tag_exclude=list(self._excluded_tags) or None,
-            favorite_only=self._favorite_only,
-            uploaded_only=self._uploaded_only,
-            local_only=self._local_only,
-            search=self.search_edit.text().strip() or None,
-            sort_by=self._sort_by,
-        )
+        videos = self._query_videos()
         self._swap_in_cards([self._make_card(v) for v in videos])
         self._last_signature = None  # not computed on this path; force the next refresh() to compare fresh
 
@@ -1210,6 +1213,27 @@ class LibraryPage(QWidget):
         header.addWidget(self.sort_btn)
 
         layout.addLayout(header)
+
+        # "Showing: <what a clicked stat stands for>   [Show all]" -- only while a view
+        # opened from Settings > Stats is active (show_filtered / clear_stat_view)
+        self.stat_banner = QWidget()
+        banner_layout = QHBoxLayout(self.stat_banner)
+        banner_layout.setContentsMargins(8, 2, 8, 2)
+        self.stat_banner_label = QLabel("")
+        _banner_theme = Theme(appearance)
+        if _banner_theme.afterglow_enabled:
+            _pal = self.stat_banner_label.palette()
+            _pal.setColor(QPalette.WindowText, contrast_text(_banner_theme.library_background()))
+            self.stat_banner_label.setPalette(_pal)
+        banner_layout.addWidget(self.stat_banner_label, stretch=1)
+        self.stat_banner_clear = CustomButton("Show all")
+        self.stat_banner_clear.setToolTip("Back to the whole Library")
+        self.stat_banner_clear.clicked.connect(lambda _checked=False: self.clear_stat_view())
+        banner_layout.addWidget(self.stat_banner_clear)
+        self.stat_banner.setVisible(False)
+        self._stat_view: "dict | None" = None
+        layout.addWidget(self.stat_banner)
+
         layout.addWidget(self._stack, stretch=1)
 
         # Shared popups -- one instance each, re-pointed at whichever tab
@@ -1391,6 +1415,45 @@ class LibraryPage(QWidget):
         if not self._loading_tabs and self._page_refresh_pending:
             self._page_refresh_pending = False
             QTimer.singleShot(0, self.refresh)
+
+    # ---- views opened from Settings > Stats --------------------------------
+
+    def show_filtered(self, request: dict) -> None:
+        """Show exactly the clips a clicked stat stands for. `request`:
+        {"label": text for the banner, "ids": [video ids] or None,
+        "tags": [filter names] or None, "tab": "local" (default) / "uploaded"}.
+        The tab's own search / filters / favorites are reset first so the
+        count on screen matches the stat; "Show all" (clear_stat_view) puts
+        the tab back to showing everything."""
+        self.clear_stat_view(refresh=False)
+        tab = self.uploaded_tab if request.get("tab") == "uploaded" else self.local_tab
+        button = self.uploaded_btn if tab is self.uploaded_tab else self.local_btn
+        if not button.isChecked():
+            button.click()
+        tab.search_edit.blockSignals(True)
+        tab.search_edit.clear()
+        tab.search_edit.blockSignals(False)
+        self._sync_search_bubble_for_active_tab()
+        tab._favorite_only = False
+        tab._excluded_tags = set()
+        tab._active_tags = set(request.get("tags") or [])
+        ids = request.get("ids")
+        tab._only_ids = frozenset(ids) if ids is not None else None
+        self._stat_view = {"tab": tab, "label": request.get("label") or "Selected clips"}
+        self.stat_banner_label.setText(f"Showing: <b>{self._stat_view['label']}</b>")
+        self.stat_banner.setVisible(True)
+        tab.refresh()
+
+    def clear_stat_view(self, refresh: bool = True) -> None:
+        view, self._stat_view = self._stat_view, None
+        self.stat_banner.setVisible(False)
+        if view is None:
+            return
+        tab = view["tab"]
+        tab._only_ids = None
+        tab._active_tags = set()
+        if refresh:
+            tab.refresh()
 
     def neighbors_for(self, video_id: int) -> tuple["library.Video | None", "library.Video | None"]:
         """(previous, next) video relative to video_id, according to

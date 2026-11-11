@@ -149,9 +149,19 @@ def frame_to_qimage(frame, width: int, height: int):
     from PySide6.QtGui import QImage
     width, height = max(2, int(width)), max(2, int(height))
     rgb = frame.reformat(width=width, height=height, format="bgra")
-    arr = np.ascontiguousarray(rgb.to_ndarray())
-    img = QImage(arr.data, width, height, width * 4, QImage.Format_ARGB32)
-    return img.copy()   # own the pixels (arr is freed after return)
+    # One copy, straight from the converted frame's plane into the QImage's own
+    # pixels (this used to be to_ndarray() + img.copy(): two full-frame copies,
+    # ~5 ms more per 1440p frame on every rendered frame).
+    img = QImage(width, height, QImage.Format_ARGB32)
+    try:
+        plane = rgb.planes[0]
+        src = np.frombuffer(plane, np.uint8).reshape(-1, plane.line_size)[:height, :width * 4]
+        dst = np.frombuffer(img.bits(), np.uint8, count=img.sizeInBytes()).reshape(height, img.bytesPerLine())
+        dst[:, :width * 4] = src
+        return img
+    except Exception:  # noqa: BLE001 -- an unexpected buffer layout: the plain way
+        arr = np.ascontiguousarray(rgb.to_ndarray())
+        return QImage(arr.data, width, height, width * 4, QImage.Format_ARGB32).copy()
 
 
 class FrameCache:

@@ -228,6 +228,13 @@ class ClipDaemon:
         except Exception as e:  # noqa: BLE001
             logger.warning("Processing throttle unavailable: %s", e)
 
+        # OBS's keyframe interval kept at 1 s (Settings > OBS Connection; see obs_profile.auto_apply)
+        try:
+            from . import obs_profile
+            threading.Thread(target=obs_profile.auto_apply, name="afterglow-keyint", daemon=True).start()
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Automatic keyframe interval unavailable: %s", e)
+
         threading.Thread(target=self._reload_loop, daemon=True).start()
         threading.Thread(target=self._trigger_worker_loop, daemon=True).start()
         threading.Thread(target=self._library_scan_loop, daemon=True).start()

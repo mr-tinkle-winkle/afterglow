@@ -18,7 +18,7 @@ unverified on real hardware) -- see "Clip indicator ("the clapper") -- BUILT".
 then `DISPLAY=:99 QT_QPA_PLATFORM=xcb python3 tests/<suite>.py` (the
 previewer suites need GL for mpv); the `tests/test_nle_*.py` engine
 suites run with `QT_QPA_PLATFORM=offscreen`. Every suite prints PASS/FAIL
-lines and exits non-zero on failure. All 46 suites pass (`test_startup_perf` newest, then `test_themes`, `test_settings_autosave`, `test_smartcut_tail`) (the four `test_youtube_*`
+lines and exits non-zero on failure. All 51 suites pass (`test_bug_sweep`, `test_nle_fast_paths`, `test_setup_guide`, `test_stats_page`, `test_startup_perf` newest, then `test_themes`, `test_settings_autosave`, `test_smartcut_tail`) (the four `test_youtube_*`
 suites are new: `core` runs anywhere; `studio`, `queue` and `entry_points` need Xvfb + QtWebEngine,
 and `QTWEBENGINE_DISABLE_SANDBOX=1` when run as root -- they set it themselves; `entry_points` starts
 a real `afterglow-youtube` host process); earlier 36 (incl. the overlay suites listed
@@ -28,30 +28,180 @@ and the previewer / advanced-editor suites need libmpv + Xvfb (with `libxcb-curs
 they hang or fail under offscreen); `test_nle_render`'s preview-
 speed check is timing-based, run it on its own, not alongside other suites).
 
-## Performance + bug sweep -- IN PROGRESS (read this first)
+## Performance + bug sweep -- DONE (read this first)
 
-Goals, in priority order as given:
-1. The app opens faster. -- **DONE this session** (numbers below)
-2. Clips process (capture -> trim -> library) even faster. -- not started (leads below)
-3. Clips export faster from the Editor. -- not started (not profiled yet)
-4. Bugs fixed across the whole app AND the daemon. -- not started as a sweep (one found + fixed below)
-5. General optimizations wherever possible.
-6. OBS keyframe interval set AUTOMATICALLY (see "Automatic keyframe interval" below). -- not started
-7. A setup guide that walks a new user through full setup (see "Setup guide" below). -- not started
-8. Stats page redesign: format it to look better, and make each stat clickable -- clicking a stat
-   either filters the Library by it or opens the video it refers to (e.g. "longest clip" opens that
-   clip; "clips tagged X" filters by X). -- not started
-9. Input overlay creation faster on afterglow's side (added mid-session). -- **DONE this session**
+Every goal of the sweep has been worked through; what each one came to, with numbers, is below.
+All measurements: 2-core sandbox, Xvfb, no GPU -- absolute times are pessimistic for a real
+machine, the ratios are what carry over. Benchmarks live in `tools/` and are re-runnable.
 
-Reference numbers given earlier:
-- Library: 93 clips; the app takes "a few seconds" to open.
-- Typical Editor export: 30 s at 2560x1440, 120 fps, "some effects"; takes ~10-30 s, possibly more.
-  Benchmark exports against exactly this shape.
-- No known bugs reported -- the bug sweep is a proactive audit (app + daemon).
-- OBS's keyframe interval had NOT been changed (still 2 s = keyint 240 at 120 fps).
+| Goal | State | Result |
+|---|---|---|
+| 1. The app opens faster | done | window usable 1.14 s -> 0.46 s; Library filled 4.2 s -> 1.15 s (93 clips, 1440p) |
+| 2. Clips process faster | done | OBS-saved -> in-library 5.2 s -> 2.7 s (2 s keyframes), 1.7 s with 1 s keyframes |
+| 3. Editor exports faster | done | caption over a clip 27 s -> 19 s; every frame rendered 166 s -> 104 s (30 s, 1440p120) |
+| 4. Bug sweep, app + daemon | done | 6 bugs fixed (hotkeys with other keys held, keyboard reconnect, settings file races, ...) |
+| 5. General optimizations | done | folded into 1-3 and 9 |
+| 6. Automatic OBS keyframe interval | done | on by default; one notice when it changes OBS's profile |
+| 7. Setup guide | done | Settings > Advanced > Setup Guide; opens once on a new install |
+| 8. Stats page redesign, clickable | done | tiles / bars / records; a click filters the Library or opens the clip |
+| 9. Input overlay creation faster | done | render starts with the trim; 60 fps cap (real-machine gain unmeasured) |
 
-Rule that held every time so far: MEASURE FIRST. Profile, find the actual hot path, fix it,
-measure again, and record before/after numbers here.
+Reference numbers given for the sweep: 93 clips; typical export 30 s at 2560x1440, 120 fps, "some
+effects", taking ~10-30 s; OBS's keyframe interval had not been changed (2 s).
+
+Rule that held every time: MEASURE FIRST. Profile, find the actual hot path, fix it, measure again.
+
+### Clip processing -- DONE
+Benchmark: `tools/bench_capture.py` (`clips.trigger_clip` against a stand-in for OBS that hands
+back a pre-made 1440p 120 fps replay file; every stage timed; `--keyint 1` for 1 s keyframes,
+`--profile FILE` for cProfile). Time from "OBS reported the file" to "clip is in the library",
+40 s buffer, 30 s clip (289 MB):
+
+| | before | after |
+|---|---|---|
+| keyframes every 2 s (OBS's default) | 5.2 s | 2.7 s |
+| keyframes every 1 s (now set automatically) | -- | 1.7 s |
+
+Where the 5.2 s was, and what changed:
+1. **The head re-encode: 3.7 s of 4.9 s** (197 frames of 1440p through x264 "veryfast"). A smart
+   cut encodes only the frames before the first keyframe, so the preset barely affects size but
+   decides the time: measured 3.35 s at veryfast, 2.38 s at superfast, 1.40 s at ultrafast, for
+   ~12 MB more on a 289 MB clip. `TrimRequest.smart_preset` / `smart_crf` (new) set the smart cut's
+   own preset; `clips.trigger_clip` passes `ultrafast` / CRF 17. The full re-encode fallback (codecs
+   the smart cut can't handle) keeps `veryfast` -- ultrafast there would bloat the whole clip.
+2. Decoding now runs ahead of the encoder on a helper thread (`smartcut.prefetched`): no gain on
+   2 cores, where x264 already uses both; it overlaps decode and encode on a machine with spare cores.
+3. Three `ffprobe` processes per capture (~70 ms each here): `editor.probe_duration` reads the
+   duration in-process with PyAV first (same libavformat number; ~2 ms) and only falls back to
+   ffprobe; `commit_trim(known_duration=)` skips re-probing the file the pipeline just probed.
+   This speeds up every `probe_duration` call in the app (library ingest included).
+4. The mux read every copied packet's payload twice (a counting pass, then the real one):
+   `_chunk_packets(with_data=False)` for the counting pass; Fraction arithmetic per packet -> float.
+5. `SETTLE_STABLE_FOR` 0.15 s -> 0.06 s (OBS reports the save after closing the file; this is a
+   re-check, not a wait).
+6. Auto Add Filter detection (focused window / running programs) ran BEFORE OBS was asked for
+   the replay; it now runs on its own thread started at the same moment, joined when the tags are
+   needed. `get_fps()` (overlay fallback only) moved after the save request too.
+- What is left per capture: the head encode (1.4 s at 2 s keyframes, ~0.6 s at 1 s; near zero on
+  a machine with many cores), the mux/copy of the clip (~0.5 s for 289 MB), sqlite commits
+  (~0.15 s of fsync). A hardware encoder for the head was not tried (driver-dependent; the head is
+  now short enough that the gain would be small).
+
+### Editor export -- DONE
+Benchmark: `tools/bench_export.py` (one 30 s 2560x1440 120 fps clip; cases `plain`, `caption`
+(4 s caption), `effects` (caption + zoom + fade), `all` (a caption across the whole clip = every
+frame rendered); `--profile FILE`). 2 cores, one render worker:
+
+| case | before | after |
+|---|---|---|
+| plain (nothing changed: all copied) | 0.6 s | 0.6 s |
+| caption (720 frames rendered, 2880 copied) | 27.0 s | 19.4 s |
+| effects (1920 rendered, 1680 copied) | 75.2 s | 66.4 s |
+| all (3600 rendered) | 166.2 s | 104.0 s |
+| re-export of `effects` after changing the caption (reuses unchanged chunks) | 20.0 s | 20.0 s |
+
+Per rendered 1440p frame the old path cost ~46 ms on one core: decode, YUV->BGRA (swscale),
+QImage copy, clear, paint, BGRA copy into a frame, BGRA->YUV (swscale, 8 ms), x264 (10-12 ms).
+Changes:
+1. **`nle/yuv_blend.py` (new) + `Renderer.overlay_frame()`**: when the bottom-most thing drawn is
+   one untouched full-frame clip (`Renderer.overlay_base()` -- the passthrough conditions) and
+   everything else is drawn on top of it (captions, bubbles, stickers, other clips, their
+   transitions), the clip's decoded frame stays in YUV. Everything above it is painted on a
+   reused transparent canvas (`_compose(skip=base, into=buffer)`), its bounding box is found with a
+   word-wise scan, and only that box is converted (numpy) and alpha-blended into the Y/U/V planes.
+   No RGB round trip, no full-frame copies -- and pixels outside the box are the source's own, bit
+   for bit (the RGB path changed every pixel slightly: mean luma error 0.4, chroma up to 141 on
+   sharp edges). Inside the box it matches the RGB path to PSNR > 38 dB; opaque colours match
+   swscale exactly. Falls back to the RGB path on anything unexpected.
+2. The RGB path lost two full-frame copies: `media.frame_to_qimage` copies the converted plane
+   straight into the QImage (was `to_ndarray()` + `QImage.copy()`), and `_smart_frame` paints into
+   one reused numpy buffer handed to the encoder with `VideoFrame.from_numpy_buffer` (was
+   `from_ndarray`, a 14.7 MB copy per frame). Safe because `smartcut.encode_frames` converts each
+   frame to YUV before asking for the next (noted at the call site -- do not hand those frames to
+   anything that keeps them).
+   NOT done: QImage's cleanup-function constructor (to wrap the numpy buffer without any copy)
+   segfaults in PySide6 6.x -- tried, removed.
+3. Render workers: `min(4, cpus // 2)` -> up to 8 on machines with 32 threads
+   (`max(min(4, cpus // 2), cpus // 4)`, capped at 8). Unmeasured here (2 cores = 1 worker).
+- What is left: x264 itself (10-12 ms per 1440p frame at "veryfast" on this machine) is now the
+  largest single cost of a rendered frame; the preset is the lever (a quality/size decision, not
+  changed). Frames whose BASE is transformed (zoom, crop, fade, keyframes) still take the RGB path.
+- Tests: `tests/test_nle_fast_paths.py`.
+
+### Automatic keyframe interval -- DONE
+`obs_profile.auto_apply()`: with `obs.auto_keyframe_interval` on (default; Settings > Clipping >
+OBS Connection > "Keep OBS's keyframe interval at 1 s automatically") it sets `keyint_sec` to 1
+whenever OBS's replay-buffer encoder file says anything else -- 0 ("Auto") included -- and tells
+the user once (desktop notification from the daemon / CLI and the GUI) that OBS needs a restart.
+"Once" needs no flag: afterwards the value already is 1. Called when the daemon starts, 2.5 s
+after the GUI starts, and after every capture (a new or switched OBS profile), always on a
+background thread; never raises (Simple output mode, no OBS, an unreadable profile = nothing to
+do). With the box ticked the manual interval combo + "Apply to OBS" are disabled; unticking gives
+them back. Tests: `tests/test_setup_guide.py` (the auto_apply block).
+
+### Setup guide -- DONE
+`setup_checks.py` (no Qt) + `gui/setup_guide.py`. Steps in setup order, each checked live and
+shown as Ready / To do / How it works with what to do and a button to the settings it is about:
+1 OBS connection, 2 replay buffer (enabled, long enough for the longest clip option), 3 keyframe
+interval, 4 hotkey daemon (running; `/dev/input` readable), 5 clip options and hotkeys, 6 clips
+folder; then how Filters, the Library/previewer, the Advanced Editor, the input overlay and
+YouTube are used. The checks talk to OBS, so they run on a worker thread ("Checking..." until
+they arrive); "Check Again" re-runs them. Non-modal, so settings can be changed with it open.
+Opens from Settings > Advanced > Setup Guide and by itself once on a new install
+(`MainWindow.maybe_show_setup_guide`, called from `gui/main.py` -- not from the constructor, so
+tests building a MainWindow never get it; an existing library never gets the pop-up either).
+`SettingsPage.show_tab(label)` / `MainWindow.open_settings_tab(label)` are new.
+Tests: `tests/test_setup_guide.py`.
+
+### Stats page -- DONE
+`gui/stats_settings_page.py` rewritten: tiles (clips, total length, size on disk, last 7 / 30
+days; unedited / edited / favorites / uploaded; with / without a filter), a bar per filter
+(most used first) and per clip type, and records (longest, shortest, largest file, newest,
+oldest). Every one with something behind it is a button (hover outline, pointing hand, Enter /
+Space):
+- a count -> `MainWindow.show_library_filtered({"label", "ids", "tags", "tab"})` ->
+  `LibraryPage.show_filtered()`: the tab's own search / filters are reset, `_VideoGridTab._only_ids`
+  restricts it to that stat's clips, and a "Showing: ... [Show all]" banner appears above the grid;
+- a filter's bar -> the same with `tags=[name]` (a real filter: it shows as ticked in the Sort menu);
+- a record -> `MainWindow.open_video_by_id()` -> the previewer.
+`library.compute_stats()` now also returns the ids behind each count, totals, sizes (from the
+files -- the DB only records a size at upload), dates and per-clip-type counts; the old fields are
+unchanged. The page recomputes on Refresh and when shown after the DB file changed.
+Lesson re-learned: `button.clicked.connect(method_with_a_default_argument)` passes Qt's `checked`
+bool as that argument ("Show all" silently did `clear_stat_view(refresh=False)`).
+Tests: `tests/test_stats_page.py`.
+
+### Bug sweep (app + daemon) -- DONE
+Found by reading the daemon, hotkey, capture, settings and library code and by a pyflakes pass
+(which found nothing real). Each has a regression check in `tests/test_bug_sweep.py`.
+1. **A clip hotkey did nothing while any other key was held.** `ComboStateMachine` fired only when
+   the held keys were EXACTLY the combo -- so not while holding W, shift, ctrl, a push-to-talk
+   key. Now a key-down fires the registered combo it completes (the pressed key is part of it,
+   the rest of it is held); other held keys don't matter; with several complete combos the one
+   with the most keys wins (ctrl+f9 over f9). BEHAVIOUR CHANGE: f9 now also fires with an
+   unrelated modifier held (e.g. alt+f9) unless that longer combo is registered itself.
+2. **A keyboard that was unplugged / reconnected lost its hotkeys until the daemon restarted**
+   (also: a wireless receiver reconnecting, a KVM, a keyboard not yet on at login). Devices were
+   listed once; a reader whose device vanished ended on the uncaught OSError. `EvdevHotkeyListener`
+   now rescans every 3 s for keyboards it isn't reading, and a reader whose device goes away logs
+   it and ends cleanly.
+3. **Keys held on a keyboard when it disappeared stayed "held" forever** (no key-up ever comes),
+   which under the old exact-match rule meant no hotkey could fire again. The reader releases them
+   (`ComboStateMachine.release_all`).
+4. `discover_keyboard_devices()` left every device it opened open (a descriptor leak per call).
+5. **The settings file was written in place** (truncate, then write). The daemon and the indicator
+   helper re-read it constantly and the GUI saves on every changed setting: a read in between saw
+   an empty file (every setting at its default -- wrong OBS port/password for that capture) or a
+   cut-off one (a TOML error: the capture failed). `config.save` / `import_from_file` now write a
+   temporary file, fsync and rename. Verified with 3 readers hammering the file through 150 saves.
+6. **A settings field one build doesn't know stopped it loading** (`OBSSettings(**raw["obs"])`
+   etc. raise on unknown keys) -- e.g. the GUI already updated, the daemon still the old build.
+   Every section and the top level now keep only known keys (clip_indicator / youtube already did).
+7. Smaller: old card thumbnails of a re-trimmed clip were never removed; the Library's startup
+   loading state never reached the sidebar icon (previous session); the Stats "Show all" wiring above.
+- Looked at and left alone: `OBSClient` asks for a second save when the ReplayBufferSaved event
+  times out after the first request was sent (leaves the first file in OBS's folder; rare, and
+  the alternative risks losing the clip); `prune_missing_videos` already has its mass-prune guard.
 
 ### Startup -- DONE (this session)
 Benchmark: `tools/bench_startup.py` (N clips in a throwaway HOME, same steps as `gui/main.main()`;
@@ -148,44 +298,15 @@ available here -- **the real-machine gain is unmeasured**. Three changes:
   once per piece per clip; one process rendering all pieces would save it. `-g 1` for .mov (see
   the earlier note) is still open too.
 
-### Measured leads for the remaining goals
-Clip processing (see "Faster trims" below for what's done): the remaining cost per capture is the
-head re-encode (x264 veryfast, up to one keyframe interval of frames -- set OBS's keyframe interval
-to 1 s from Settings to halve it), plus waits around OBS's save (`wait_after_replay_buffer_finishes_sec`,
-`POST_SAVE_SETTLE_SECONDS`, the duration probes). Time each stage on a real capture before changing
-any of them; several waits exist because OBS was still writing the file (see the history below).
-
-Editor export (`nle/render.py`): NOT profiled yet. Start by timing an export of a simple timeline
-(one clip, no effects) against a plain `ffmpeg -c copy` / single re-encode of the same range, then
-a timeline with text/overlays, and find where frames are produced (Python per-frame work vs ffmpeg).
-
-### Automatic keyframe interval (requested)
-Today: Settings > Clipping > OBS Keyframe Interval + "Apply to OBS" (obs_profile.py), manual.
-Wanted: afterglow keeps it at 1 s by itself. Suggested shape:
-- A setting "Keep OBS's keyframe interval at 1 s" (default on) instead of the manual row (or beside it).
-- Check at GUI start / daemon start / after a successful OBS connection; if the profile is in
-  Advanced output mode and `keyint_sec` != 1, write 1 (obs_profile.set_keyint_sec keeps a one-time
-  backup) and tell the user once that OBS needs a restart for it to apply.
-- Simple output mode: can't be set (OBS has no keyframe setting there) -> the setup guide explains how
-  to switch OBS to Advanced, or what to do manually.
-- obs-websocket v5 can't change encoder settings, so the file route is the only one; OBS only rewrites
-  that file from its own Settings dialog (which re-reads it when opened), so writing it is safe.
-- Watch for: a running replay buffer keeps the old encoder until OBS restarts; profile switches in OBS
-  (re-check on CurrentProfileChanged); a `keyint_sec` of 0 means "auto" in OBS.
-
-### Setup guide (requested)
-Walks a new user through EVERYTHING needed for a fully working setup, in order:
-1. OBS connection: enable obs-websocket in OBS (Tools > WebSocket Server Settings), host/port/
-   password into afterglow, Test Connection; replay buffer enabled and its length.
-2. Recommended OBS output settings: Advanced output mode, the encoder, and the keyframe interval
-   (automatic if afterglow can do it; otherwise the exact manual steps in OBS).
-3. Setting up clips: Clip Options (clip types, lengths, hotkeys, sounds, input overlay).
-4. Making filters (tags, icons, auto-filters by app).
-5. Using the simple editor (the video previewer: trim, filters, overlay toggle).
-6. Using the Advanced Editor (timeline, effects, export).
-Form is open: a first-run wizard and/or a re-openable guide from Settings; each step should be able
-to check its own state (e.g. "connected", "keyframe interval 1 s") and jump to the relevant setting.
-README/HANDOFF style rules: objective, impersonal, no personal details.
+### What could come next (nothing is queued)
+- Startup: the cards themselves (~0.45 s for 93) are built before any is shown; showing the first
+  screenful as soon as it is built, or building only the cards in view, is the remaining step.
+- Export: frames whose base clip is transformed (zoom / crop / fade) still go through RGB; a
+  YUV-space scale + blend for the zoom case would cover the most common "effect".
+- Capture: one process rendering all overlay pieces (Puppetry side) instead of one per piece.
+- The setup guide could offer "fix it" buttons for steps afterglow can do itself (start the
+  daemon, apply the keyframe interval) instead of only pointing at them.
+- `OBSClient`: the double save after an event timeout (see the bug sweep's last bullet).
 
 ### Known issues at handoff
 - `tests/test_themed_dialogs.py` segfaults in the sandbox's Xvfb at its dialog-runtime checks (same

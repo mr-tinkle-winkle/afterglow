@@ -49,8 +49,8 @@ from .library import add_video, add_tag_to_video, get_video, path_in_library, Vi
 # seconds, polling every SETTLE_POLL, for at most POST_SAVE_SETTLE_SECONDS.
 # (This used to be a flat 2 s sleep on every capture.)
 POST_SAVE_SETTLE_SECONDS = 2.0
-SETTLE_POLL = 0.05
-SETTLE_STABLE_FOR = 0.15
+SETTLE_POLL = 0.02
+SETTLE_STABLE_FOR = 0.06      # was 0.15: OBS reports the save after closing the file, so this is a re-check, not a wait
 
 
 def _settle(path: Path, max_wait: float) -> None:
@@ -600,7 +600,20 @@ def trigger_clip(clip_config_id: int, indicator_id: "str | None | object" = _AUT
         # is what matters, not several seconds later once the OBS save/trim
         # pipeline below has finished (the user may well have already
         # alt-tabbed away by then).
-        auto_tag_names = autofilter.compute_active_auto_tags(settings)
+        # On its own thread, started NOW (so it still sees what is focused at the
+        # hotkey) but no longer in front of the save request: looking up the
+        # focused window / running programs takes a few to a few hundred ms,
+        # and all of it used to delay OBS being asked for the replay.
+        auto_tags_box: list = []
+
+        def _collect_auto_tags():
+            try:
+                auto_tags_box.append(autofilter.compute_active_auto_tags(settings))
+            except Exception as e:  # noqa: BLE001 -- never cost a clip over a filter rule
+                print(f"Auto Add Filter rules couldn't be evaluated: {e}")
+                auto_tags_box.append([])
+        auto_tags_thread = threading.Thread(target=_collect_auto_tags, name="afterglow-auto-tags", daemon=True)
+        auto_tags_thread.start()
 
         stage = keyframes.REPLAY_BUFFER_SENT
         _play_keyframe_sound(stage, clip_cfg, settings)
@@ -612,8 +625,9 @@ def trigger_clip(clip_config_id: int, indicator_id: "str | None | object" = _AUT
         # remembered, never raised: a missing overlay must never cost a clip.
         overlay = _OverlayCapture(clip_cfg, settings, indicator_id=cid)
         with OBSClient(settings.obs) as obs_client:
-            overlay.fps = obs_client.get_fps() if clip_cfg.overlay_enabled else None
             raw_path = obs_client.save_replay_buffer(on_sent=overlay.on_sent)  # already waits for exists + size-stable
+            # (after the save, not before it: this is only the overlay's fallback frame rate)
+            overlay.fps = obs_client.get_fps() if clip_cfg.overlay_enabled else None
         _play_keyframe_sound(stage, clip_cfg, settings)
         indicator_client.emit(cid, "clap")      # OBS confirmed the save: the clapper claps (with the sound above)
 
@@ -676,11 +690,18 @@ def trigger_clip(clip_config_id: int, indicator_id: "str | None | object" = _AUT
                 # "veryfast" for whatever does get re-encoded: speed matters more
                 # here than optimal compression.
                 preset="veryfast",
+                # The smart cut encodes only the frames before the first keyframe
+                # (under one keyframe interval). Measured on a 1440p 120 fps file:
+                # 197 frames take 3.35 s at "veryfast" and 1.40 s at "ultrafast", for
+                # ~12 MB more on a ~290 MB clip -- and that encode was 75% of the whole
+                # time from "OBS saved the file" to "clip in the library". CRF 17
+                # (was 18) makes up for ultrafast's simpler tools.
+                smart_preset="ultrafast", smart_crf=17,
             )
             # Straight into the clips folder (no extra copy when OBS's folder
             # is on another disk); the raw file is removed only once it's done.
             commit_trim(request, has_prior_edit=False, existing_backup=None, skip_backup=True,
-                        output_path=final_path)
+                        output_path=final_path, known_duration=raw_duration)
             trimmed = True
 
             # Verify the trim actually produced roughly the requested length,
@@ -715,6 +736,8 @@ def trigger_clip(clip_config_id: int, indicator_id: "str | None | object" = _AUT
             clip_config_id=clip_cfg.id,
             duration=actual_duration,
         )
+        auto_tags_thread.join(timeout=10)
+        auto_tag_names = auto_tags_box[0] if auto_tags_box else []
         if auto_tag_names:
             for tag_name in auto_tag_names:
                 add_tag_to_video(video.id, tag_name)
@@ -734,6 +757,12 @@ def trigger_clip(clip_config_id: int, indicator_id: "str | None | object" = _AUT
         # The Library card's thumbnail, made now so the GUI finds it ready (it would otherwise
         # make it itself the first time the card is shown). Off this thread: never delays the clip.
         _make_card_thumbnail(video.id, final_path)
+        # A capture just proved OBS is there: make sure its keyframe interval is still 1 s
+        # (a new / switched OBS profile). A few small file reads, off this thread.
+        if getattr(settings.obs, "auto_keyframe_interval", True):
+            from . import obs_profile
+            threading.Thread(target=obs_profile.auto_apply, args=(settings,), name="afterglow-keyint",
+                             daemon=True).start()
 
         return video
     except Exception:

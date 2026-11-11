@@ -88,6 +88,7 @@ def main() -> None:
         window.showMaximized()
     else:
         window.show()
+    window.maybe_show_setup_guide()     # once, on a new install (Settings > Advanced reopens it)
     sys.exit(app.exec())
 
 

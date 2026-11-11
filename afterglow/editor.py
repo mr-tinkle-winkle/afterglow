@@ -35,8 +35,28 @@ class EditorError(RuntimeError):
     pass
 
 
+def _probe_duration_inprocess(path: Path) -> "float | None":
+    """The container's duration read with PyAV (libavformat, the same number
+    ffprobe prints as format=duration) without starting a process: ~2 ms
+    instead of ~30-70 ms per call. None when PyAV isn't there or can't tell."""
+    try:
+        import av
+    except Exception:  # noqa: BLE001
+        return None
+    try:
+        with av.open(str(path)) as c:
+            if c.duration is None or c.duration <= 0:
+                return None
+            return c.duration / 1_000_000
+    except Exception:  # noqa: BLE001 -- unreadable here: let ffprobe report it properly
+        return None
+
+
 def probe_duration(path: Path) -> float:
-    """Return duration in seconds via ffprobe."""
+    """Return duration in seconds (in-process when possible, else ffprobe)."""
+    fast = _probe_duration_inprocess(path)
+    if fast is not None:
+        return fast
     result = subprocess.run(
         [
             "ffprobe", "-v", "error",
@@ -63,6 +83,13 @@ class TrimRequest:
     # faster, since speed matters far more for "give me my clip now" than
     # a few percent smaller file size at the same CRF quality level.
     preset: str = "medium"
+    # The smart cut's own preset / CRF, when they should differ from the full
+    # re-encode's: a smart cut encodes only the frames before the first
+    # keyframe (at most one keyframe interval), so a much faster preset costs
+    # a few MB at most, while a full re-encode with it would bloat the whole
+    # clip. None = use `preset` / 18.
+    smart_preset: "str | None" = None
+    smart_crf: "int | None" = None
 
     def validate(self, duration: float) -> None:
         if self.start_sec < 0:
@@ -121,6 +148,7 @@ def clear_backup(backup_path: Path) -> None:
 def commit_trim(
     request: TrimRequest, has_prior_edit: bool, existing_backup: Path | None,
     skip_backup: bool = False, output_path: Path | None = None,
+    known_duration: float | None = None,
 ) -> Path | None:
     """
     Perform the trim in place (working file at request.video_path is
@@ -153,7 +181,8 @@ def commit_trim(
     Caller (library.py) is responsible for updating the DB row.
     """
     video_path = request.video_path
-    duration = probe_duration(video_path)
+    # known_duration: the caller just probed this very file (the capture pipeline)
+    duration = known_duration if known_duration is not None else probe_duration(video_path)
     request.validate(duration)
 
     if skip_backup:
@@ -174,7 +203,8 @@ def commit_trim(
         try:
             from . import smartcut
             smartcut.smart_trim(video_path, tmp_output, request.start_sec, request.end_sec,
-                                crf=18, preset=request.preset)
+                                crf=request.smart_crf if request.smart_crf is not None else 18,
+                                preset=request.smart_preset or request.preset)
             tmp_output.replace(dest)
             return backup_path
         except Exception as e:  # noqa: BLE001 -- Unsupported or anything odd: full re-encode

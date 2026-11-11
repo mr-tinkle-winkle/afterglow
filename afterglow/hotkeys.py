@@ -103,9 +103,16 @@ class _Registration:
 class ComboStateMachine:
     """
     Pure logic: tracks which keys are currently held (by evdev key name)
-    and fires a registered callback when the held set's normalized combo
-    exactly matches a registered combo, on the key-down transition that
-    completes the match (not on repeat, not on every held-set change).
+    and fires a registered callback on the key-down that COMPLETES a
+    registered combo: the key just pressed is part of the combo and every
+    other part of it is held (not on repeat, not on every held-set change).
+
+    Other keys being held at the same time don't matter. This used to
+    require the held set to be EXACTLY the combo, which meant a clip hotkey
+    did nothing while any other key was down -- W, shift to sprint, ctrl to
+    crouch, a push-to-talk key: i.e. most of the time in a game. When more
+    than one registered combo is complete, the one with the most keys wins
+    (ctrl+f9 beats f9 when both exist and ctrl is held).
     """
 
     def __init__(self):
@@ -138,13 +145,16 @@ class ComboStateMachine:
             return None
         with self._lock:
             self._held.add(evdev_key_name)
+            pressed = _display_name(evdev_key_name)
             held_display = {_display_name(k) for k in self._held}
+            best = None
             for combo_str, reg in self._registrations.items():
-                if reg.combo_parts == held_display:
-                    callback = reg.callback
-                    break
-            else:
+                if pressed in reg.combo_parts and reg.combo_parts <= held_display:
+                    if best is None or len(reg.combo_parts) > len(best[1].combo_parts):
+                        best = (combo_str, reg)
+            if best is None:
                 return None
+            combo_str, callback = best[0], best[1].callback
         # Fire outside the lock so a slow callback doesn't block key processing.
         threading.Thread(target=callback, daemon=True).start()
         return combo_str
@@ -156,6 +166,13 @@ class ComboStateMachine:
     def currently_held_display(self) -> set[str]:
         with self._lock:
             return {_display_name(k) for k in self._held}
+
+    def release_all(self, evdev_key_names) -> None:
+        """Forget these keys (their device went away while they were held:
+        no key-up will ever come for them)."""
+        with self._lock:
+            for k in evdev_key_names:
+                self._held.discard(k)
 
 
 # --------------------------------------------------------------- recording (for the GUI)
@@ -295,22 +312,36 @@ def _is_keyboard_device(device) -> bool:
     return has_letters and has_fkeys
 
 
-def discover_keyboard_devices() -> list[str]:
+def discover_keyboard_devices(quiet: bool = False, skip=()) -> list[str]:
+    """Paths of the readable keyboard devices. `skip`: paths not to open
+    (already being read). quiet=True: no log lines (the periodic rescan)."""
     import evdev
     paths = evdev.list_devices()
     keyboards = []
     permission_denied_paths = []
     for path in paths:
+        if path in skip:
+            continue
         try:
             dev = evdev.InputDevice(path)
-            if _is_keyboard_device(dev):
-                keyboards.append(path)
         except PermissionError:
             permission_denied_paths.append(path)
             continue
         except OSError:
             continue
+        try:
+            if _is_keyboard_device(dev):
+                keyboards.append(path)
+        except OSError:
+            pass
+        finally:
+            try:
+                dev.close()      # was left open: one leaked descriptor per device per call
+            except Exception:  # noqa: BLE001
+                pass
 
+    if quiet:
+        return keyboards
     if permission_denied_paths:
         logger.warning(
             f"Permission denied reading {len(permission_denied_paths)} input "
@@ -329,16 +360,31 @@ class EvdevHotkeyListener:
     normally to the rest of the system, this is passive listening only,
     which is what we want (a clip hotkey shouldn't eat the keypress from
     whatever game/app is focused).
+
+    Keyboards come and go: unplugged and plugged back in, a wireless
+    receiver reconnecting, a KVM switch, a Bluetooth keyboard that wasn't on
+    when the daemon started. Devices used to be looked up once, at start;
+    a reader whose device vanished simply ended, and the hotkeys stayed dead
+    for that keyboard until the daemon was restarted. Now a watcher rescans
+    every RESCAN_SECONDS and starts a reader for every keyboard that isn't
+    being read, and a reader whose device goes away releases the keys that
+    were held on it (no key-up will come) before it ends.
     """
 
-    def __init__(self, state_machine: ComboStateMachine, device_paths: list[str] | None = None):
+    RESCAN_SECONDS = 3.0
+
+    def __init__(self, state_machine: ComboStateMachine, device_paths: list[str] | None = None,
+                 watch: bool = True):
         self.state_machine = state_machine
         self._device_paths = device_paths
+        self._watch = watch and device_paths is None
         self._threads: list[threading.Thread] = []
         self._stop_flag = threading.Event()
+        self._active: set[str] = set()
+        self._active_lock = threading.Lock()
 
     def start(self) -> None:
-        import evdev
+        import evdev  # noqa: F401
         paths = self._device_paths or discover_keyboard_devices()
         if not paths:
             raise RuntimeError(
@@ -347,25 +393,53 @@ class EvdevHotkeyListener:
                 "'input' group on NixOS)."
             )
         for path in paths:
-            t = threading.Thread(target=self._read_loop, args=(path,), daemon=True)
+            self._start_reader(path)
+        if self._watch:
+            t = threading.Thread(target=self._watch_loop, daemon=True, name="afterglow-hotkey-watch")
             t.start()
             self._threads.append(t)
 
     def stop(self) -> None:
         self._stop_flag.set()
 
+    def active_devices(self) -> list[str]:
+        with self._active_lock:
+            return sorted(self._active)
+
+    def _start_reader(self, path: str) -> bool:
+        with self._active_lock:
+            if path in self._active:
+                return False
+            self._active.add(path)
+        t = threading.Thread(target=self._read_loop, args=(path,), daemon=True)
+        t.start()
+        self._threads = [x for x in self._threads if x.is_alive()] + [t]
+        return True
+
+    def _watch_loop(self) -> None:
+        while not self._stop_flag.wait(self.RESCAN_SECONDS):
+            try:
+                with self._active_lock:
+                    active = set(self._active)
+                for path in discover_keyboard_devices(quiet=True, skip=active):
+                    if self._start_reader(path):
+                        logger.info(f"Keyboard connected: {path} -- hotkeys are active on it.")
+            except Exception as e:  # noqa: BLE001 -- never let the watcher die
+                logger.error(f"Error while looking for new keyboards: {e}")
+
     def _read_loop(self, path: str) -> None:
         import select
         import evdev
         from evdev import categorize, ecodes
 
+        held: set = set()           # keys down on THIS device (released if it disappears)
+        device = None
         try:
-            device = evdev.InputDevice(path)
-        except (PermissionError, OSError) as e:
-            logger.error(f"Could not open input device {path} for reading: {e}")
-            return
-
-        try:
+            try:
+                device = evdev.InputDevice(path)
+            except (PermissionError, OSError) as e:
+                logger.error(f"Could not open input device {path} for reading: {e}")
+                return
             while not self._stop_flag.is_set():
                 # select() with a timeout, rather than device.read_loop()'s
                 # unconditional blocking read, so this thread actually wakes
@@ -375,10 +449,18 @@ class EvdevHotkeyListener:
                 # stop() on its *next* event -- which, for the hotkey-record
                 # dialog opened and closed repeatedly, meant reader threads
                 # piling up for the lifetime of the process.
-                ready, _, _ = select.select([device.fd], [], [], 0.2)
-                if not ready:
+                try:
+                    ready, _, _ = select.select([device.fd], [], [], 0.2)
+                    if not ready:
+                        continue
+                    events = list(device.read())
+                except BlockingIOError:
                     continue
-                for event in device.read():
+                except (OSError, ValueError) as e:
+                    # the device is gone (unplugged, receiver lost, suspend/resume)
+                    logger.warning(f"Keyboard disconnected: {path} ({e}). Hotkeys resume on it when it is back.")
+                    return
+                for event in events:
                     if event.type != ecodes.EV_KEY:
                         continue
                     try:
@@ -393,10 +475,12 @@ class EvdevHotkeyListener:
                             key_name = key_name[0]
 
                         if key_event.keystate == key_event.key_down:
+                            held.add(key_name)
                             self.state_machine.key_down(key_name, is_repeat=False)
                         elif key_event.keystate == key_event.key_hold:
                             self.state_machine.key_down(key_name, is_repeat=True)
                         elif key_event.keystate == key_event.key_up:
+                            held.discard(key_name)
                             self.state_machine.key_up(key_name)
                     except Exception as e:
                         # A single malformed/unexpected event must never
@@ -408,7 +492,20 @@ class EvdevHotkeyListener:
                         logger.error(f"Error processing input event from {path}: {e}")
                         continue
         finally:
-            device.close()
+            if held and not self._stop_flag.is_set():
+                release = getattr(self.state_machine, "release_all", None)
+                if release is not None:
+                    try:
+                        release(held)
+                    except Exception:  # noqa: BLE001
+                        pass
+            if device is not None:
+                try:
+                    device.close()
+                except Exception:  # noqa: BLE001
+                    pass
+            with self._active_lock:
+                self._active.discard(path)
 
 
 if __name__ == "__main__":

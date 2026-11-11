@@ -453,6 +453,55 @@ def decoded_frames(path, t0: float, n: int, rate: Fraction):
                 return
 
 
+def prefetched(frames, ahead: int = 6):
+    """`frames` produced on a helper thread, up to `ahead` items in advance, so
+    decoding the next frames overlaps encoding the current one (both release
+    the GIL inside FFmpeg). Order and exceptions are preserved; dropping the
+    generator early stops the helper."""
+    import queue
+    q: "queue.Queue" = queue.Queue(maxsize=max(1, ahead))
+    stop = threading.Event()
+    END, ERR = object(), object()
+
+    def put(item) -> bool:
+        while not stop.is_set():
+            try:
+                q.put(item, timeout=0.1)
+                return True
+            except queue.Full:
+                continue
+        return False
+
+    def work():
+        try:
+            for f in frames:
+                if not put(f):
+                    return
+            put(END)
+        except BaseException as e:  # noqa: BLE001 -- re-raised in the consumer
+            put((ERR, e))
+        finally:
+            close = getattr(frames, "close", None)
+            if close is not None:
+                try:
+                    close()
+                except Exception:  # noqa: BLE001
+                    pass
+
+    t = threading.Thread(target=work, name="afterglow-decode-ahead", daemon=True)
+    t.start()
+    try:
+        while True:
+            item = q.get()
+            if item is END:
+                return
+            if isinstance(item, tuple) and len(item) == 2 and item[0] is ERR:
+                raise item[1]
+            yield item
+    finally:
+        stop.set()
+
+
 def in_display_order(path, t0: float, t1: float) -> bool:
     """True when every video packet from the keyframe at t0 up to t1 comes in
     display order (pts rising in decode order: no B-frames / reordering).
@@ -524,12 +573,14 @@ def _chunk_avcc(chunk) -> AvcC:
     return a
 
 
-def _chunk_packets(chunk, rate: Fraction):
-    """(decode-order) packets of a chunk as (bytes, out_frame_pts, is_key)."""
+def _chunk_packets(chunk, rate: Fraction, with_data: bool = True):
+    """(decode-order) packets of a chunk as (bytes, out_frame_pts, is_key).
+    with_data=False yields None for the bytes (the counting pass: no copy of
+    every packet's payload)."""
     fd = 1.0 / float(rate)
     with av.open(chunk.path) as c:
         vs = c.streams.video[0]
-        tb = vs.time_base
+        tb = float(vs.time_base)      # float: these are compared with half-a-frame tolerances
         if isinstance(chunk, CopyChunk):
             c.seek(max(0, int((chunk.start - 0.001) / tb)), stream=vs, backward=True, any_frame=False)
             started = False
@@ -537,7 +588,7 @@ def _chunk_packets(chunk, rate: Fraction):
             for pkt in c.demux(vs):
                 if pkt.pts is None:
                     continue
-                pts = float(pkt.pts * tb)
+                pts = pkt.pts * tb
                 if chunk.partial and started:
                     if last_pts is not None and pts <= last_pts:
                         raise Unsupported("reordered frames in a partially copied GOP")
@@ -555,7 +606,7 @@ def _chunk_packets(chunk, rate: Fraction):
                 k = int(round((pts - chunk.start) * float(rate)))
                 if k < 0 or k >= chunk.n:
                     raise Unsupported("copied packet outside its GOP")
-                yield bytes(pkt), chunk.at + k, pkt.is_keyframe
+                yield (bytes(pkt) if with_data else None), chunk.at + k, pkt.is_keyframe
         else:
             started = chunk.offset == 0
             if chunk.offset > 0:
@@ -564,7 +615,7 @@ def _chunk_packets(chunk, rate: Fraction):
             for pkt in c.demux(vs):
                 if pkt.pts is None:
                     continue
-                k = int(round(float(pkt.pts * tb) * float(rate))) - chunk.offset
+                k = int(round(pkt.pts * tb * float(rate))) - chunk.offset
                 if not started:
                     if k == 0 and pkt.is_keyframe:
                         started = True
@@ -576,7 +627,7 @@ def _chunk_packets(chunk, rate: Fraction):
                     if chunk.offset > 0 or k >= chunk.n:
                         return                     # the next chunk of that file begins
                     continue
-                yield bytes(pkt), chunk.at + k, pkt.is_keyframe
+                yield (bytes(pkt) if with_data else None), chunk.at + k, pkt.is_keyframe
 
 
 @dataclass
@@ -649,6 +700,8 @@ def mux_chunks(dst: str, chunks: list, rate: Fraction, template_info: VideoInfo,
                 aouts.append((ain, ast, out.add_stream_from_template(ast), cut))
             ains.append(ain)
 
+        tb_f = float(tb)
+
         def video_packets():
             for i, data, pts, key in all_video():
                 pkt = av.Packet(data)
@@ -657,7 +710,7 @@ def mux_chunks(dst: str, chunks: list, rate: Fraction, template_info: VideoInfo,
                 pkt.time_base = tb
                 pkt.is_keyframe = key
                 pkt.stream = ovs
-                yield float((i - delay) * tb), pkt
+                yield (i - delay) * tb_f, pkt
 
         def audio_packets(ain, ast, aout, cut):
             if cut is None:
@@ -704,7 +757,7 @@ def mux_chunks(dst: str, chunks: list, rate: Fraction, template_info: VideoInfo,
 def _meta(chunks, rate):
     i = 0
     for ch in chunks:
-        for _data, pts, key in _chunk_packets(ch, rate):
+        for _data, pts, key in _chunk_packets(ch, rate, with_data=False):
             yield i, None, pts, key
             i += 1
 
@@ -778,7 +831,8 @@ def smart_trim(src, dst, start: float, end: float, crf: int = 18, preset: str = 
 
         def enc(t_from: float, n: int, name: str) -> FileChunk:
             path = os.path.join(tmpdir, name)
-            got = encode_frames(decoded_frames(src, t_from, n, rate), path, rate, w, h, crf, preset, sps, color)
+            got = encode_frames(prefetched(decoded_frames(src, t_from, n, rate)), path, rate, w, h, crf, preset,
+                                sps, color)
             if got != n:
                 raise Unsupported(f"decoded {got} of {n} frames")
             return path
