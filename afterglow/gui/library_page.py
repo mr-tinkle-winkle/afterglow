@@ -1103,6 +1103,13 @@ class LibraryPage(QWidget):
         # at) and the icon should stay darkened until BOTH are done, not
         # un-darken the moment whichever one finishes first.
         self._loading_tabs: set[object] = set()
+        # Each tab starts its first fill inside its own constructor -- before the
+        # connections above exist -- so that first loading_changed(True) was never
+        # seen here: the sidebar icon didn't show the startup load and a refresh
+        # arriving during it wasn't coalesced. Pick the state up directly.
+        for _tab in (self.local_tab, self.uploaded_tab):
+            if getattr(_tab, "_refresh_in_progress", False):
+                self._loading_tabs.add(_tab)
         self._page_refresh_pending = False
 
         self._stack = QStackedWidget()

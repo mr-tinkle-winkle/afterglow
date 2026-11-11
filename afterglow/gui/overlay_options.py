@@ -233,6 +233,30 @@ class InputOverlaySettingsPage(QWidget):
             {}, None, overlay_support.element_types())))
         gl.addWidget(reset, alignment=Qt.AlignLeft)
         outer.addWidget(group)
+
+        speed_group = CustomGroupBox("Render speed")
+        spl = speed_group.make_layout(QVBoxLayout)
+        row = QHBoxLayout()
+        row.addWidget(QLabel("Overlay frame rate:"))
+        from .custom_combo_box import CustomComboBox
+        from .custom_combo_style import combo_box_stylesheet
+        self.fps_combo = CustomComboBox()
+        self.fps_combo.setStyleSheet(combo_box_stylesheet(settings.appearance))
+        for label, value in (("Up to 60 fps  (recommended)", 60), ("Up to 30 fps  (fastest)", 30),
+                             ("Match the clip  (slowest)", 0)):
+            self.fps_combo.addItem(label, value)
+        index = self.fps_combo.findData(int(getattr(settings, "overlay_max_fps", 60) or 0))
+        self.fps_combo.setCurrentIndex(index if index >= 0 else 0)
+        row.addWidget(self.fps_combo)
+        row.addStretch(1)
+        spl.addLayout(row)
+        speed_note = QLabel("Puppetry draws every overlay frame, so a clip's overlay takes about twice as long at "
+                            "120 fps as at 60. Above the limit the overlay is drawn at a whole fraction of the "
+                            "clip's frame rate (120 → 60, 144 → 48, 240 → 60), which keeps it in step with the "
+                            "video. The video itself is never changed by this.")
+        speed_note.setWordWrap(True)
+        spl.addWidget(speed_note)
+        outer.addWidget(speed_group)
         outer.addStretch(1)
         self.refresh_status()
 
@@ -249,11 +273,12 @@ class InputOverlaySettingsPage(QWidget):
         on = [c.name for c in cfgs if c.overlay_enabled]
         if on:
             self.capture_label.setText("Captured with: " + ", ".join(on) +
-                                       ". Each clip's overlay renders right after the clip is saved "
-                                       "(it can take about as long as the clip itself).")
+                                       ". Each clip's overlay renders while the clip is being saved and "
+                                       "shows up shortly after it.")
         else:
             self.capture_label.setText("⚠ No clip type captures the overlay yet -- tick \"Capture\" in a clip "
                                        "type's Input overlay row under Clipping.")
 
     def save_into(self, settings) -> None:
         settings.overlay_placements = self.editor.values()
+        settings.overlay_max_fps = int(self.fps_combo.currentData() or 0)

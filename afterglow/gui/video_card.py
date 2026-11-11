@@ -23,7 +23,7 @@ from PySide6.QtWidgets import (
 
 from .. import library, thumbnails, config as config_module
 from .resources import resource_qpixmap
-from . import theme_fx, theme_presets
+from . import theme_fx, theme_presets, thumb_loader
 from .pixmap_effects import resolve_border_pixmap, hue_shift_pixmap_cached, silhouette_outline_pixmap_cached
 from .rounded_rect import rounded_rect_path, round_pixmap_corners
 from .theme import Theme
@@ -114,6 +114,20 @@ def _placeholder_pixmap() -> QPixmap:
     painter.setPen(QColor("#888"))
     painter.drawText(pixmap.rect(), Qt.AlignCenter, "No preview")
     painter.end()
+    return pixmap
+
+
+_LOADING_PIXMAPS: dict = {}
+
+
+def _loading_pixmap(radius) -> QPixmap:
+    """What a card shows until its thumbnail arrives: a plain dark frame (no
+    text -- it is on screen for a fraction of a second). One per radius."""
+    pixmap = _LOADING_PIXMAPS.get(radius)
+    if pixmap is None:
+        base = QPixmap(THUMB_SIZE)
+        base.fill(QColor("#1b1b1b"))
+        pixmap = _LOADING_PIXMAPS[radius] = round_pixmap_corners(base, radius)
     return pixmap
 
 
@@ -997,50 +1011,64 @@ class VideoCard(QWidget):
         return thumbnails.get_thumbnail(video.id, Path(video.path))
 
     def _load_pixmap(self, video: "library.Video") -> QPixmap:
-        thumb_path = self._thumbnail_path(video)
+        """The card's thumbnail if it is already rendered (cache hit); otherwise
+        a blank placeholder now and the real picture a moment later -- making
+        (ffmpeg), decoding and scaling happen on gui/thumb_loader.py's worker
+        threads, never on the GUI thread (they used to run right here, per
+        card, and were most of the time a Library fill took)."""
         radius = self._appearance.rounded_corner_radius if self._appearance.rounded_corners_enabled else 0
-        # Decode + smooth-scale + corner-round used to be redone for every
-        # card on EVERY refresh (~40% of a whole Library rebuild, measured)
-        # even though the thumbnail file itself hadn't changed. Cached by
-        # file path + mtime + the parameters that affect the result, so a
-        # regenerated thumbnail or a changed radius still re-renders.
-        cache_key = None
-        if thumb_path is not None:
-            try:
-                mtime = Path(thumb_path).stat().st_mtime_ns
-            except OSError:
-                mtime = None
-            if mtime is not None:
-                cache_key = (str(thumb_path), mtime, radius, THUMB_SIZE.width(), THUMB_SIZE.height())
-                cached = _THUMB_PIXMAP_CACHE.get(cache_key)
-                if cached is not None:
-                    _THUMB_PIXMAP_CACHE.move_to_end(cache_key)
-                    return cached
-        result = self._render_thumb_pixmap(thumb_path, radius)
-        if cache_key is not None:
-            _THUMB_PIXMAP_CACHE[cache_key] = result
-            while len(_THUMB_PIXMAP_CACHE) > _THUMB_PIXMAP_CACHE_MAX:
-                _THUMB_PIXMAP_CACHE.popitem(last=False)
-        return result
+        explicit = None
+        cached_path = video.thumb_cache_path
+        if cached_path and (self.uploaded_view or video.local_deleted) and Path(cached_path).exists():
+            explicit = Path(cached_path)          # YouTube's thumbnail (the Uploaded tab's card art)
+            source = explicit
+        elif video.local_deleted:
+            return self._render_thumb_pixmap(None, radius)
+        else:
+            source = Path(video.path)
+        try:
+            mtime = source.stat().st_mtime_ns
+        except OSError:
+            return self._render_thumb_pixmap(None, radius)   # file gone: "No preview"
+        # Keyed by the SOURCE (clip file or YouTube thumbnail) + its mtime +
+        # everything that changes the result: a trim rewrites the clip (new
+        # mtime), a changed radius re-renders.
+        cache_key = (str(source), mtime, radius, THUMB_SIZE.width(), THUMB_SIZE.height())
+        cached = _THUMB_PIXMAP_CACHE.get(cache_key)
+        if cached is not None:
+            _THUMB_PIXMAP_CACHE.move_to_end(cache_key)
+            return cached
+        self._thumb_key = cache_key
+        thumb_loader.loader().request(cache_key, video.id, video.path, explicit, THUMB_SIZE,
+                                      self._on_thumb_loaded)
+        return _loading_pixmap(radius)
+
+    def _on_thumb_loaded(self, key, image) -> None:
+        """GUI thread: the worker's QImage -> rounded QPixmap -> cache -> label.
+        Raises RuntimeError (caught by the loader) if this card is already deleted."""
+        radius = key[2]
+        pixmap = _THUMB_PIXMAP_CACHE.get(key)
+        if pixmap is None:
+            if image is None or image.isNull():
+                pixmap = round_pixmap_corners(_placeholder_pixmap(), radius)
+            else:
+                pixmap = round_pixmap_corners(QPixmap.fromImage(image), radius)
+                _THUMB_PIXMAP_CACHE[key] = pixmap
+                while len(_THUMB_PIXMAP_CACHE) > _THUMB_PIXMAP_CACHE_MAX:
+                    _THUMB_PIXMAP_CACHE.popitem(last=False)
+        if getattr(self, "_thumb_key", None) == key:
+            self.thumb_label.setPixmap(pixmap)
 
     def _render_thumb_pixmap(self, thumb_path, radius) -> QPixmap:
-        if thumb_path is None:
+        """Synchronous render of one thumbnail file (None = the "No preview"
+        placeholder)."""
+        pixmap = None
+        if thumb_path is not None:
+            image = thumb_loader.read_scaled_cover(thumb_path, THUMB_SIZE)
+            if image is not None:
+                pixmap = QPixmap.fromImage(image)
+        if pixmap is None:
             pixmap = _placeholder_pixmap()
-        else:
-            pixmap = QPixmap(str(thumb_path))
-            if pixmap.isNull():
-                pixmap = _placeholder_pixmap()
-            else:
-                pixmap = pixmap.scaled(THUMB_SIZE, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
-                # Crop to exactly the thumbnail's size BEFORE rounding: a source that isn't 16:9
-                # (YouTube's 4:3 hqdefault.jpg, with its black bars) scales to e.g. 400x300, and
-                # rounding that taller image put the rounded corners in the part the 400x224 label
-                # cuts off -- the visible thumbnail came out square-cornered. The centre crop also
-                # drops exactly those letterbox bars.
-                x = max(0, (pixmap.width() - THUMB_SIZE.width()) // 2)
-                y = max(0, (pixmap.height() - THUMB_SIZE.height()) // 2)
-                pixmap = pixmap.copy(x, y, min(pixmap.width(), THUMB_SIZE.width()),
-                                     min(pixmap.height(), THUMB_SIZE.height()))
         return round_pixmap_corners(pixmap, radius)
 
     def mousePressEvent(self, event) -> None:

@@ -61,6 +61,11 @@ Settings > Clipping > Clip Indicator:
 - Rapid repeats stack, up to five visible, with a "+N" badge beyond that.
 - The clapper sits slightly tilted clockwise and bounces a little further clockwise when it claps.
 
+Settings > Input Overlay > Render speed: the input overlay's frame rate -- up to 60 fps (default), up to
+30 fps, or the clip's own. Above the limit the overlay is drawn at a whole fraction of the clip's rate
+(120 -> 60, 144 -> 48), which halves or better the time a high-frame-rate clip's overlay takes; the video
+itself is not affected. The overlay starts rendering while the clip is still being trimmed.
+
 Settings > Clipping > Processing Throttle: slows afterglow's own post-capture work (trimming,
 thumbnails, the input overlay render) so a running game keeps its frame rate -- Light / Medium /
 Heavy (that work runs 70 % / 45 % / 20 % of the time) or Auto (backs off as CPU / GPU load rises).

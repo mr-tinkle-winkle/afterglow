@@ -30,7 +30,7 @@ __all__ = [
     "save_placements", "sidecar_dir", "load_sidecar", "has_sidecar",
     "move_sidecar", "copy_sidecar", "delete_sidecar", "trim_sidecar", "cut_piece",
     "backup_sidecar_dir", "backup_sidecar", "restore_sidecar", "clear_backup_sidecar",
-    "preview_graph", "video_color", "PIECE_LABELS", "piece_label", "all_pieces", "layout_elements", "available", "freeze_input", "capture_clip",
+    "preview_graph", "video_color", "PIECE_LABELS", "piece_label", "all_pieces", "layout_elements", "available", "freeze_input", "start_render", "install_render", "render_fps", "RenderJob", "capture_clip",
 ]
 
 MANIFEST = "manifest.json"
@@ -162,53 +162,102 @@ def probe_clip(path) -> tuple:
         raise OverlayError(f"can't read {Path(path).name}'s length") from None
 
 
-def capture_clip(buffer_copy, clip, clip_end: float, pieces: list, placements: dict, offset_ms: float = 0.0,
-                 visible_by_default: bool = True, timeout: float | None = None,
-                 clip_info: "tuple | None" = None) -> dict:
-    """Make `<clip>.input/` for a FINISHED clip that ends at `clip_end` (Unix
-    time), from an input buffer frozen when the save was sent.
+def render_fps(clip_fps: float, max_fps: "float | None") -> float:
+    """The overlay's frame rate for a clip at `clip_fps`: the clip's own, or --
+    above `max_fps` -- the clip's divided by the smallest whole number that
+    gets it under the cap (120 -> 60, 144 -> 48, 240 -> 60 for a cap of 60), so
+    every overlay frame lands exactly on a video frame. `max_fps` 0/None =
+    match the clip."""
+    if not max_fps or max_fps <= 0 or clip_fps <= max_fps + 0.01:
+        return clip_fps
+    import math
+    return clip_fps / math.ceil(clip_fps / max_fps - 1e-6)
 
-    Unlike aio.start_clip/finish_clip (which render the WHOLE replay length
-    -- 20 minutes of frames for a 1200 s buffer -- then cut it down), this
-    renders only the clip's own span, at the clip's own fps, straight into
-    place: no align step, no keyframe-snapped stream-copy cut. Pieces render
-    in parallel. Same sidecar format. Raises OverlayError if no piece could
-    be made (pieces that failed are listed under "errors")."""
+
+class RenderJob:
+    """Overlay pieces being rendered (see start_render). `wait()` blocks until
+    every piece is done; then `rendered` = {piece: (path, width, height)} and
+    `errors` = {piece: message}."""
+
+    def __init__(self, workdir: Path, start: float, end: float, fps: float, offset_ms: float):
+        self.workdir, self.start, self.end, self.fps, self.offset_ms = workdir, start, end, fps, offset_ms
+        self.rendered: dict = {}
+        self.errors: dict = {}
+        self._threads: list = []
+
+    @property
+    def duration(self) -> float:
+        return self.end - self.start
+
+    def wait(self) -> None:
+        for t in self._threads:
+            t.join()
+
+
+def start_render(buffer_copy, workdir, start: float, end: float, fps: float, pieces: list,
+                 offset_ms: float = 0.0, timeout: float | None = None) -> RenderJob:
+    """Start rendering `pieces` over [start, end] (Unix time) at `fps` into
+    `workdir`, every piece in parallel, and return at once. Needs only the
+    frozen input buffer and the span -- NOT the finished clip -- so a capture
+    can start this the moment it knows how long the clip will be and let it
+    run while the clip itself is still being trimmed (see clips._OverlayCapture)."""
     import threading
-    clip = Path(clip)
-    duration, fps = clip_info or probe_clip(clip)      # (duration, fps) -- probe up front if the clip may move
-    start = clip_end - duration
-    dest = sidecar_dir(clip)
-    tmp = dest.with_name(dest.name + ".new")
-    shutil.rmtree(tmp, ignore_errors=True)
-    tmp.mkdir(parents=True)
-    rendered, errors = {}, {}
+    workdir = Path(workdir)
+    workdir.mkdir(parents=True, exist_ok=True)
+    job = RenderJob(workdir, start, end, fps, offset_ms)
 
     def work(piece):
-        out = tmp / aio.piece_file(piece)
+        out = workdir / aio.piece_file(piece)
         try:
-            aio._run(["render", "--buffer", buffer_copy, "--mode", piece, "--offset-ms", f"{offset_ms:g}",
-                      "--fps", f"{fps:g}", "--start", f"{start:.6f}", "--end", f"{clip_end:.6f}", out],
-                     timeout=timeout)
-            rendered[piece] = out
+            info = aio._run(["render", "--buffer", buffer_copy, "--mode", piece, "--offset-ms", f"{offset_ms:g}",
+                             "--fps", f"{fps:g}", "--start", f"{start:.6f}", "--end", f"{end:.6f}", out],
+                            timeout=timeout)
+            # the renderer reports the size it drew; only ask ffprobe when it didn't
+            try:
+                w, h = int(info["width"]), int(info["height"])
+                if w <= 0 or h <= 0:
+                    raise ValueError
+            except (KeyError, TypeError, ValueError):
+                w, h = aio._probe_size(out)
+            job.rendered[piece] = (out, w, h)
         except OverlayError as e:
-            errors[piece] = str(e)
-    threads = [threading.Thread(target=work, args=(p,), daemon=True) for p in dict.fromkeys(pieces) if aio.is_piece(p)]
-    for t in threads:
+            job.errors[piece] = str(e)
+    job._threads = [threading.Thread(target=work, args=(p,), daemon=True, name=f"afterglow-overlay-{p}")
+                    for p in dict.fromkeys(pieces) if aio.is_piece(p)]
+    for t in job._threads:
         t.start()
-    for t in threads:
-        t.join()
+    return job
+
+
+def install_render(job: RenderJob, buffer_copy, clip, clip_end: float, placements: dict,
+                   visible_by_default: bool = True) -> dict:
+    """Wait for `job` and turn its pieces into `<clip>.input/` (via
+    `<clip>.input.new/`, which is what tells the previewer an overlay is on
+    its way). Raises OverlayError if no piece could be made."""
+    clip = Path(clip)
+    dest = sidecar_dir(clip)
+    tmp = dest.with_name(dest.name + ".new")
+    if Path(job.workdir) != tmp:
+        shutil.rmtree(tmp, ignore_errors=True)
+        tmp.mkdir(parents=True)
     try:
+        job.wait()
+        rendered, errors = job.rendered, job.errors
+        for piece, (out, _w, _h) in list(rendered.items()):
+            if Path(out).parent != tmp:
+                moved = tmp / Path(out).name
+                shutil.move(str(out), str(moved))
+                rendered[piece] = (moved, _w, _h)
         shutil.copyfile(buffer_copy, tmp / "inputs.jsonl")
         manifest = {"format": "puppetry-overlay-sidecar", "version": 1, "clip": clip.name, "clip_end": clip_end,
-                    "offset_ms": offset_ms, "visible_by_default": visible_by_default, "inputs": "inputs.jsonl",
+                    "offset_ms": job.offset_ms, "visible_by_default": visible_by_default, "inputs": "inputs.jsonl",
                     "pieces": {}, "errors": errors}
         for piece in aio._order(rendered):
-            w, h = aio._probe_size(rendered[piece])
+            out, w, h = rendered[piece]
             pl = dict((placements or {}).get(piece) or aio.default_placement(piece, element_type(piece)))
             pl.setdefault("visible", True)
             pl["rotation"] = float(pl.get("rotation", 0.0) or 0.0)
-            manifest["pieces"][piece] = {"file": rendered[piece].name, "width": w, "height": h, "placement": pl}
+            manifest["pieces"][piece] = {"file": Path(out).name, "width": w, "height": h, "placement": pl}
         if not manifest["pieces"]:
             raise OverlayError("no overlay piece could be made: " +
                                "; ".join(f"{k}: {v}" for k, v in errors.items()))
@@ -220,6 +269,32 @@ def capture_clip(buffer_copy, clip, clip_end: float, pieces: list, placements: d
         raise
     manifest["dir"] = str(dest)
     return manifest
+
+
+def capture_clip(buffer_copy, clip, clip_end: float, pieces: list, placements: dict, offset_ms: float = 0.0,
+                 visible_by_default: bool = True, timeout: float | None = None,
+                 clip_info: "tuple | None" = None, max_fps: "float | None" = None) -> dict:
+    """Make `<clip>.input/` for a FINISHED clip that ends at `clip_end` (Unix
+    time), from an input buffer frozen when the save was sent.
+
+    Unlike aio.start_clip/finish_clip (which render the WHOLE replay length
+    -- 20 minutes of frames for a 1200 s buffer -- then cut it down), this
+    renders only the clip's own span, straight into place: no align step, no
+    keyframe-snapped stream-copy cut. Pieces render in parallel, at the
+    clip's fps (or a whole fraction of it under `max_fps`, see render_fps).
+    Same sidecar format. Raises OverlayError if no piece could be made
+    (pieces that failed are listed under "errors").
+
+    start_render + install_render in one call; a capture uses the two halves
+    itself so the render can start before the clip is finished."""
+    clip = Path(clip)
+    duration, fps = clip_info or probe_clip(clip)      # (duration, fps) -- probe up front if the clip may move
+    dest = sidecar_dir(clip)
+    tmp = dest.with_name(dest.name + ".new")
+    shutil.rmtree(tmp, ignore_errors=True)
+    job = start_render(buffer_copy, tmp, clip_end - duration, clip_end, render_fps(fps, max_fps), pieces,
+                       offset_ms=offset_ms, timeout=timeout)
+    return install_render(job, buffer_copy, clip, clip_end, placements, visible_by_default)
 
 
 # ---------------------------------------------------------------- queries

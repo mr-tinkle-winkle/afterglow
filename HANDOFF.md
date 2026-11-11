@@ -18,7 +18,7 @@ unverified on real hardware) -- see "Clip indicator ("the clapper") -- BUILT".
 then `DISPLAY=:99 QT_QPA_PLATFORM=xcb python3 tests/<suite>.py` (the
 previewer suites need GL for mpv); the `tests/test_nle_*.py` engine
 suites run with `QT_QPA_PLATFORM=offscreen`. Every suite prints PASS/FAIL
-lines and exits non-zero on failure. All 45 suites pass at handoff (`test_themes`, `test_settings_autosave`, `test_smartcut_tail` newest) (the four `test_youtube_*`
+lines and exits non-zero on failure. All 46 suites pass (`test_startup_perf` newest, then `test_themes`, `test_settings_autosave`, `test_smartcut_tail`) (the four `test_youtube_*`
 suites are new: `core` runs anywhere; `studio`, `queue` and `entry_points` need Xvfb + QtWebEngine,
 and `QTWEBENGINE_DISABLE_SANDBOX=1` when run as root -- they set it themselves; `entry_points` starts
 a real `afterglow-youtube` host process); earlier 36 (incl. the overlay suites listed
@@ -28,23 +28,22 @@ and the previewer / advanced-editor suites need libmpv + Xvfb (with `libxcb-curs
 they hang or fail under offscreen); `test_nle_render`'s preview-
 speed check is timing-based, run it on its own, not alongside other suites).
 
-## NEXT SESSION -- performance + bug sweep (read this first)
+## Performance + bug sweep -- IN PROGRESS (read this first)
 
 Goals, in priority order as given:
-1. The app opens faster.
-2. Clips process (capture -> trim -> library) even faster.
-3. Clips export faster from the Editor.
-4. Bugs fixed across the whole app AND the daemon.
+1. The app opens faster. -- **DONE this session** (numbers below)
+2. Clips process (capture -> trim -> library) even faster. -- not started (leads below)
+3. Clips export faster from the Editor. -- not started (not profiled yet)
+4. Bugs fixed across the whole app AND the daemon. -- not started as a sweep (one found + fixed below)
 5. General optimizations wherever possible.
-
-Added with the answers to the open questions (same session):
-6. OBS keyframe interval set AUTOMATICALLY (see "Automatic keyframe interval" below).
-7. A setup guide that walks a new user through full setup (see "Setup guide" below).
+6. OBS keyframe interval set AUTOMATICALLY (see "Automatic keyframe interval" below). -- not started
+7. A setup guide that walks a new user through full setup (see "Setup guide" below). -- not started
 8. Stats page redesign: format it to look better, and make each stat clickable -- clicking a stat
    either filters the Library by it or opens the video it refers to (e.g. "longest clip" opens that
-   clip; "clips tagged X" filters by X).
+   clip; "clips tagged X" filters by X). -- not started
+9. Input overlay creation faster on afterglow's side (added mid-session). -- **DONE this session**
 
-Answers / reference numbers from the user:
+Reference numbers given earlier:
 - Library: 93 clips; the app takes "a few seconds" to open.
 - Typical Editor export: 30 s at 2560x1440, 120 fps, "some effects"; takes ~10-30 s, possibly more.
   Benchmark exports against exactly this shape.
@@ -54,25 +53,102 @@ Answers / reference numbers from the user:
 Rule that held every time so far: MEASURE FIRST. Profile, find the actual hot path, fix it,
 measure again, and record before/after numbers here.
 
-### Measured leads (profiled at handoff; Xvfb, 2-core sandbox, so absolute times are pessimistic)
-Startup with 60 clips (cold thumbnail cache), `cProfile` cumulative:
-- Library fill ~4.0 s, of which `thumbnails.get_thumbnail` ~3.6 s (~60 ms per clip, an ffmpeg
-  process per missing thumbnail, synchronous inside `VideoCard.__init__` -> `_load_pixmap`).
-  Candidates: generate thumbnails off the GUI thread (placeholder, then swap in), batch/parallel
-  generation, generate at capture time in the daemon so the GUI never has to, and lazy-build only
-  the cards in view. Warm-cache cost needs its own measurement.
-- `AdvancedEditorPage` -> `preview.py` MpvVideoWidget init ~2.6 s at STARTUP although the Editor is
-  not open. Candidate: create the mpv player lazily on first Editor use (mind the documented mpv /
-  GL embedding pitfalls further down this file before touching it).
-- `fonts.load_bundled_fonts()` ~1.2 s (registers every bundled font, ~50 files). Candidates:
-  register only what the active theme + the editor's chosen fonts need at startup, the rest lazily
-  (the Advanced Editor's font list needs them when it opens).
-- Module imports ~2-3 s on a cold `.pyc` cache (editor/nle/settings imported eagerly by
-  main_window). Candidates: import heavy pages lazily.
-- Earlier measurement (still open): a sidebar click into a 100-clip Library took ~640 ms.
-- A script for these numbers: build N clips in a temp HOME, then time `MainWindow()` + first
-  full Library fill under cProfile (the session used one; easy to recreate).
+### Startup -- DONE (this session)
+Benchmark: `tools/bench_startup.py` (N clips in a throwaway HOME, same steps as `gui/main.main()`;
+`--keep-home DIR` to rerun warm, `--profile FILE` for cProfile). 93 clips at 2560x1440, Xvfb,
+2-core sandbox (absolute times are pessimistic; a profiler roughly doubles them):
 
+| | before | after |
+|---|---|---|
+| window painted and usable (thumbnails cached) | 1.14 s | 0.46 s |
+| Library completely filled (thumbnails cached) | 4.1-4.3 s | 1.15 s |
+| first start after this update (small thumbnails made from the old full-size ones) | -- | 1.6 s |
+| Library completely filled, NO thumbnails cached | 17.3 s (window frozen) | 8.2 s (window usable from 0.55 s) |
+
+What the time was (measured), and what changed:
+1. **Thumbnails: full-size JPEGs decoded on the GUI thread.** `thumbnails.get_thumbnail` stores the
+   frame at the VIDEO's size (2560x1440); every card decoded and smooth-scaled that to 400x224 inside
+   its constructor: ~28 ms per card at 1440p (~7 ms at 720p) = 2.7 of the 2.95 s a warm fill took.
+   A missing thumbnail also ran ffmpeg right there (~160 ms each).
+   - `thumbnails.get_card_thumbnail()` / `card_thumbnail_path()`: a second, small cache file
+     (`<id>_<mtime>_card.jpg`, 640 px wide, ffmpeg scales while extracting: 104 ms vs 160 ms).
+     Written under a temporary name and renamed (the GUI and the daemon can make the same one).
+     `get_thumbnail()` (full frame) is unchanged and still used by the upload dialog, the YouTube
+     thumbnail and the Editor's browser.
+   - `gui/thumb_loader.py` (new): up to 4 worker threads make / decode / scale / crop the picture
+     (QImage, safe off the GUI thread; `QImageReader.setScaledSize` lets the JPEG decoder itself
+     downscale); a queued signal hands it to the GUI thread, which makes the QPixmap, rounds the
+     corners and caches it. Requests for the same picture merge; FIFO = the grid's top rows first.
+     An existing full-size thumbnail is scaled into the small file instead of running ffmpeg, so
+     the first start after updating doesn't regenerate anything.
+   - `VideoCard._load_pixmap` returns the cached pixmap or a plain dark placeholder
+     (`_loading_pixmap`) + a request; `_on_thumb_loaded` swaps the picture in. The pixmap cache key
+     is now the SOURCE file (clip, or the YouTube thumbnail in the Uploaded tab) + its mtime.
+   - Tests that read a card's thumbnail right after building it: call
+     `thumb_loader.loader().wait_idle()` first.
+   - `clips.trigger_clip` makes the new clip's card thumbnail on a background thread right after
+     `add_video`, so the GUI finds it ready.
+2. **Settings and the Editor were built at startup** although the app opens on the Library:
+   `SettingsPage()` 0.40 s + `EditorPage()` 0.12 s + ~0.25 s of imports only they need (nle, PyAV,
+   numpy, mpv). `MainWindow.settings_page` / `.editor_page` are now properties that build the page
+   on first use (an empty QWidget holds its slot in the stack; `_swap_into_stack`). 1.5 s after
+   startup a background thread imports their modules (`_preload_page_modules`) so the first click
+   only builds widgets: first Settings click ~340 ms, first Editor click ~160 ms in the sandbox,
+   once. Use `w._settings_page` / `w._editor_page` to test "is it built"; `w.editor_page` builds it.
+   NOTE: `SettingsPage()` also runs `puppetry-overlay` (availability + layout elements, for the
+   Input Overlay tab) -- a real subprocess on a machine with Puppetry, invisible in the sandbox --
+   so this probably saves more on a real machine than measured here.
+3. `closeEvent` no longer needs the Editor to exist; it also stops the thumbnail workers.
+- The 2.6 s `MpvVideoWidget` init and 1.2 s `fonts.load_bundled_fonts()` listed at the last handoff
+  did NOT reproduce (19 ms for the fonts; no mpv player is created at startup) -- they were
+  profiler/cold-cache artefacts. The "2 s to close the window" a cProfile run shows is one too
+  (the profiler slows the Editor's worker thread; real close: 30 ms).
+- Bug found on the way: each Library tab starts its first fill in its constructor, before
+  `LibraryPage` connects `loading_changed`, so the sidebar icon never showed the startup load and a
+  refresh arriving during it wasn't coalesced. `LibraryPage.__init__` / `MainWindow.__init__` now
+  pick the state up directly.
+- Still open for startup (not needed for the numbers above; next if it should go further):
+  the 93 cards themselves take ~0.45 s to build and appear together at the end -- show the first
+  screenful as soon as it is built (only when the grid is empty, so a refresh still doesn't flash),
+  or build only the cards in view. A sidebar click into a 100-clip Library was ~640 ms before this
+  session; not re-measured.
+- Tests: `tests/test_startup_perf.py` (47 checks).
+
+### Input overlay creation -- faster (this session)
+The renderer itself is Puppetry's (`puppetry-overlay render`, ~90-330 frames/s per piece measured
+against the real one earlier); only afterglow's side was changed, and only the fake CLI was
+available here -- **the real-machine gain is unmeasured**. Three changes:
+1. **The render starts before the trim, not after the clip is in the library.** It only needs the
+   frozen input and the span `[t_save - length, t_save]`, both known as soon as OBS's file is probed.
+   `_OverlayCapture.begin_render(raw_path, requested_duration, final_path)` (called in
+   `trigger_clip` right after the final name is chosen) starts every piece via
+   `overlay_support.start_render()` straight into `<final clip>.input.new/`; trimming, moving and
+   `add_video` run meanwhile. `finish()` then calls `install_render()` (waits, writes the manifest,
+   renames to `.input/`). The whole trim + library time is no longer dead time for the overlay.
+   - If the finished clip's length differs from the assumed one by more than one video frame,
+     the pieces are rendered again for the real span (the old path) -- never a misaligned overlay.
+     The frame-perfect smart cut hit the assumed length in every test run.
+   - A capture that fails after `begin_render` calls `overlay.abandon()` (waits for the pieces in
+     the background, removes `.input.new`).
+   - `capture_clip()` remains (= `start_render` + `install_render`) for the fallback and tests.
+2. **Frame-rate limit** -- Settings > Input Overlay > Render speed > Overlay frame rate:
+   "Up to 60 fps" (default), "Up to 30 fps", "Match the clip". `AppSettings.overlay_max_fps`
+   (0 = match). Render time is proportional to the frame count, so a 120 fps clip's overlay takes
+   half as long at 60. `overlay_support.render_fps()` divides the clip's rate by a whole number
+   (120 -> 60, 144 -> 48, 240 -> 60) so overlay frames land on video frames. Everything downstream
+   is time-based (mpv's lavfi overlay, `cut_piece`, the nle renderer), so a piece at a different
+   rate than its clip needs no other change. THIS CHANGES THE DEFAULT LOOK of new overlays on
+   clips above 60 fps (overlay motion at 60 fps); "Match the clip" restores the old behaviour.
+3. Fewer subprocesses: the piece's size comes from the renderer's own JSON reply (ffprobe only
+   if it is missing), and the finished clip's length is passed in from `trigger_clip` instead of
+   being probed again.
+- Tests: `test_startup_perf.py` (render_fps, start/install, parallel pieces, failure cleanup) and
+  the existing `test_input_overlay.py` (still exactly 2 renders for 2 pieces = no re-render).
+- Puppetry-side ideas (not afterglow's code): the per-piece process start (interpreter + Qt) is paid
+  once per piece per clip; one process rendering all pieces would save it. `-g 1` for .mov (see
+  the earlier note) is still open too.
+
+### Measured leads for the remaining goals
 Clip processing (see "Faster trims" below for what's done): the remaining cost per capture is the
 head re-encode (x264 veryfast, up to one keyframe interval of frames -- set OBS's keyframe interval
 to 1 s from Settings to halve it), plus waits around OBS's save (`wait_after_replay_buffer_finishes_sec`,

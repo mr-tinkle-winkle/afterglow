@@ -40,10 +40,7 @@ from PySide6.QtWidgets import (
 )
 
 from .. import config as config_module
-from .settings_page import SettingsPage
 from .library_page import LibraryPage, LibraryTabButton
-from .video_preview_dialog import VideoPreviewOverlay
-from .editor_page import EditorPage
 from .resources import resource_qpixmap
 from .scaling import compute_scale
 from .theme import Theme
@@ -201,16 +198,22 @@ class MainWindow(QMainWindow):
         self.stack = QStackedWidget()
         layout.addWidget(self.stack, stretch=1)
 
-        self.settings_page = SettingsPage()
+        # Only the Library is built at startup -- it is the page the app opens
+        # on. Settings and the Editor (and the modules behind them: the nle
+        # engine, PyAV, numpy, mpv) are built the first time they are needed:
+        # see the settings_page / editor_page properties. Together they were
+        # ~45% of the time to the first painted window (measured: 0.52 s of
+        # MainWindow() + ~0.3 s of imports on a 2-core machine). An empty
+        # placeholder holds each one's place in the stack until then.
+        self._settings_page = None
+        self._editor_page = None
         self.library_page = LibraryPage()
-        self.editor_page = EditorPage()
 
         # Insertion order must match _SETTINGS_INDEX / _LIBRARY_INDEX /
         # _EDITOR_INDEX above.
-        self.stack.addWidget(self.settings_page)
+        self.stack.addWidget(QWidget())
         self.stack.addWidget(self.library_page)
-        self.stack.addWidget(self.editor_page)
-        self.settings_page.rebuild_requested.connect(self._rebuild_settings_page)
+        self.stack.addWidget(QWidget())
 
         # Double-click / context-menu "Edit" in the Library routes here to
         # the Editor page (and loads that video into it).
@@ -224,19 +227,76 @@ class MainWindow(QMainWindow):
         # in flight -- see LibraryPage/_VideoGridTab.refresh()'s own
         # comments for why this replaced a fixed-time debounce.
         self.library_page.loading_changed.connect(self.library_nav_btn.set_loading)
+        self.library_nav_btn.set_loading(bool(self.library_page._loading_tabs))   # the fill already running
         # Prev/Next arrows in the Editor -- see EditorPage.set_neighbor_provider
         # and LibraryPage.neighbors_for's own docstrings for how this stays
         # live rather than being a one-time snapshot of the video list.
-        self.editor_page.set_neighbor_provider(self.library_page.neighbors_for)
+        # (wired when the Editor is built -- see the editor_page property)
 
         self.library_nav_btn.setChecked(True)
         self.stack.setCurrentIndex(_LIBRARY_INDEX)
         self._setup_youtube()
+        # Once the Library has its cards, load the other pages' modules on a
+        # background thread so the first click on Settings / Editor only has
+        # to build widgets, not import everything first.
+        QTimer.singleShot(1500, self._preload_page_modules)
+
+    # ------------------------------------------------------------ lazy pages
+
+    def _preload_page_modules(self) -> None:
+        if self._settings_page is not None and self._editor_page is not None:
+            return
+        import threading
+
+        def _imports():
+            try:
+                from . import settings_page, editor_page, video_preview_dialog  # noqa: F401
+            except Exception:
+                pass   # the real import (on first use) reports whatever is wrong
+        threading.Thread(target=_imports, name="afterglow-preload", daemon=True).start()
+
+    def _swap_into_stack(self, index: int, page: QWidget) -> None:
+        old = self.stack.widget(index)
+        current = self.stack.currentIndex() == index
+        self.stack.insertWidget(index, page)
+        self.stack.removeWidget(old)
+        if current:
+            self.stack.setCurrentWidget(page)
+        old.deleteLater()
+
+    @property
+    def settings_page(self):
+        """The Settings page, built on first use."""
+        if self._settings_page is None:
+            from .settings_page import SettingsPage
+            self._settings_page = SettingsPage()
+            self._settings_page.rebuild_requested.connect(self._rebuild_settings_page)
+            self._swap_into_stack(_SETTINGS_INDEX, self._settings_page)
+        return self._settings_page
+
+    @settings_page.setter
+    def settings_page(self, page) -> None:
+        self._settings_page = page
+
+    @property
+    def editor_page(self):
+        """The Editor page, built on first use."""
+        if self._editor_page is None:
+            from .editor_page import EditorPage
+            self._editor_page = EditorPage()
+            # Prev/Next arrows in the Editor -- see EditorPage.set_neighbor_provider
+            # and LibraryPage.neighbors_for's own docstrings for how this stays
+            # live rather than being a one-time snapshot of the video list.
+            self._editor_page.set_neighbor_provider(self.library_page.neighbors_for)
+            self._swap_into_stack(_EDITOR_INDEX, self._editor_page)
+            self._editor_page.apply_scale(compute_scale(self.width(), self.height()))
+        return self._editor_page
 
     def _rebuild_settings_page(self) -> None:
         """Settings were imported / reset outside the page's widgets: swap in a
         page built from the new values (auto-save would otherwise write the
         old ones back)."""
+        from .settings_page import SettingsPage
         old = self.settings_page
         idx = self.stack.indexOf(old)
         current = self.stack.currentWidget() is old
@@ -271,6 +331,7 @@ class MainWindow(QMainWindow):
         # which had nothing here to prevent exactly that.
         if self._preview_overlay is not None:
             self._preview_overlay.close_overlay(immediate=True)
+        from .video_preview_dialog import VideoPreviewOverlay
         overlay = VideoPreviewOverlay(video, neighbor_provider=neighbor_provider, parent=self.centralWidget())
         overlay.setGeometry(self.centralWidget().rect())
         overlay.closed.connect(self._on_preview_overlay_closed)
@@ -294,7 +355,10 @@ class MainWindow(QMainWindow):
         # previewer's player down cleanly (its mpv thread must not outlive it).
         if self._preview_overlay is not None:
             self._preview_overlay.close_overlay(immediate=True)
-        self.editor_page.shutdown()
+        if self._editor_page is not None:
+            self._editor_page.shutdown()
+        from . import thumb_loader
+        thumb_loader.loader().shutdown()
         from .upload_queue import upload_queue
         if upload_queue().busy():
             # they live in the afterglow-youtube process, which finishes them on its own
@@ -333,7 +397,8 @@ class MainWindow(QMainWindow):
         # font up or down together as the window resizes, rather than
         # them staying fixed while just the sidebar/its icons scaled.
         scale = compute_scale(self.width(), self.height())
-        self.editor_page.apply_scale(scale)
+        if self._editor_page is not None:
+            self._editor_page.apply_scale(scale)
         self.library_page.apply_scale(scale)
 
     def _on_nav_clicked(self, index: int) -> None:
@@ -362,7 +427,12 @@ class MainWindow(QMainWindow):
             # it to run on the next event-loop iteration instead of
             # blocking this one, so Qt gets a chance to actually PAINT
             # the already-switched page first.
-            QTimer.singleShot(0, self.settings_page.refresh_dynamic_lists)
+            # (A page built just now is already current; only an existing one needs it.)
+            if self._settings_page is not None:
+                QTimer.singleShot(0, self._settings_page.refresh_dynamic_lists)
+            self.settings_page          # built on first use
+        elif index == _EDITOR_INDEX:
+            self.editor_page            # built on first use
 
         crossfade_to_index(self.stack, index)
         # Switching TO Library does refresh it (this is what picks up clips

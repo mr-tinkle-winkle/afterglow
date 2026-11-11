@@ -354,15 +354,24 @@ def wait_for_overlays(timeout: "float | None" = None) -> None:
 class _OverlayCapture:
     """The input-overlay half of one clip capture (Puppetry integration).
 
-    on_sent(t_save) only FREEZES Puppetry's input buffer the moment the save
-    request is sent (a file copy -- instant). finish() runs once the final,
-    trimmed clip is in place: it renders just the clip's own span (see
-    overlay_support.capture_clip) into `<clip>.input/`. Rendering the whole
-    replay length up front (aio.start_clip) took ~0.7 s per second of buffer
-    per piece with the real Puppetry -- a quarter hour for a 1200 s buffer --
-    so the sidecar showed up long after the clip did, if at all.
-    Both swallow every failure into self.error (logged; the error noise
-    plays from finish()) -- a missing overlay never costs a clip. Does
+    Three steps, each as early as it can run:
+    1. on_sent(t_save) FREEZES Puppetry's input buffer the moment the save
+       request is sent (a file copy -- instant).
+    2. begin_render() starts drawing the pieces as soon as the clip's length
+       is known -- i.e. BEFORE the trim, in parallel with it. The render only
+       needs the frozen input and the span [t_save - length, t_save], not the
+       finished file. (It used to start after the clip was trimmed, moved and
+       added to the library, so the whole trim was dead time for the overlay.)
+       It draws only the clip's own span: rendering the whole replay length
+       (aio.start_clip) took ~0.7 s per second of buffer per piece with the
+       real Puppetry -- a quarter hour for a 1200 s buffer.
+    3. finish() -- on its own thread once the clip is in the library -- waits
+       for the pieces and writes `<clip>.input/`. If the finished clip turned
+       out a different length than step 2 assumed (more than one frame), the
+       pieces are drawn again for the real span, so the overlay never ends up
+       out of step with the video.
+    All of them swallow every failure into self.error (logged; the error
+    noise plays from finish()) -- a missing overlay never costs a clip. Does
     nothing at all when the clip type has the overlay off."""
 
     def __init__(self, clip_cfg: "ClipConfig", settings, indicator_id: "str | None" = None):
@@ -372,11 +381,14 @@ class _OverlayCapture:
         # is told how it ended (overlay_done / overlay_fail). None = no indicator.
         self.indicator_id = indicator_id
         self.error: str | None = None
-        self.fps: float | None = None          # unused now (the clip's own fps is probed); kept for callers
+        self.fps: float | None = None          # OBS's output fps (the fallback when the file can't be probed)
         self.t_save: float | None = None
         self._workdir: Path | None = None
         self._buffer: Path | None = None
         self._clip_info: "tuple | None" = None
+        self._job = None                       # overlay_support.RenderJob once begin_render() has run
+        self._job_dir: Path | None = None
+        self._render_started: float | None = None
 
     def on_sent(self, t_save: float) -> None:
         if not self.enabled:
@@ -390,16 +402,67 @@ class _OverlayCapture:
             self.error = str(e)
             print(f"Input overlay: couldn't freeze Puppetry's input buffer: {e}")
 
-    def finish_in_background(self, video_id: int, clip_path: Path, clip_cfg: "ClipConfig", settings):
+    def _pieces(self) -> list:
+        return list(self._cfg.overlay_pieces) or ["keyboard", "mouse"]
+
+    def begin_render(self, raw_path: Path, duration: float, final_path: Path) -> None:
+        """Start drawing the pieces for a clip that will be `duration` seconds
+        long and end up at `final_path` (which doesn't exist yet). `raw_path`
+        is OBS's file, read for its frame rate only. Returns at once."""
+        if not self.enabled or self._buffer is None or self.t_save is None or duration <= 0:
+            return
+        try:
+            try:
+                _d, clip_fps = overlay_support.probe_clip(raw_path)
+            except Exception:  # noqa: BLE001
+                clip_fps = self.fps or 60.0
+            fps = overlay_support.render_fps(clip_fps, getattr(self._settings, "overlay_max_fps", 0))
+            self._clip_fps = clip_fps
+            # straight into `<clip>.input.new/`, next to where the clip will be: no copy
+            # afterwards, and it is what tells the previewer an overlay is on its way
+            dest = overlay_support.sidecar_dir(final_path)
+            self._job_dir = dest.with_name(dest.name + ".new")
+            shutil.rmtree(self._job_dir, ignore_errors=True)
+            self._render_started = time.time()
+            self._job = overlay_support.start_render(
+                self._buffer, self._job_dir, self.t_save - duration, self.t_save, fps, self._pieces(),
+                offset_ms=self._cfg.overlay_offset_ms)
+        except Exception as e:  # noqa: BLE001 -- finish() falls back to rendering afterwards
+            print(f"Input overlay: couldn't start rendering early ({e}); rendering after the clip is saved instead.")
+            self._job = None
+
+    def abandon(self) -> None:
+        """The capture failed after begin_render(): let the pieces finish in the
+        background and throw them away."""
+        job, job_dir, workdir = self._job, self._job_dir, self._workdir
+        self._job = None
+        if job is None and workdir is None:
+            return
+
+        def cleanup():
+            if job is not None:
+                job.wait()
+            if job_dir is not None:
+                shutil.rmtree(job_dir, ignore_errors=True)
+            if workdir is not None:
+                shutil.rmtree(workdir, ignore_errors=True)
+        threading.Thread(target=cleanup, name="afterglow-input-overlay-cleanup", daemon=True).start()
+
+    def finish_in_background(self, video_id: int, clip_path: Path, clip_cfg: "ClipConfig", settings,
+                             duration: "float | None" = None):
         """finish() on its own thread (returned; None when the overlay is off).
-        If the clip is renamed while its pieces render, the finished sidecar
-        follows it to the new name."""
+        `duration` is the finished clip's length when the caller already knows
+        it (saves a probe). If the clip is renamed while its pieces render,
+        the finished sidecar follows it to the new name."""
         if not self.enabled:
             return None
-        try:
-            self._clip_info = overlay_support.probe_clip(clip_path)   # now, before the clip can be renamed
-        except Exception as e:  # noqa: BLE001 -- finish() reports it
-            self.error = self.error or str(e)
+        if duration is not None and duration > 0:
+            self._clip_info = (duration, getattr(self, "_clip_fps", None) or self.fps or 60.0)
+        else:
+            try:
+                self._clip_info = overlay_support.probe_clip(clip_path)   # now, before the clip can be renamed
+            except Exception as e:  # noqa: BLE001 -- finish() reports it
+                self.error = self.error or str(e)
 
         def run():
             self.finish(clip_path, clip_cfg, settings)
@@ -415,6 +478,15 @@ class _OverlayCapture:
         t.start()
         return t
 
+    def _early_job_fits(self) -> bool:
+        """Whether begin_render()'s pieces cover the finished clip: same length
+        to within one video frame."""
+        job = self._job
+        if job is None or self._clip_info is None:
+            return False
+        duration, clip_fps = self._clip_info
+        return abs(job.duration - duration) <= 1.0 / max(clip_fps or 60.0, 1.0) + 0.002
+
     def finish(self, clip_path: Path, clip_cfg: "ClipConfig", settings) -> None:
         if not self.enabled:
             return
@@ -425,12 +497,28 @@ class _OverlayCapture:
                 raise overlay_support.OverlayError(self.error or "Puppetry's input was never frozen")
             pl = overlay_support.resolve_placements(settings.overlay_placements, clip_cfg.overlay_placements,
                                                     overlay_support.element_types())
-            started = time.time()
-            manifest = overlay_support.capture_clip(
-                self._buffer, clip_path, clip_end=self.t_save,
-                pieces=list(clip_cfg.overlay_pieces) or ["keyboard", "mouse"], placements=pl,
-                offset_ms=clip_cfg.overlay_offset_ms, visible_by_default=clip_cfg.overlay_visible_default,
-                clip_info=self._clip_info)
+            started = self._render_started or time.time()
+            manifest = None
+            if self._job is not None:
+                job = self._job
+                if self._early_job_fits() and Path(job.workdir) == \
+                        overlay_support.sidecar_dir(clip_path).with_name(overlay_support.sidecar_dir(clip_path).name + ".new"):
+                    manifest = overlay_support.install_render(
+                        job, self._buffer, clip_path, clip_end=self.t_save, placements=pl,
+                        visible_by_default=clip_cfg.overlay_visible_default)
+                else:
+                    # the clip came out a different length (or somewhere else) than assumed: draw again
+                    job.wait()
+                    shutil.rmtree(job.workdir, ignore_errors=True)
+                    started = time.time()
+                    print("Input overlay: the finished clip differs from what the early render assumed; "
+                          "rendering again for the real span.")
+            if manifest is None:
+                manifest = overlay_support.capture_clip(
+                    self._buffer, clip_path, clip_end=self.t_save,
+                    pieces=self._pieces(), placements=pl,
+                    offset_ms=clip_cfg.overlay_offset_ms, visible_by_default=clip_cfg.overlay_visible_default,
+                    clip_info=self._clip_info, max_fps=getattr(settings, "overlay_max_fps", 0))
             print(f"Input overlay: {', '.join(manifest['pieces'])} made in {time.time() - started:.1f}s")
             _play_keyframe_sound(keyframes.INPUT_OVERLAY, clip_cfg, settings)
             if manifest.get("errors"):
@@ -441,11 +529,23 @@ class _OverlayCapture:
             print(f"Input overlay could not be captured (the clip was kept): {e}")
             _play_error_sound(keyframes.INPUT_OVERLAY, settings)
             overlay_support.delete_sidecar(clip_path)
+            if self._job_dir is not None:
+                shutil.rmtree(self._job_dir, ignore_errors=True)
             indicator_client.emit(self.indicator_id, "overlay_fail")   # the circle flashes red -- the clip itself is safe
         finally:
             cancel_timeout()
             if self._workdir is not None:
                 shutil.rmtree(self._workdir, ignore_errors=True)
+
+
+def _make_card_thumbnail(video_id: int, path: Path) -> None:
+    def run():
+        try:
+            from . import thumbnails
+            thumbnails.get_card_thumbnail(video_id, Path(path))
+        except Exception as e:  # noqa: BLE001 -- the GUI makes it on demand anyway
+            print(f"Thumbnail for the new clip couldn't be made yet: {e}")
+    threading.Thread(target=run, name="afterglow-card-thumbnail", daemon=False).start()
 
 
 # ---------------------------------------------------------------- trigger pipeline
@@ -540,6 +640,9 @@ def trigger_clip(clip_config_id: int, indicator_id: "str | None | object" = _AUT
         while final_path.exists() or path_in_library(final_path):
             final_path = clips_dir / f"{timestamp}-{n}{raw_path.suffix}"
             n += 1
+        # The clip's length is known now: the input overlay starts rendering here, alongside
+        # the trim, instead of after the clip is in the library.
+        overlay.begin_render(raw_path, requested_duration, final_path)
         trimmed = False
         if trim_start <= SKIP_TRIM_TOLERANCE_SECONDS:
             # The raw buffer is already at or under the requested clip length
@@ -627,11 +730,18 @@ def trigger_clip(clip_config_id: int, indicator_id: "str | None | object" = _AUT
         # the library, and rendering the pieces takes a while (about as long
         # as the clip, per piece, in parallel). Its own success/error noise.
         stage = keyframes.INPUT_OVERLAY
-        overlay.finish_in_background(video.id, final_path, clip_cfg, settings)
+        overlay.finish_in_background(video.id, final_path, clip_cfg, settings, duration=actual_duration)
+        # The Library card's thumbnail, made now so the GUI finds it ready (it would otherwise
+        # make it itself the first time the card is shown). Off this thread: never delays the clip.
+        _make_card_thumbnail(video.id, final_path)
 
         return video
     except Exception:
         _play_error_sound(stage, settings)
+        try:
+            overlay.abandon()       # pieces already rendering for a clip that didn't make it
+        except NameError:
+            pass                    # failed before the overlay object existed
         if not indicator_closed:
             indicator_client.emit(cid, "fail")  # the clapper is launched into the air and falls offscreen
         raise

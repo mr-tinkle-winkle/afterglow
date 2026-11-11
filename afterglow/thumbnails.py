@@ -11,7 +11,9 @@ down and deleted -- simpler, and cache directories are cheap.
 """
 from __future__ import annotations
 
+import os
 import subprocess
+import threading
 from pathlib import Path
 
 CACHE_DIR = Path.home() / ".cache" / "afterglow" / "thumbnails"
@@ -56,6 +58,78 @@ def get_thumbnail(video_id: int, video_path: Path) -> Path | None:
             return None
 
     return cache_path
+
+
+# ---------------------------------------------------------------- card thumbnails
+#
+# The Library grid shows every thumbnail at 400x224. Decoding the full-size
+# JPEG above for that (2560x1440 for a 1440p clip) cost ~15 ms per card on
+# every app start -- measured, the biggest part of filling a warm Library.
+# The grid reads a small copy instead; everything that needs the full frame
+# (the upload dialog, the YouTube thumbnail, the Editor's browser) keeps
+# using get_thumbnail().
+
+CARD_THUMB_WIDTH = 640
+
+
+def _mtime_key(video_path: Path) -> "int | None":
+    try:
+        return int(video_path.stat().st_mtime)
+    except OSError:
+        return None
+
+
+def card_thumbnail_path(video_id: int, video_path: Path) -> "Path | None":
+    """Where this video's small card thumbnail lives (whether or not it has
+    been made yet). None when the video file is gone."""
+    mtime = _mtime_key(video_path)
+    if mtime is None:
+        return None
+    return CACHE_DIR / f"{video_id}_{mtime}_card.jpg"
+
+
+def full_thumbnail_path_if_cached(video_id: int, video_path: Path) -> "Path | None":
+    """The full-size thumbnail if get_thumbnail() made one earlier (a small
+    one can be scaled from it without running ffmpeg)."""
+    mtime = _mtime_key(video_path)
+    if mtime is None:
+        return None
+    path = CACHE_DIR / f"{video_id}_{mtime}.jpg"
+    return path if path.exists() else None
+
+
+def get_card_thumbnail(video_id: int, video_path: Path) -> "Path | None":
+    """The small (CARD_THUMB_WIDTH wide) thumbnail, made with ffmpeg when it
+    isn't cached. Blocks for one ffmpeg run on a miss: call it off the GUI
+    thread (gui/thumb_loader.py does) or from the daemon at capture time."""
+    cache_path = card_thumbnail_path(video_id, video_path)
+    if cache_path is None:
+        return None
+    if cache_path.exists():
+        return cache_path
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    # written under a temporary name and renamed: the GUI and the daemon can
+    # both be making the same one, and a reader must never see half a file
+    tmp = cache_path.with_name(f".{cache_path.stem}.{os.getpid()}.{threading.get_ident()}.tmp.jpg")
+    scale = f"scale={CARD_THUMB_WIDTH}:-2:flags=fast_bilinear"
+    try:
+        for seek in (["-ss", "0.1"], []):   # 2nd try at 0: very short clips have no frame at 0.1 s
+            result = subprocess.run(
+                ["ffmpeg", "-nostdin", "-loglevel", "error", "-y", *seek, "-i", str(video_path),
+                 "-an", "-sn", "-frames:v", "1", "-vf", scale, "-q:v", "4", str(tmp)],
+                capture_output=True,
+            )
+            if result.returncode == 0 and tmp.exists() and tmp.stat().st_size > 0:
+                os.replace(tmp, cache_path)
+                return cache_path
+        return None
+    except OSError:
+        return None
+    finally:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
 
 
 if __name__ == "__main__":

@@ -369,6 +369,13 @@ class AppSettings:
     # clip (flipped by the previewer's overlay button, remembered across
     # clips and restarts).
     preview_input_overlay: bool = True
+    # Frame-rate cap for the input overlay's render (Settings > Input Overlay).
+    # Puppetry draws every overlay frame itself, so the render time grows with
+    # the frame count: a 120 fps clip at "match the clip" takes twice as long
+    # as at 60. The overlay is drawn at the clip's fps divided by a whole
+    # number (120 -> 60, 144 -> 48, 240 -> 60) so its frames line up with the
+    # video's. 0 = always match the clip.
+    overlay_max_fps: int = 60
     obs: OBSSettings = field(default_factory=OBSSettings)
     clip_indicator: ClipIndicatorSettings = field(default_factory=ClipIndicatorSettings)
     youtube: YouTubeSettings = field(default_factory=YouTubeSettings)
